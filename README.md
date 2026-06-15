@@ -8,7 +8,7 @@ A personal, unlimited cloud storage and media catalog system built on top of Tel
 - **Smart Indexing Bot**: A dedicated Python Telegram Bot automatically listens to the channel, parses captions, generates metadata, and stores it in the database.
 - **Bot Drop (Web Upload)**: Upload large media or documents directly to the bot via PM. The Bot securely holds the file while you fill out metadata on the Web Dashboard, completely bypassing Vercel's upload limits.
 - **Multi-device Dashboard**: A Next.js front-end deployed on Vercel allows you to browse, search, edit metadata, and delete files from your phone or PC without opening the Telegram app.
-- **Zero-Laptop Downloading**: Clicking "Download" on the web dashboard triggers the bot to seamlessly forward the file to your personal Telegram chat via the `copyMessage` API, offering full download speeds without hitting server bottlenecks.
+- **Zero-Laptop Downloading**: Clicking "Download" on the web dashboard triggers the bot to seamlessly copy the file to your personal Telegram chat via the `copyMessage` API, offering full download speeds without hitting server bottlenecks.
 - **Large Game & Multi-part Support**: Dedicated worker scripts for PC to split and upload multi-GB games/archives using MTProto (Telethon), auto-assembled on the web UI.
 
 ## 🏗️ Architecture
@@ -16,7 +16,7 @@ A personal, unlimited cloud storage and media catalog system built on top of Tel
 For an in-depth look at how the data flows between the Web Dashboard, Turso, and Telegram, please read the [Architecture Document](./arsitektur-telegram-storage.md).
 
 ### Tech Stack
-- **Web Dashboard**: Next.js 14, React, Tailwind CSS
+- **Web Dashboard**: Next.js 15, React, Tailwind CSS
 - **Database**: Turso (libSQL / SQLite compatible edge database)
 - **Indexer Bot & Worker**: Python 3.11, python-telegram-bot (PTB), Telethon
 - **Deployment**: Vercel (Web), Server/VPS (Bot)

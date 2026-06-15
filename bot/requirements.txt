@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]==21.6
+libsql-client==0.3.1
+python-dotenv==1.0.1
+telethon==1.36.0
+cryptg==0.5.2
