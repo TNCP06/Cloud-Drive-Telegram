@@ -4,7 +4,6 @@ export async function processBotDrop(formData: FormData) {
   const msg_id = formData.get("msg_id")?.toString();
   const chat_id = formData.get("chat_id")?.toString();
   const title = formData.get("title")?.toString().trim();
-  const kind = formData.get("kind")?.toString() || "media";
   const tagsStr = formData.get("tags")?.toString() || "";
 
   if (!msg_id || !chat_id || !title) {
@@ -43,7 +42,7 @@ export async function processBotDrop(formData: FormData) {
     }
 
     return { success: true };
-  } catch (err: any) {
-    return { error: err.message || "Gagal menghubungi Telegram." };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Gagal menghubungi Telegram." };
   }
 }

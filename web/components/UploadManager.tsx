@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Icon } from "@/lib/icons";
 import { fmtDate } from "@/lib/format";
 import type { Kind, UploadJob, UploadStatus, WatcherStatus } from "@/lib/types";
@@ -103,10 +104,10 @@ export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: W
     <div className="up-wrap scroll">
       <div className="up-inner">
         <div className="up-head">
-          <a className="btn subtle" href="/">
+          <Link className="btn subtle" href="/">
             <Icon name="back" size={16} />
             Kembali
-          </a>
+          </Link>
           <h1>Upload via laptop</h1>
         </div>
 
