@@ -42,8 +42,8 @@
   --sh-3: 0 18px 50px -12px rgba(43,38,28,.28), 0 6px 18px rgba(43,38,28,.10);
 
   /* type */
-  --ui: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --serif: "Instrument Serif", Georgia, serif;
+  --ui: var(--font-hanken), ui-sans-serif, system-ui, sans-serif;
+  --serif: var(--font-instrument), Georgia, serif;
 
   /* density (overridable) */
   --row-h: 46px;
@@ -614,7 +614,7 @@ button { font-family: inherit; }
   background: linear-gradient(to top, color-mix(in oklab, #000 50%, transparent), transparent);
 }
 .viewer-thumb {
-  flex: none; width: 52px; height: 52px; padding: 0; border: 2px solid transparent;
+  position: relative; flex: none; width: 52px; height: 52px; padding: 0; border: 2px solid transparent;
   border-radius: var(--r-md); overflow: hidden; cursor: pointer; opacity: .5;
   background: color-mix(in oklab, #fff 10%, transparent); transition: opacity .14s ease, border-color .14s ease;
 }
@@ -883,3 +883,30 @@ button { font-family: inherit; }
   border-radius: 99px; box-shadow: var(--sh-3); font-size: 13px;
 }
 .saving-pill .spinner { width: 15px; height: 15px; border-width: 2px; border-color: rgba(255,255,255,.3); border-top-color: #fff; }
+.saving-pill.err { background: #B23A2E; cursor: pointer; max-width: min(90vw, 420px); }
+
+/* ===========================================================================
+   Resumable browser uploader (FileUploader)
+   =========================================================================== */
+.fu { margin-top: 4px; }
+.fu-drop {
+  display: flex; align-items: center; gap: 14px; cursor: pointer;
+  border: 1.5px dashed var(--line-2); border-radius: var(--r-md, 12px);
+  background: var(--card); padding: 18px 18px; color: var(--muted);
+  transition: border-color .15s ease, background .15s ease;
+}
+.fu-drop:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
+.fu-drop > svg { color: var(--accent); flex: none; }
+.fu-drop-main { display: flex; flex-direction: column; gap: 2px; }
+.fu-drop-main strong { font-size: 14px; color: var(--ink); }
+.fu-done { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; color: var(--accent); font-size: 13px; font-weight: 600; }
+.fu-active {
+  border: 1px solid var(--line); border-radius: var(--r-md, 12px);
+  background: var(--card); padding: 14px 16px;
+}
+.fu-row1 { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.fu-name { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fu-meta { font-size: 12px; color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fu-row2 { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
+.fu-phase { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
+.fu-err { color: #A8362B; }

@@ -1,0 +1,20 @@
+# Keep the build context small and free of secrets. Secrets (.env, *.session) are
+# provided at runtime via env_file / bind mounts, never baked into images.
+**/node_modules
+**/.next
+**/__pycache__
+**/*.py[cod]
+**/*.session
+**/*.session-journal
+**/*.log
+**/*.err
+**/*.pid
+**/.env
+**/.env.*
+**/tcd_upload_parts
+.git
+.vscode
+.idea
+docs
+web-cloud-drive-design
+*.md

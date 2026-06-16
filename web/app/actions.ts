@@ -8,10 +8,43 @@ import { spawn } from "node:child_process";
 import { openSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
 
-// Watcher script location (default: ../bot relative to web folder). Override via env if needed.
+// Bot/Watcher script location (default: ../bot relative to web folder). Override via env if needed.
 const WATCHER_DIR = process.env.WATCHER_DIR || path.resolve(process.cwd(), "..", "bot");
 const PYTHON_BIN = process.env.PYTHON_BIN || "python";
 const PID_FILE = path.join(WATCHER_DIR, "watcher.pid");
+const BOT_PID_FILE = path.join(WATCHER_DIR, "bot.pid");
+
+// Kill a detached child + its tree, cross-platform. On Windows: taskkill /T.
+// On Linux/macOS the children are spawned in their own process group (detached),
+// so killing the negative pid kills the whole group (python + 7-Zip/ffmpeg).
+function killTree(pid: number): Promise<void> {
+  return new Promise((resolve) => {
+    if (process.platform === "win32") {
+      const k = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+      k.on("close", () => resolve());
+      k.on("error", () => resolve());
+      return;
+    }
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    }
+    // Force after a short grace period, then resolve.
+    setTimeout(() => {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        /* ignore */
+      }
+      resolve();
+    }, 1500);
+  });
+}
 
 // Server actions for Turso metadata (instant, without touching Telegram).
 // Note: softDelete ONLY sets deleted_at. The actual file on Telegram is deleted
@@ -30,9 +63,14 @@ export async function toggleFavorite(id: number, next: boolean) {
   refresh();
 }
 
+// Soft delete / restore intentionally do NOT touch updated_at: trashing is not a
+// content change, and `date_added`/`updated_at` (= the UI's "Added"/"Modified" and
+// the default sort key) must survive the round-trip so a restored item returns to
+// its original position instead of looking freshly uploaded. Trash status is
+// tracked solely by `deleted_at`.
 export async function softDelete(id: number) {
   await db.execute({
-    sql: "UPDATE items SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+    sql: "UPDATE items SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
     args: [id],
   });
   refresh();
@@ -40,10 +78,58 @@ export async function softDelete(id: number) {
 
 export async function restore(id: number) {
   await db.execute({
-    sql: "UPDATE items SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?",
+    sql: "UPDATE items SET deleted_at = NULL WHERE id = ?",
     args: [id],
   });
   refresh();
+}
+
+// Permanently delete a trashed item *now* — same effect as the bot's daily
+// purge_job but on demand (no 7-day wait). Removes every part from the Telegram
+// channel, then hard-deletes the DB rows (thumbnails → parts → item_tags → items).
+// Guarded to items already in Trash so a stray call can't nuke a live file.
+// This is irreversible: confirm in the UI before calling.
+export async function purgeNow(id: number): Promise<{ ok: boolean; error?: string }> {
+  const BOT_TOKEN = process.env.BOT_TOKEN;
+  const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
+  if (!BOT_TOKEN || !STORAGE_CHANNEL_ID) {
+    return { ok: false, error: "BOT_TOKEN or STORAGE_CHANNEL_ID not set in web env." };
+  }
+
+  const guard = await db.execute({
+    sql: "SELECT id FROM items WHERE id = ? AND deleted_at IS NOT NULL",
+    args: [id],
+  });
+  if (!guard.rows.length) {
+    return { ok: false, error: "Item is not in Trash." };
+  }
+
+  const apiBase = `https://api.telegram.org/bot${BOT_TOKEN}`;
+  const parts = await db.execute({
+    sql: "SELECT channel_msg_id FROM parts WHERE item_id = ?",
+    args: [id],
+  });
+
+  // Best-effort Telegram deletes — a message may already be gone; keep going so
+  // the DB rows are still cleaned up regardless.
+  for (const row of parts.rows) {
+    await fetch(`${apiBase}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: STORAGE_CHANNEL_ID, message_id: Number(row[0]) }),
+    }).catch(() => {});
+  }
+
+  // Explicit hard delete (thumbnails FK → parts, so delete thumbnails first).
+  await db.execute({
+    sql: "DELETE FROM thumbnails WHERE part_id IN (SELECT id FROM parts WHERE item_id = ?)",
+    args: [id],
+  });
+  await db.execute({ sql: "DELETE FROM parts WHERE item_id = ?", args: [id] });
+  await db.execute({ sql: "DELETE FROM item_tags WHERE item_id = ?", args: [id] });
+  await db.execute({ sql: "DELETE FROM items WHERE id = ?", args: [id] });
+  refresh();
+  return { ok: true };
 }
 
 // Edit metadata (title / kind / tags). Pure Turso operation — does NOT touch
@@ -222,6 +308,16 @@ export async function startUpload(id: number) {
   revalidatePath("/upload");
 }
 
+// Retry a failed job. Keeps parts_done so a staged upload resumes from the last
+// part already pushed to Telegram instead of re-uploading everything.
+export async function retryUpload(id: number) {
+  await db.execute({
+    sql: "UPDATE upload_jobs SET status='pending', message='retry requested...', updated_at=datetime('now') WHERE id = ? AND status='error'",
+    args: [id],
+  });
+  revalidatePath("/upload");
+}
+
 export async function startAllUploads() {
   await db.execute(
     "UPDATE upload_jobs SET status='pending', message='start requested...', updated_at=datetime('now') WHERE status='queued'"
@@ -295,12 +391,7 @@ export async function stopWatcher(): Promise<{ ok: boolean; error?: string }> {
     };
   }
   try {
-    // /T = include child processes (7-Zip, etc.), /F = force.
-    await new Promise<void>((resolve) => {
-      const k = spawn("taskkill", ["/PID", pid, "/T", "/F"], { windowsHide: true });
-      k.on("close", () => resolve());
-      k.on("error", () => resolve());
-    });
+    await killTree(Number(pid));
     try {
       rmSync(PID_FILE);
     } catch {
@@ -314,5 +405,219 @@ export async function stopWatcher(): Promise<{ ok: boolean; error?: string }> {
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Failed to stop watcher." };
+  }
+}
+
+export async function reharvestThumbnail(
+  itemId: number
+): Promise<{ ok: boolean; harvested: number; error?: string }> {
+  const BOT_TOKEN = process.env.BOT_TOKEN;
+  const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
+  const OWNER_USER_ID = process.env.OWNER_USER_ID;
+
+  if (!BOT_TOKEN || !STORAGE_CHANNEL_ID || !OWNER_USER_ID) {
+    return {
+      ok: false,
+      harvested: 0,
+      error: "BOT_TOKEN, STORAGE_CHANNEL_ID, or OWNER_USER_ID not set in web env.",
+    };
+  }
+
+  // Only fetch parts that have no thumbnail yet.
+  const rs = await db.execute({
+    sql: `SELECT p.id, p.channel_msg_id FROM parts p
+     LEFT JOIN thumbnails t ON t.part_id = p.id
+     WHERE p.item_id = ? AND t.part_id IS NULL
+     ORDER BY p.part_number`,
+    args: [itemId],
+  });
+  if (!rs.rows.length) return { ok: true, harvested: 0 };
+
+  const apiBase = `https://api.telegram.org/bot${BOT_TOKEN}`;
+  let harvested = 0;
+  const errors: string[] = [];
+
+  for (const row of rs.rows) {
+    const partId = Number(row[0]);
+    const channelMsgId = Number(row[1]);
+    let fwdMsgId: number | null = null;
+    try {
+      // forwardMessage returns a full Message object (unlike copyMessage which only returns MessageId).
+      const fwdJson = await fetch(`${apiBase}/forwardMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: OWNER_USER_ID,
+          from_chat_id: STORAGE_CHANNEL_ID,
+          message_id: channelMsgId,
+        }),
+      }).then((r) => r.json());
+
+      if (!fwdJson.ok) {
+        const msg = `Forward failed for msg ${channelMsgId}: ${fwdJson.description}`;
+        console.error("[reharvestThumbnail]", msg);
+        errors.push(msg);
+        continue;
+      }
+      const fwdMsg = fwdJson.result;
+      fwdMsgId = fwdMsg.message_id;
+
+      const thumbFileId: string | undefined =
+        fwdMsg.video?.thumbnail?.file_id ??
+        fwdMsg.animation?.thumbnail?.file_id ??
+        fwdMsg.document?.thumbnail?.file_id ??
+        (Array.isArray(fwdMsg.photo) ? fwdMsg.photo[fwdMsg.photo.length - 1]?.file_id : undefined);
+
+      if (!thumbFileId) {
+        const msgTypes = Object.keys(fwdMsg).filter(k => ["video","animation","document","photo","audio","voice","sticker"].includes(k));
+        const msg = `No thumbnail in msg ${channelMsgId} (type: ${msgTypes.join(",") || "unknown"})`;
+        console.error("[reharvestThumbnail]", msg, JSON.stringify(fwdMsg).slice(0, 300));
+        errors.push(msg);
+        continue;
+      }
+
+      const gfJson = await fetch(`${apiBase}/getFile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_id: thumbFileId }),
+      }).then((r) => r.json());
+
+      if (!gfJson.ok || !gfJson.result?.file_path) {
+        errors.push(`getFile failed for msg ${channelMsgId}`);
+        continue;
+      }
+
+      const dlRes = await fetch(
+        `https://api.telegram.org/file/bot${BOT_TOKEN}/${gfJson.result.file_path}`
+      );
+      if (!dlRes.ok) {
+        errors.push(`Download failed for msg ${channelMsgId}`);
+        continue;
+      }
+
+      const data_b64 = Buffer.from(await dlRes.arrayBuffer()).toString("base64");
+      await db.execute({
+        sql: `INSERT INTO thumbnails (part_id, mime, data) VALUES (?, ?, ?)
+         ON CONFLICT(part_id) DO UPDATE SET mime = excluded.mime, data = excluded.data`,
+        args: [partId, "image/jpeg", data_b64],
+      });
+      harvested++;
+    } finally {
+      // Always clean up the forwarded message to avoid cluttering the owner's chat.
+      if (fwdMsgId !== null) {
+        await fetch(`${apiBase}/deleteMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: OWNER_USER_ID, message_id: fwdMsgId }),
+        }).catch(() => {});
+      }
+    }
+  }
+
+  if (harvested > 0) revalidatePath("/");
+  return {
+    ok: harvested > 0 || errors.length === 0,
+    harvested,
+    error: errors.length ? errors.join("; ") : undefined,
+  };
+}
+
+export async function uploadThumbnail(
+  itemId: number,
+  mime: string,
+  dataB64: string
+): Promise<{ ok: boolean; updated: number; error?: string }> {
+  if (dataB64.length > 750_000) {
+    return { ok: false, updated: 0, error: "Image too large (max ~500 KB)." };
+  }
+  const rs = await db.execute({
+    sql: "SELECT id FROM parts WHERE item_id = ? ORDER BY channel_msg_id",
+    args: [itemId],
+  });
+  if (!rs.rows.length) {
+    return { ok: false, updated: 0, error: "No parts found for this item." };
+  }
+  let updated = 0;
+  for (const row of rs.rows) {
+    const partId = Number(row[0]);
+    await db.execute({
+      sql: `INSERT INTO thumbnails (part_id, mime, data) VALUES (?, ?, ?)
+            ON CONFLICT(part_id) DO UPDATE SET mime = excluded.mime, data = excluded.data`,
+      args: [partId, mime, dataB64],
+    });
+    updated++;
+  }
+  revalidatePath("/");
+  return { ok: true, updated };
+}
+
+async function botOnline(): Promise<boolean> {
+  try {
+    const rs = await db.execute("SELECT last_seen FROM bot_heartbeat WHERE id = 1");
+    if (!rs.rows.length) return false;
+    const ms = new Date(String(rs.rows[0].last_seen).replace(" ", "T") + "Z").getTime();
+    return Date.now() - ms < 30000;
+  } catch {
+    return false;
+  }
+}
+
+export async function startBot(): Promise<{ ok: boolean; already?: boolean; error?: string }> {
+  if (await botOnline()) return { ok: true, already: true };
+  try {
+    const out = openSync(path.join(WATCHER_DIR, "bot.log"), "a");
+    const child = spawn(PYTHON_BIN, ["-u", "bot.py"], {
+      cwd: WATCHER_DIR,
+      detached: true,
+      windowsHide: true,
+      shell: true,
+      stdio: ["ignore", out, out],
+    });
+    child.unref();
+    if (child.pid) {
+      try {
+        writeFileSync(BOT_PID_FILE, String(child.pid));
+      } catch {
+        /* ignore */
+      }
+      await db.execute(
+        "INSERT INTO bot_heartbeat (id, last_seen, status) VALUES (1, datetime('now'), 'idle') " +
+          "ON CONFLICT(id) DO UPDATE SET last_seen=datetime('now'), status='idle'"
+      );
+    }
+    revalidatePath("/upload");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Failed to start bot." };
+  }
+}
+
+export async function stopBot(): Promise<{ ok: boolean; error?: string }> {
+  let pid = "";
+  try {
+    if (existsSync(BOT_PID_FILE)) pid = readFileSync(BOT_PID_FILE, "utf8").trim();
+  } catch {
+    /* ignore */
+  }
+  if (!pid || !/^\d+$/.test(pid)) {
+    return {
+      ok: false,
+      error: "Bot PID unknown (may have been started manually). Close it via the bot window.",
+    };
+  }
+  try {
+    await killTree(Number(pid));
+    try {
+      rmSync(BOT_PID_FILE);
+    } catch {
+      /* ignore */
+    }
+    await db.execute(
+      "UPDATE bot_heartbeat SET last_seen = datetime('now','-1 hour'), status = NULL WHERE id = 1"
+    );
+    revalidatePath("/upload");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Failed to stop bot." };
   }
 }

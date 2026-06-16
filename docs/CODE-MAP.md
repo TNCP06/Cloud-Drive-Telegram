@@ -1,0 +1,142 @@
+# Code Map — file & function reference
+
+Where things live and what each function does. Pair with [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+(concepts) and [`BUSINESS-FLOWS.md`](./BUSINESS-FLOWS.md) (operations). Line counts are
+approximate and will drift — treat function names as the stable anchor.
+
+---
+
+## `bot/` — Python (Telegram bridge)
+
+### `bot.py` — indexer + download server + purge (long-running, `python-telegram-bot`)
+Pure helpers (no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
+(`media` vs `game`), `get_file_meta`, `derive_media_meta` (media caption fallback),
+`pick_thumb_file_id`.
+Turso ops (idempotent): `upsert_item` (`set_title` guard for albums), `upsert_part` (keyed on
+`channel_msg_id`), `recompute_totals`, `sync_tags`, `upsert_thumbnail`.
+Handlers: `on_channel_post` (index, Flow C), `harvest_thumbnail` (if the post has no thumbnail
+yet — common for video, which Telegram generates asynchronously — it schedules
+`_deferred_harvest` instead of giving up), `_deferred_harvest` (background task: wait 60 s, then
+`forward_message` to owner chat to re-fetch the now-generated thumbnail, store it, delete the
+forward), `on_start` (download via `copy_message`, owner-only), `on_private_file` (Bot Drop
+intake), `purge_job` (daily trash purge), `bot_heartbeat_job` (writes to `bot_heartbeat` every
+10 s — web UI liveness check).
+Lifecycle: `post_init`/`post_shutdown` (Turso client), `main` (handler registration +
+`run_daily` + `run_repeating` heartbeat). **Env:** `BOT_TOKEN`, `STORAGE_CHANNEL_ID`,
+`OWNER_USER_ID`, `TURSO_*`.
+
+### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
+Handles two job origins (`upload_jobs.origin`):
+- **`local`** — file already on this machine. game → `split_game` (7-Zip); media → whole file.
+- **`upload`** — file pushed via the web resumable endpoint into the shared staging dir.
+  game > part_size → **raw streaming split, no 7-Zip** (`write_window` copies one <2 GB byte
+  window → upload → delete it → next); media/small → whole file. On success the staging dir is
+  removed (`cleanup_source`).
+
+`claim_next` (oldest `pending` → `running`; **preserves `parts_done`** so retries resume),
+`set_progress`/`set_status`, `set_parts_done` (per-part checkpoint), `split_game` (local 7-Zip),
+`resolve_staged_file` (the single file inside an upload's staging dir), `write_window` (raw byte
+window copy, 8 MB buffer), `make_video_thumbnail` (ffmpeg frame at 1 s → temp JPEG),
+`_store_thumbnails` (background: poll `parts` ~70 s, `INSERT OR IGNORE` thumbnail),
+`process` (build plan `list`/`stream` → upload each part, checkpoint after each, cleanup temp
+parts + staging dir on success), `resolve_channel`, `heartbeat` (10 s), `main` (poll loop, 5 s).
+Writes `watcher.pid`. **`ffmpeg`** for media thumbnails; **7-Zip only for `local` games**.
+Imports `normalize_tags, build_caption, safe_name, collect_parts` from `worker.py`.
+
+### `worker.py` — standalone upload CLI (Telethon, **laptop**)
+Same upload logic as the watcher but argparse-driven (`game` / `media` subcommands).
+`normalize_tags`, `build_caption`, `safe_name`, `split_with_7zip` (calls `sys.exit` on error —
+contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`, `upload_parts`,
+`run`, `main`.
+
+### Supporting scripts
+- `login.py` — one-time Telethon login → creates `worker.session`.
+- `schema.sql` — full Turso schema (run once). `migration-tags-color.sql` + `run-migration.py`
+  — adds `tags.color`. `migration-bot-heartbeat.sql` — adds `bot_heartbeat` table.
+  `migration-staged-uploads.sql` — adds `origin`/`cleanup_source`/`parts_done`/`total_bytes` to
+  `upload_jobs` (browser-upload support). `status.py` — quick DB status dump.
+- `run-all.cmd` — start bot + watcher minimized (Windows). `install-autostart.ps1` /
+  `uninstall-autostart.ps1` — Windows startup registration.
+- `Dockerfile` — shared image for bot + watcher (ffmpeg + p7zip). See root
+  `docker-compose.yml` and [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the server/VPS deployment.
+
+---
+
+## `web/` — Next.js 15 (App Router, React 19, server actions)
+
+### `web/lib/` — server-side data & helpers
+- `db.ts` — `@libsql/client` singleton (`server-only`; auth token never reaches the browser).
+- `types.ts` — `Kind`, `Tag`, `DriveFile` (UI shape), `UploadJob` (now incl. `origin`,
+  `partsDone`, `totalBytes`), `UploadOrigin`, `UploadStatus`, `WatcherStatus`,
+  `FsEntry`/`FsListing`/`FsShortcut`.
+- `staging.ts` — shared resumable-upload staging paths. `STAGING_ROOT`
+  (`UPLOAD_STAGING_DIR`, `/staging` in Docker), `jobDir(token)`, `stagedFilePath(token,name)`
+  with strict token/path-traversal guards. Used by the upload API + the watcher reads the same dir.
+- `items.ts` — `getDriveData()`: the main read. One batched query set → shapes `DriveFile[]` +
+  `Tag[]`. Computes each item's **cover** thumbnail (first part by `channel_msg_id`) and, for
+  games, splits title into `family`/`version` via `parseTitle`.
+- `version.ts` — `parseTitle()`: split a game title into `family` + `version` (e.g.
+  `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Games only.
+- `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and kind metadata.
+- `format.ts` — `sqliteToMs()` (SQLite datetime→epoch ms), byte/size formatting.
+- `uploads.ts` — `getUploadJobs()`, `getWatcherStatus()`, `getBotStatus()` — read helpers
+  for the `/upload` page (watcher + bot liveness via their heartbeat tables).
+- `gallery-cache.ts` — in-memory cache for `getGallery` results. `icons.tsx` — SVG icons.
+
+### `web/app/` — routes & server actions
+- `actions.ts` — **the metadata + control API** (all `"use server"`). Item: `toggleFavorite`,
+  `softDelete`, `restore`, `purgeNow` (on-demand permanent delete of a trashed item — Telegram
+  `deleteMessage` + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
+  intentionally NOT changed on rename).
+  Tags: `listTags`, `createTag`, `recolorTag`, `renameTag` (merge-aware), `deleteTag`.
+  Gallery: `getGallery` (all parts' thumbnails on demand). Upload queue: `enqueueUpload`
+  (local path), `cancelUpload`, `startUpload`, `retryUpload` (error→pending, keeps `parts_done`
+  → resumes from checkpoint), `startAllUploads`, `clearFinishedUploads`. Process control:
+  `killTree` (cross-platform: `taskkill` on Windows, process-group `kill` on Linux),
+  `watcherOnline`, `startWatcher`, `stopWatcher`; `botOnline`, `startBot`, `stopBot` — only
+  work when web + scripts share a machine (laptop mode); under Docker the processes are
+  compose-managed services.
+  Thumbnail repair: `reharvestThumbnail(itemId)` — forwards each part's channel message to
+  owner chat via Bot API `forwardMessage`, extracts `video.thumbnail.file_id`, downloads via
+  `getFile`, stores in `thumbnails`, deletes forward. Fixes thumbnails missed at index time.
+  `uploadThumbnail(itemId, mime, dataB64)` — manually sets a base64 thumbnail image for all
+  parts of an item (fallback when Telegram never generated one, e.g. unsupported codec).
+- `fs-actions.ts` — `listDir()`: reads the **laptop's real disk** for the upload file picker
+  (shortcuts, drive letters, symlink/junction resolution, 3000-entry cap). Localhost-only by
+  design — do not expose publicly.
+- `upload-bot/actions.ts` — `processBotDrop()`: Bot Drop finisher; `copyMessage` (HTTP Bot API)
+  from the bot PM into the channel with the contract caption.
+- `api/upload/route.ts` — **resumable chunk receiver** (`nodejs` runtime). `GET` returns the
+  bytes already staged (resume point); `POST ?offset=` appends a chunk, replies `409` with the
+  real offset if out of sync. `api/upload/complete/route.ts` — verifies the staged file size,
+  then inserts an `upload_jobs` row (`origin='upload'`, `cleanup_source=1`).
+- `page.tsx` (main grid), `trash/page.tsx`, `upload/page.tsx`, `upload-bot/page.tsx`,
+  `login/` (`page.tsx` + `actions.ts` + `LoginForm.tsx`). `loading.tsx`/`error.tsx` per route.
+
+### `web/` — auth & config
+- `lib/auth.ts` — `AUTH_COOKIE`, `sha256Hex` (shared by edge middleware + actions).
+- `middleware.ts` — gate all routes on `SHA-256(APP_PASSWORD)` cookie; **no `APP_PASSWORD` ⇒
+  auth off**.
+
+### `web/components/` — UI (client)
+- `DriveApp.tsx` — top-level app shell/state (largest component). `Sidebar.tsx` — nav/filters.
+- `FileViews.tsx` — grid/list rendering of `DriveFile`s. `PreviewDrawer.tsx` — item detail +
+  on-demand gallery (`getGallery`). `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
+- `UploadManager.tsx` — upload queue UI + watcher/bot start/stop; **Source toggle**: "Upload
+  from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).
+  `FileUploader.tsx` — **resumable browser uploader** (16 MB chunks, auto-resume on drop via
+  server offset, progress/speed, Retry). `TagManager.tsx` / `TagPicker.tsx` — category library +
+  chip picker. `AppSkeleton.tsx` — loading skeleton.
+
+---
+
+## Cross-cutting conventions
+
+- **Web ↔ laptop is async via tables only.** `upload_jobs` (commands), `watcher_heartbeat`
+  (liveness). No direct RPC.
+- **Idempotency keys:** `parts.channel_msg_id` (re-index safe + `copy_message` target),
+  `items.slug` (multi-part grouping + download deep link; never re-written).
+- **Error surfacing:** the bot DMs `OWNER_USER_ID` on un-indexable game captions and on purge
+  summaries, so nothing fails silently.
+- **Turso connection:** `libsql://` is rewritten to `https://` in the Python side (WebSocket
+  transport is rejected with HTTP 400).

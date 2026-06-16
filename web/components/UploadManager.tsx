@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Icon } from "@/lib/icons";
 import { fmtDate } from "@/lib/format";
-import type { Kind, Tag, UploadJob, UploadStatus, WatcherStatus } from "@/lib/types";
+import type { BotStatus, Kind, Tag, UploadJob, UploadStatus, WatcherStatus } from "@/lib/types";
 import { TagPicker } from "@/components/TagPicker";
 import {
   enqueueUpload,
@@ -13,10 +13,16 @@ import {
   clearFinishedUploads,
   startUpload,
   startAllUploads,
+  retryUpload,
   startWatcher,
   stopWatcher,
+  startBot,
+  stopBot,
 } from "@/app/actions";
 import { FsBrowser } from "@/components/FsBrowser";
+import { FileUploader } from "@/components/FileUploader";
+
+type UploadMode = "device" | "laptop";
 
 const STATUS_LABEL: Record<UploadStatus, string> = {
   queued: "Queued",
@@ -36,10 +42,12 @@ function deriveTitle(p: string): string {
 export function UploadManager({
   jobs,
   watcher,
+  bot,
   allTags = [],
 }: {
   jobs: UploadJob[];
   watcher: WatcherStatus;
+  bot: BotStatus;
   allTags?: Tag[];
 }) {
   const router = useRouter();
@@ -54,9 +62,12 @@ export function UploadManager({
   const [partSize, setPartSize] = useState(1500);
   const [err, setErr] = useState<string | null>(null);
   const [browse, setBrowse] = useState(false);
+  const [mode, setMode] = useState<UploadMode>("device");
 
   const [watcherBusy, setWatcherBusy] = useState(false);
   const [watcherErr, setWatcherErr] = useState<string | null>(null);
+  const [botBusy, setBotBusy] = useState(false);
+  const [botErr, setBotErr] = useState<string | null>(null);
 
   // Always poll so watcher status and upload progress stay live (faster when there are active jobs).
   const hasActive = activeCount > 0;
@@ -109,6 +120,30 @@ export function UploadManager({
     }
   };
 
+  const onStartBot = async () => {
+    setBotErr(null);
+    setBotBusy(true);
+    try {
+      const r = await startBot();
+      if (!r.ok) setBotErr(r.error ?? "Failed to start bot.");
+    } finally {
+      setBotBusy(false);
+      router.refresh();
+    }
+  };
+
+  const onStopBot = async () => {
+    setBotErr(null);
+    setBotBusy(true);
+    try {
+      const r = await stopBot();
+      if (!r.ok) setBotErr(r.error ?? "Failed to stop bot.");
+    } finally {
+      setBotBusy(false);
+      router.refresh();
+    }
+  };
+
   return (
     <div className="up-wrap scroll">
       <div className="up-inner">
@@ -124,10 +159,10 @@ export function UploadManager({
         <div className="up-warn">
           <Icon name="warn" size={20} />
           <div>
-            <strong>Laptop must be on &amp; watcher active.</strong> Large files are uploaded from
-            the laptop (via Telegram MTProto), <em>not</em> from this browser. The form below only
-            queues the job — then start the watcher (button below) and click <b>Start</b>. Do not
-            turn off the laptop while the status is still <b>Uploading</b>.
+            <strong>The watcher must be running.</strong> Files you choose here upload to the
+            server first (resumable — a dropped connection resumes, it won&apos;t restart). The
+            watcher then splits anything over 2 GB into parts and pushes them to Telegram, deleting
+            the staged file when done. Keep this tab open until the upload shows <b>Queued</b>.
           </div>
         </div>
 
@@ -154,6 +189,27 @@ export function UploadManager({
           )}
         </div>
         {watcherErr && <div className="up-err">{watcherErr}</div>}
+
+        {/* BOT STATUS + CONTROL */}
+        <div className="watcher-row">
+          <span className={"wdot " + (bot.online ? "on" : "off")} />
+          <span className="wlabel">
+            {bot.online ? "Bot indexer active" : "Bot indexer offline"}
+          </span>
+          {bot.online ? (
+            <button className="btn subtle sm wbtn" onClick={onStopBot} disabled={botBusy}>
+              {botBusy ? <span className="spinner sm" /> : <Icon name="power" size={14} />}
+              Stop bot
+            </button>
+          ) : (
+            <button className="btn primary sm wbtn" onClick={onStartBot} disabled={botBusy}>
+              {botBusy ? <span className="spinner sm" /> : <Icon name="power" size={14} />}
+              Start bot
+            </button>
+          )}
+        </div>
+        {botErr && <div className="up-err">{botErr}</div>}
+
         {activeCount > 0 && !watcher.online && (
           <div className="up-warn danger">
             <Icon name="warn" size={20} />
@@ -195,26 +251,6 @@ export function UploadManager({
             />
           </div>
 
-          <div className="field">
-            <label>{kind === "game" ? "Game folder" : "Media file"} on laptop</label>
-            <div className="pick-row">
-              <button type="button" className="btn" onClick={() => setBrowse(true)}>
-                <Icon name={kind === "game" ? "folder" : "upload"} size={16} />
-                Browse laptop…
-              </button>
-              <input
-                className="input"
-                value={sourcePath}
-                onChange={(e) => setSourcePath(e.target.value)}
-                placeholder="path auto-filled — or paste manually: C:\…"
-              />
-            </div>
-            <div className="pick-note">
-              Browse directly to the folder/file on the laptop — the full path (including OneDrive)
-              is filled in automatically. No manual copy-paste needed.
-            </div>
-          </div>
-
           <div className="up-row">
             <div className="field" style={{ flex: 1 }}>
               <label>Categories</label>
@@ -228,20 +264,67 @@ export function UploadManager({
                   type="number"
                   value={partSize}
                   min={50}
+                  max={1990}
                   onChange={(e) => setPartSize(parseInt(e.target.value) || 1500)}
                 />
               </div>
             )}
           </div>
 
-          {err && <div className="up-err">{err}</div>}
-
-          <div className="up-actions">
-            <button className="btn primary" onClick={submit} disabled={isPending}>
-              {isPending ? <span className="spinner sm" /> : <Icon name="plus" size={16} stroke={2} />}
-              Add to queue
-            </button>
+          {/* SOURCE: upload from this device (default) or reference a path on the host */}
+          <div className="field">
+            <label>Source</label>
+            <div className="seg-radio">
+              <button className={mode === "device" ? "on" : ""} onClick={() => setMode("device")}>
+                <Icon name="upload" size={15} /> Upload from this device
+              </button>
+              <button className={mode === "laptop" ? "on" : ""} onClick={() => setMode("laptop")}>
+                <Icon name="folder" size={15} /> Host path (advanced)
+              </button>
+            </div>
           </div>
+
+          {mode === "device" ? (
+            <FileUploader
+              key={kind}
+              kind={kind}
+              title={title}
+              tags={tags}
+              partSize={partSize}
+              onQueued={() => router.refresh()}
+            />
+          ) : (
+            <>
+              <div className="field">
+                <label>{kind === "game" ? "Game folder/archive" : "Media file"} path on the host</label>
+                <div className="pick-row">
+                  <button type="button" className="btn" onClick={() => setBrowse(true)}>
+                    <Icon name={kind === "game" ? "folder" : "upload"} size={16} />
+                    Browse…
+                  </button>
+                  <input
+                    className="input"
+                    value={sourcePath}
+                    onChange={(e) => setSourcePath(e.target.value)}
+                    placeholder="path on the machine running the watcher: C:\… or /data/…"
+                  />
+                </div>
+                <div className="pick-note">
+                  Reads a file already on the machine that runs the watcher (no transfer). Use this
+                  only when the web and watcher run on the same computer as the files.
+                </div>
+              </div>
+
+              {err && <div className="up-err">{err}</div>}
+
+              <div className="up-actions">
+                <button className="btn primary" onClick={submit} disabled={isPending}>
+                  {isPending ? <span className="spinner sm" /> : <Icon name="plus" size={16} stroke={2} />}
+                  Add to queue
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         {/* QUEUE */}
@@ -271,6 +354,7 @@ export function UploadManager({
                 job={j}
                 onCancel={() => startTransition(() => cancelUpload(j.id))}
                 onStart={() => startTransition(() => startUpload(j.id))}
+                onRetry={() => startTransition(() => retryUpload(j.id))}
               />
             ))}
           </div>
@@ -295,10 +379,12 @@ function JobRow({
   job,
   onCancel,
   onStart,
+  onRetry,
 }: {
   job: UploadJob;
   onCancel: () => void;
   onStart: () => void;
+  onRetry: () => void;
 }) {
   return (
     <div className="up-job">
@@ -306,6 +392,7 @@ function JobRow({
       <div className="up-job-main">
         <div className="up-job-title">
           {job.title} <span className="up-kind">{job.kind}</span>
+          {job.origin === "upload" && <span className="up-kind">uploaded</span>}
         </div>
         <div className="up-job-path" title={job.sourcePath}>{job.sourcePath}</div>
         {job.status === "running" && (
@@ -331,6 +418,11 @@ function JobRow({
         {job.status === "pending" && (
           <button className="btn subtle sm" onClick={onCancel}>
             Cancel
+          </button>
+        )}
+        {job.status === "error" && (
+          <button className="btn primary sm" onClick={onRetry}>
+            Retry
           </button>
         )}
       </div>
