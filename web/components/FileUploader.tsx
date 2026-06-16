@@ -25,7 +25,7 @@ function tokenFor(f: File) {
   const key = "tcd_up_" + fileSig(f);
   let t = localStorage.getItem(key);
   if (!t) {
-    t = (crypto.randomUUID?.() ?? String(Date.now()) + Math.random()).replace(/-/g, "");
+    t = (crypto.randomUUID?.() ?? String(Date.now()) + Math.random()).replace(/[-.]/g, "");
     localStorage.setItem(key, t);
   }
   return t;
