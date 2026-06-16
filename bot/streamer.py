@@ -37,9 +37,10 @@ from pathlib import Path
 
 import libsql_client
 import uvicorn
+import telethon.errors
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from telethon import TelegramClient
 
 # ---------------------------------------------------------------------------
@@ -242,11 +243,22 @@ async def _download_chunk(channel_msg_id: int, chunk_index: int,
         raise ValueError(f"Message {channel_msg_id} has no media")
 
     data = bytearray()
-    async for piece in tg_client.iter_download(
-        msg.media, offset=byte_offset,
-        request_size=DOWNLOAD_REQUEST_SIZE, limit=chunk_bytes,
-    ):
-        data.extend(piece)
+    try:
+        async for piece in tg_client.iter_download(
+            msg.media, offset=byte_offset,
+            request_size=DOWNLOAD_REQUEST_SIZE, limit=chunk_bytes,
+        ):
+            data.extend(piece)
+    except telethon.errors.FloodError as e:
+        wait_time = getattr(e, 'seconds', 5)
+        log.warning("Telegram flood wait: %ds. Sleeping...", wait_time)
+        await asyncio.sleep(wait_time)
+        data = bytearray()
+        async for piece in tg_client.iter_download(
+            msg.media, offset=byte_offset,
+            request_size=DOWNLOAD_REQUEST_SIZE, limit=chunk_bytes,
+        ):
+            data.extend(piece)
 
     return bytes(data)
 
@@ -496,16 +508,27 @@ async def stream(part_id: int, request: Request):
     # Update play position for prefetch
     _last_request_pos[part_id] = first_chunk
 
-    # --- 4. Gather bytes ---
-    result = bytearray()
-    for ci in range(first_chunk, last_chunk + 1):
-        chunk_data = await _ensure_chunk(part_id, channel_msg_id, ci, total_size)
+    # --- 4. Return StreamingResponse to send headers immediately and yield bytes
+    async def byte_generator():
+        for ci in range(first_chunk, last_chunk + 1):
+            try:
+                chunk_data = await _ensure_chunk(part_id, channel_msg_id, ci, total_size)
+            except asyncio.CancelledError:
+                # Client disconnected, stop generating
+                raise
+            except Exception as e:
+                log.error("Error generating chunk %d: %s", ci, e)
+                break
 
-        # Slice within the chunk
-        chunk_start_byte = ci * CHUNK_SIZE
-        slice_start = max(start - chunk_start_byte, 0)
-        slice_end = min(end - chunk_start_byte + 1, len(chunk_data))
-        result.extend(chunk_data[slice_start:slice_end])
+            # Slice within the chunk
+            chunk_start_byte = ci * CHUNK_SIZE
+            slice_start = max(start - chunk_start_byte, 0)
+            slice_end = min(end - chunk_start_byte + 1, len(chunk_data))
+            
+            if slice_start < slice_end:
+                yield chunk_data[slice_start:slice_end]
+
+    content_length = end - start + 1
 
     # --- 5. Start prefetch from next chunk ---
     prefetch_from = last_chunk + 1
@@ -514,9 +537,8 @@ async def stream(part_id: int, request: Request):
                         prefetch_from, total_chunks, total_size)
 
     # --- 6. Build 206 response ---
-    content_length = end - start + 1
-    return Response(
-        content=bytes(result),
+    return StreamingResponse(
+        byte_generator(),
         status_code=206,
         headers={
             "Content-Range": f"bytes {start}-{end}/{total_size}",
