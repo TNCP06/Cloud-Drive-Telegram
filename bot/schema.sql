@@ -56,21 +56,30 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Antrian upload dari web → dieksekusi oleh watcher.py di laptop (Telethon).
--- File asli ada di laptop; web hanya mencatat path + metadata.
+-- Antrian upload dari web → dieksekusi oleh watcher.py.
+-- Dua origin:
+--   'local'  : file ada di mesin watcher (laptop), source_path = path lokal. Source TIDAK dihapus.
+--   'upload' : file di-upload lewat browser (resumable) ke folder staging yang dibagi
+--              antara web & watcher. source_path = path file ter-stage. cleanup_source=1
+--              → watcher menghapus file staging setelah sukses.
 CREATE TABLE IF NOT EXISTS upload_jobs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind        TEXT NOT NULL CHECK (kind IN ('game','media')),
-    title       TEXT NOT NULL,
-    tags        TEXT NOT NULL DEFAULT '',
-    source_path TEXT NOT NULL,                  -- path file/folder DI LAPTOP
-    part_size   INTEGER NOT NULL DEFAULT 1500,  -- MB (khusus game)
-    status      TEXT NOT NULL DEFAULT 'queued'
-                  CHECK (status IN ('queued','pending','running','done','error','canceled')),
-    progress    INTEGER NOT NULL DEFAULT 0,     -- 0..100
-    message     TEXT,                           -- detail/error
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind           TEXT NOT NULL CHECK (kind IN ('game','media')),
+    title          TEXT NOT NULL,
+    tags           TEXT NOT NULL DEFAULT '',
+    source_path    TEXT NOT NULL,                  -- path lokal (local) / file staging (upload)
+    part_size      INTEGER NOT NULL DEFAULT 1500,  -- MB (khusus game)
+    origin         TEXT NOT NULL DEFAULT 'local'   -- 'local' | 'upload'
+                     CHECK (origin IN ('local','upload')),
+    cleanup_source INTEGER NOT NULL DEFAULT 0,     -- 1 = hapus source_path setelah sukses
+    parts_done     INTEGER NOT NULL DEFAULT 0,     -- checkpoint: jumlah part yang sudah ter-upload (untuk resume)
+    total_bytes    INTEGER NOT NULL DEFAULT 0,     -- ukuran file (untuk display)
+    status         TEXT NOT NULL DEFAULT 'queued'
+                     CHECK (status IN ('queued','pending','running','done','error','canceled')),
+    progress       INTEGER NOT NULL DEFAULT 0,     -- 0..100
+    message        TEXT,                           -- detail/error
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Heartbeat watcher: web pakai ini untuk menampilkan status "aktif/tidak aktif".

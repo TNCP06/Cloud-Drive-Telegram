@@ -330,11 +330,50 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def _deferred_harvest(bot, db, part_id: int, channel_msg_id: int):
+    """Background task: wait 60 s then re-fetch the message via forwardMessage to get
+    the thumbnail Telegram generates asynchronously after the file is processed."""
+    await asyncio.sleep(60)
+    fwd_msg_id = None
+    try:
+        fwd = await bot.forward_message(
+            chat_id=OWNER_USER_ID,
+            from_chat_id=STORAGE_CHANNEL_ID,
+            message_id=channel_msg_id,
+        )
+        fwd_msg_id = fwd.message_id
+        file_id = pick_thumb_file_id(fwd)
+        if file_id:
+            tg_file = await bot.get_file(file_id)
+            buf = io.BytesIO()
+            await tg_file.download_to_memory(out=buf)
+            data_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            await upsert_thumbnail(db, part_id, "image/jpeg", data_b64)
+            log.info("Deferred thumbnail harvested for part_id=%s", part_id)
+        else:
+            log.info("Deferred harvest: still no thumbnail for part_id=%s (unsupported codec?)", part_id)
+    except Exception:  # noqa: BLE001
+        log.exception("Deferred thumbnail harvest failed for part_id=%s", part_id)
+    finally:
+        if fwd_msg_id is not None:
+            try:
+                await bot.delete_message(chat_id=OWNER_USER_ID, message_id=fwd_msg_id)
+            except Exception:  # noqa: BLE001
+                pass
+
+
 async def harvest_thumbnail(context, db, part_id, message):
-    """Download Telegram's built-in thumbnail for ONE part → base64 → thumbnails table."""
+    """Download Telegram's built-in thumbnail for ONE part → base64 → thumbnails table.
+
+    If the thumbnail is not yet available (Telegram generates it asynchronously),
+    schedules a deferred retry after 60 s.
+    """
     file_id = pick_thumb_file_id(message)
     if not file_id:
-        log.info("Media has no thumbnail (part_id=%s), skipping", part_id)
+        log.info("No thumbnail yet for part_id=%s — scheduling deferred harvest in 60 s", part_id)
+        asyncio.create_task(
+            _deferred_harvest(context.bot, db, part_id, message.message_id)
+        )
         return
     tg_file = await context.bot.get_file(file_id)
     buf = io.BytesIO()
@@ -401,6 +440,20 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # JobQueue — daily purge of trashed items older than 7 days
 # ---------------------------------------------------------------------------
+async def bot_heartbeat_job(context: ContextTypes.DEFAULT_TYPE):
+    db = context.bot_data.get("db")
+    if db is None:
+        return
+    try:
+        await db.execute(
+            "INSERT INTO bot_heartbeat (id, last_seen, status) VALUES (1, datetime('now'), 'idle') "
+            "ON CONFLICT(id) DO UPDATE SET last_seen=datetime('now'), status=excluded.status",
+            [],
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("Failed to write bot heartbeat")
+
+
 async def purge_job(context: ContextTypes.DEFAULT_TYPE):
     db = context.bot_data["db"]
     rs = await db.execute(
@@ -516,6 +569,9 @@ def main():
             on_channel_post,
         )
     )
+
+    # Heartbeat: write to bot_heartbeat every 10 s so the web UI knows the bot is alive.
+    app.job_queue.run_repeating(bot_heartbeat_job, interval=10, first=5)
 
     # Daily purge of trashed items older than 7 days (03:00 UTC).
     app.job_queue.run_daily(purge_job, time=dtime(hour=3, minute=0))

@@ -1,0 +1,54 @@
+# Telegram Cloud Drive — full stack for a VPS / AWS EC2.
+#
+# Portable by design: to move to ANOTHER host later, copy this repo + your `.env` +
+# `bot/worker.session`, then run `docker compose up -d --build`. Nothing is tied to a
+# specific cloud — only Turso (managed) lives outside.
+#
+# Before first run:
+#   1) cp .env.example .env   and fill it in
+#   2) make sure bot/worker.session exists (run the Telethon login once) — it is
+#      bind-mounted into the watcher so it survives rebuilds.
+#   3) apply bot/migration-staged-uploads.sql to your Turso DB.
+#
+# web & watcher share the `staging` volume: the browser uploads land in /staging,
+# the watcher reads them there and deletes them after pushing to Telegram.
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        NEXT_PUBLIC_BOT_USERNAME: ${NEXT_PUBLIC_BOT_USERNAME:-}
+    env_file: .env
+    environment:
+      UPLOAD_STAGING_DIR: /staging
+    ports:
+      - "3000:3000"
+    volumes:
+      - staging:/staging
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    command: ["python", "-u", "bot.py"]
+    env_file: .env
+    restart: unless-stopped
+
+  watcher:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    command: ["python", "-u", "watcher.py"]
+    env_file: .env
+    environment:
+      WORKER_OUT_DIR: /staging/_parts
+    volumes:
+      - staging:/staging
+      - ./bot/worker.session:/app/worker.session
+    restart: unless-stopped
+
+volumes:
+  staging:

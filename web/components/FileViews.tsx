@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@/lib/icons";
 import { KINDS, TAG_COLORS } from "@/lib/kinds";
@@ -110,7 +111,7 @@ export function FileCard({ item, tags, onStar, onMenu, onOpen, versionCount, onP
 
       <div className="thumb">
         {item.thumb ? (
-          <img src={item.thumb} alt="" loading="lazy" />
+          <Image src={item.thumb!} alt="" fill unoptimized />
         ) : (
           <TypeTile kind={item.kind} size={40} />
         )}

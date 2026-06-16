@@ -37,6 +37,7 @@ const PATHS: Record<string, string> = {
   home: '<path d="M4 11.2 12 4.6l8 6.6"/><path d="M6 10v9h12v-9"/>',
   drive: '<rect x="3.5" y="6.5" width="17" height="11" rx="2"/><path d="M6.5 14h7"/><circle cx="17" cy="14" r=".9" fill="currentColor" stroke="none"/>',
   edit: '<path d="M4 20h4l10.5-10.5a2 2 0 000-2.83l-1.17-1.17a2 2 0 00-2.83 0L4 16v4z"/><path d="M13.5 6.5l4 4"/>',
+  refresh: '<path d="M4.5 12a7.5 7.5 0 107.5-7.5c-2.5 0-4.7 1.2-6 3M4.5 7.5v4h4"/>',
 };
 
 export function Icon({

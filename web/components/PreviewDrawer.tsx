@@ -1,12 +1,64 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import Image from "next/image";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Icon } from "@/lib/icons";
 import { KINDS, TAG_COLORS } from "@/lib/kinds";
 import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import { getCachedGallery, loadGallery } from "@/lib/gallery-cache";
 import { TagPicker } from "./TagPicker";
+import { reharvestThumbnail, uploadThumbnail } from "@/app/actions";
 import type { DriveFile, Kind, Tag } from "@/lib/types";
+
+const THUMB_MAX_DIM = 320;
+const THUMB_QUALITY = 0.85;
+
+async function resizeToJpeg(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, THUMB_MAX_DIM / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.round(img.naturalWidth * scale);
+      const h = Math.round(img.naturalHeight * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext("2d")!.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL("image/jpeg", THUMB_QUALITY));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Cannot load image.")); };
+    img.src = url;
+  });
+}
+
+async function videoFrameToJpeg(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    const url = URL.createObjectURL(file);
+    video.muted = true;
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      video.currentTime = video.duration > 2 ? 1 : video.duration / 2;
+    };
+    video.onseeked = () => {
+      const vw = video.videoWidth || THUMB_MAX_DIM;
+      const vh = video.videoHeight || THUMB_MAX_DIM;
+      const scale = Math.min(1, THUMB_MAX_DIM / Math.max(vw, vh));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(vw * scale);
+      canvas.height = Math.round(vh * scale);
+      canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL("image/jpeg", THUMB_QUALITY));
+    };
+    video.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Browser cannot decode this video format.")); };
+    setTimeout(() => { URL.revokeObjectURL(url); reject(new Error("Video load timed out.")); }, 20_000);
+    video.src = url;
+  });
+}
 
 export function PreviewDrawer({
   item,
@@ -18,6 +70,7 @@ export function PreviewDrawer({
   onClose,
   onStar,
   onTrash,
+  onPurge,
   onRestore,
   onSave,
 }: {
@@ -30,9 +83,11 @@ export function PreviewDrawer({
   onClose: () => void;
   onStar: (item: DriveFile) => void;
   onTrash: (item: DriveFile) => void;
+  onPurge: (item: DriveFile) => void;
   onRestore: (item: DriveFile) => void;
   onSave: (item: DriveFile, input: { title: string; kind: Kind; tags: string }) => void;
 }) {
+  const router = useRouter();
   const meta = KINDS[item.kind];
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
 
@@ -40,6 +95,9 @@ export function PreviewDrawer({
   const [title, setTitle] = useState(item.name);
   const [kind, setKind] = useState<Kind>(item.kind);
   const [tagsText, setTagsText] = useState(itemTags.map((t) => t.name).join(", "));
+  const [thumbBusy, setThumbBusy] = useState(false);
+  const [thumbMsg, setThumbMsg] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // Initialise from cache — if the gallery was already loaded (or pre-fetched),
   // all photos appear instantly on first render without a cover flash.
   const [gallery, setGallery] = useState<string[] | null>(() =>
@@ -56,7 +114,53 @@ export function PreviewDrawer({
     setTitle(item.name);
     setKind(item.kind);
     setTagsText(item.tags.map((id) => tags.find((t) => t.id === id)?.name).filter(Boolean).join(", "));
+    setThumbMsg(null);
   }, [item.id, item.name, item.kind, item.tags, tags]);
+
+  const onRefreshThumb = async () => {
+    setThumbBusy(true);
+    setThumbMsg(null);
+    try {
+      const r = await reharvestThumbnail(item.id);
+      if (r.harvested > 0) {
+        router.refresh();
+        setThumbMsg(`Thumbnail fetched (${r.harvested} part${r.harvested > 1 ? "s" : ""}).`);
+      } else if (!r.error) {
+        setThumbMsg("Thumbnail already up-to-date.");
+      } else {
+        setThumbMsg(r.error);
+      }
+    } catch {
+      setThumbMsg("Failed — check bot logs.");
+    } finally {
+      setThumbBusy(false);
+    }
+  };
+
+  const onUploadThumb = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setThumbBusy(true);
+    setThumbMsg(file.type.startsWith("video/") ? "Extracting frame…" : "Resizing…");
+    try {
+      const dataUrl = file.type.startsWith("video/")
+        ? await videoFrameToJpeg(file)
+        : await resizeToJpeg(file);
+      const b64 = dataUrl.split(",")[1];
+      const r = await uploadThumbnail(item.id, "image/jpeg", b64);
+      if (r.ok) {
+        router.refresh();
+        setThumbMsg(`Saved (${r.updated} part${r.updated !== 1 ? "s" : ""}).`);
+      } else {
+        setThumbMsg(r.error ?? "Upload failed.");
+      }
+    } catch (err) {
+      setThumbMsg(err instanceof Error ? err.message : "Failed to process file.");
+    } finally {
+      setThumbBusy(false);
+      e.target.value = "";
+    }
+  };
 
   // Album gallery is loaded on-demand (only for multi-part media). The cover (item.thumb)
   // shows instantly; the thumbnail strip appears after the fetch completes.
@@ -93,7 +197,7 @@ export function PreviewDrawer({
   const canNext = activeIdx < last || hasNextFile;
 
   // Move to the next/previous part; if already at the edge, jump to the next file.
-  const go = (delta: number) => {
+  const go = useCallback((delta: number) => {
     if (delta > 0) {
       if (activeIdx < last) setActiveIdx(activeIdx + 1);
       else if (hasNextFile) onNavigateFile?.(1);
@@ -101,7 +205,7 @@ export function PreviewDrawer({
       if (activeIdx > 0) setActiveIdx(activeIdx - 1);
       else if (hasPrevFile) onNavigateFile?.(-1);
     }
-  };
+  }, [activeIdx, last, hasNextFile, hasPrevFile, onNavigateFile]);
 
   // Keyboard: Esc closes (detail panel first if open); ←/→ navigates photos/files.
   useEffect(() => {
@@ -117,7 +221,7 @@ export function PreviewDrawer({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, showDetails, editing, activeIdx, last, hasPrevFile, hasNextFile]);
+  }, [onClose, showDetails, editing, go]);
 
   const save = () => {
     if (!title.trim()) return;
@@ -143,7 +247,7 @@ export function PreviewDrawer({
       <div className={"viewer" + (multi ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
         <div className="viewer-stage" onClick={onClose}>
           {active ? (
-            <img src={active} alt={item.name} onClick={(e) => e.stopPropagation()} />
+            <Image src={active} alt={item.name} fill unoptimized onClick={(e) => e.stopPropagation()} style={{ objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
           ) : (
             <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />
           )}
@@ -171,9 +275,18 @@ export function PreviewDrawer({
           <span className="viewer-name">{item.version ? item.family : item.name}</span>
           <div className="viewer-tools">
             {item.trashed ? (
-              <button className="viewer-iconbtn" onClick={() => onRestore(item)} title="Restore">
-                <Icon name="restore" size={17} />
-              </button>
+              <>
+                <button className="viewer-iconbtn" onClick={() => onRestore(item)} title="Restore">
+                  <Icon name="restore" size={17} />
+                </button>
+                <button
+                  className="viewer-iconbtn"
+                  onClick={() => onPurge(item)}
+                  title="Delete permanently"
+                >
+                  <Icon name="trash" size={17} />
+                </button>
+              </>
             ) : (
               <>
                 {deepLink && (
@@ -232,7 +345,7 @@ export function PreviewDrawer({
                 onClick={() => setActiveIdx(i)}
                 title={`Part ${i + 1}`}
               >
-                <img src={src} alt="" />
+                <Image src={src} alt="" fill unoptimized style={{ objectFit: "cover" }} />
               </button>
             ))}
           </div>
@@ -343,6 +456,42 @@ export function PreviewDrawer({
                           </span>
                         ))}
                       </div>
+                    </div>
+                  )}
+
+                  {item.kind === "media" && !item.trashed && (
+                    <div className="dv-section">
+                      <h4>Thumbnail</h4>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button className="btn sm" onClick={onRefreshThumb} disabled={thumbBusy}>
+                          {thumbBusy ? (
+                            <span className="spinner sm" />
+                          ) : (
+                            <Icon name="refresh" size={14} />
+                          )}
+                          {item.thumb ? "Re-fetch" : "Fetch from Telegram"}
+                        </button>
+                        <button
+                          className="btn sm"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={thumbBusy}
+                        >
+                          <Icon name="upload" size={14} />
+                          Set thumbnail…
+                        </button>
+                      </div>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*,video/*"
+                        style={{ display: "none" }}
+                        onChange={onUploadThumb}
+                      />
+                      {thumbMsg && (
+                        <p className="dv-hint" style={{ marginTop: 6 }}>
+                          {thumbMsg}
+                        </p>
+                      )}
                     </div>
                   )}
                 </>

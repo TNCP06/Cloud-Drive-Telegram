@@ -30,13 +30,18 @@ export interface DriveFile {
 
 export type UploadStatus = "queued" | "pending" | "running" | "done" | "error" | "canceled";
 
+export type UploadOrigin = "local" | "upload";
+
 export interface UploadJob {
   id: number;
   kind: Kind;
   title: string;
   tags: string;
-  sourcePath: string;   // file/folder path on the laptop
+  sourcePath: string;   // laptop path (local) or staging dir (upload)
   partSize: number;     // MB (games only)
+  origin: UploadOrigin; // 'local' = laptop path, 'upload' = staged browser upload
+  partsDone: number;    // checkpoint: parts already pushed to Telegram (resume point)
+  totalBytes: number;   // file size in bytes (staged uploads)
   status: UploadStatus;
   progress: number;     // 0..100
   message: string | null;
@@ -47,6 +52,11 @@ export interface UploadJob {
 export interface WatcherStatus {
   online: boolean;
   status: "idle" | "busy" | null;
+  lastSeen: number | null;
+}
+
+export interface BotStatus {
+  online: boolean;
   lastSeen: number | null;
 }
 
