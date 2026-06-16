@@ -6,7 +6,7 @@ import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
 // Proxy authenticated streaming requests to the Python streamer service.
 // Excluded from middleware (avoids edge-runtime body-size limit), so auth
 // is checked manually here — same pattern as the upload route.
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const STREAMER_URL = process.env.STREAMER_URL || "http://streamer:8080";
@@ -49,10 +49,23 @@ export async function GET(
       if (v) relay.set(key, v);
     }
 
-    // Stream the body through without buffering.
-    return new Response(resp.body, { status: resp.status, headers: relay });
+    // Stream the body through safely. We use a TransformStream to catch 
+    // upstream disconnects or browser aborts without crashing the Node process.
+    if (!resp.body) {
+      return new Response(null, { status: resp.status, headers: relay });
+    }
+    
+    const { readable, writable } = new TransformStream();
+    resp.body.pipeTo(writable).catch((err) => {
+      // Ignore abort errors (very common when seeking video)
+      if (err.name !== "AbortError") {
+        console.error("[stream proxy] pipe error:", err);
+      }
+    });
+
+    return new Response(readable, { status: resp.status, headers: relay });
   } catch (err) {
-    console.error("[stream proxy]", err);
+    console.error("[stream proxy] fetch error:", err);
     return NextResponse.json(
       { error: "Streaming service unavailable." },
       { status: 502 }
