@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections import defaultdict, deque
@@ -231,8 +232,7 @@ async def _get_tg_message(channel_msg_id: int):
     return msg
 
 
-async def _download_chunk(channel_msg_id: int, chunk_index: int,
-                          total_size: int) -> bytes:
+async def _download_chunk(channel_msg_id: int, chunk_index: int, total_size: int) -> bytes:
     """Download a single chunk from Telegram via iter_download."""
     byte_offset = chunk_index * CHUNK_SIZE
     remaining = total_size - byte_offset
@@ -242,25 +242,30 @@ async def _download_chunk(channel_msg_id: int, chunk_index: int,
     if not msg or not msg.media:
         raise ValueError(f"Message {channel_msg_id} has no media")
 
-    data = bytearray()
-    try:
-        async for piece in tg_client.iter_download(
-            msg.media, offset=byte_offset,
-            request_size=DOWNLOAD_REQUEST_SIZE, limit=chunk_bytes,
-        ):
-            data.extend(piece)
-    except telethon.errors.FloodError as e:
-        wait_time = getattr(e, 'seconds', 5)
-        log.warning("Telegram flood wait: %ds. Sleeping...", wait_time)
-        await asyncio.sleep(wait_time)
+    for attempt in range(5):
         data = bytearray()
-        async for piece in tg_client.iter_download(
-            msg.media, offset=byte_offset,
-            request_size=DOWNLOAD_REQUEST_SIZE, limit=chunk_bytes,
-        ):
-            data.extend(piece)
+        try:
+            async for piece in tg_client.iter_download(
+                msg.media, offset=byte_offset,
+                request_size=DOWNLOAD_REQUEST_SIZE, limit=chunk_bytes,
+            ):
+                data.extend(piece)
+            return bytes(data)
+        except telethon.errors.FloodError as e:
+            wait_time = getattr(e, 'seconds', None)
+            if wait_time is None:
+                # Parse "FLOOD_PREMIUM_WAIT_7"
+                match = re.search(r"WAIT_(\d+)", str(e))
+                wait_time = int(match.group(1)) if match else 5
+            log.warning("Telegram flood wait: %ds (attempt %d). Sleeping...", wait_time, attempt + 1)
+            await asyncio.sleep(wait_time + 1)
+        except Exception as e:
+            log.error("Telegram download error on chunk %d: %s", chunk_index, e)
+            if attempt == 4:
+                raise
+            await asyncio.sleep(2)
 
-    return bytes(data)
+    return bytes()
 
 
 async def _ensure_chunk(part_id: int, channel_msg_id: int,
