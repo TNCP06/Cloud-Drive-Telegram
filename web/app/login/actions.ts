@@ -6,17 +6,17 @@ import { AUTH_COOKIE, sha256Hex, type LoginState } from "@/lib/auth";
 
 export async function login(_prev: LoginState, formData: FormData): Promise<LoginState> {
   const pw = process.env.APP_PASSWORD;
-  if (!pw) redirect("/"); // auth nonaktif
+  if (!pw) redirect("/"); // auth disabled
 
   const input = String(formData.get("password") ?? "");
-  if (input !== pw) return { error: "Password salah." };
+  if (input !== pw) return { error: "Incorrect password." };
 
   const c = await cookies();
   c.set(AUTH_COOKIE, await sha256Hex(pw), {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30, // 30 hari
+    maxAge: 60 * 60 * 24 * 30, // 30 days
   });
 
   const from = String(formData.get("from") || "/");

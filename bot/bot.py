@@ -1,20 +1,20 @@
 """
 Telegram Cloud Drive — bot indexer.
 
-Milestone 2 (+ album & media-fallback): handler channel_post.
-Alur: setiap file baru yang masuk ke STORAGE_CHANNEL_ID -> parse caption
-(kontrak: "Judul | part/total | tag1, tag2") -> upsert ke Turso (items + parts + tags).
-- GAME : caption WAJIB (judul = kunci grouping, part/total = perakitan). Invalid ->
-  warning ke owner supaya tak ada file hilang diam-diam.
-- MEDIA: caption OPSIONAL. Tanpa caption valid, metadata diturunkan dari caption
-  bebas / nama file / tanggal (lihat derive_media_meta) → media tak pernah hilang.
-- ALBUM (media group: beberapa foto/video sekali kirim) -> disatukan jadi SATU item
-  multi-part lewat media_group_id; tiap part punya thumbnail sendiri (galeri di web).
-Thumbnail bawaan Telegram di-harvest per-part ke tabel `thumbnails`.
+Milestone 2 (+ album & media-fallback): channel_post handler.
+Flow: every new file posted to STORAGE_CHANNEL_ID → parse caption
+(contract: "Title | part/total | tag1, tag2") → upsert into Turso (items + parts + tags).
+- GAME : caption REQUIRED (title = grouping key, part/total = assembly order). Invalid →
+  warn owner so no file silently goes missing.
+- MEDIA: caption OPTIONAL. Without a valid caption, metadata is derived from the free-form
+  caption / filename / date (see derive_media_meta) → media is never lost.
+- ALBUM (media group: multiple photos/videos sent at once) → merged into ONE multi-part item
+  via media_group_id; each part has its own thumbnail (gallery in the web UI).
+Telegram's built-in thumbnails are harvested per-part into the `thumbnails` table.
 
-Catatan API:
-- Bot harus admin di channel agar menerima update channel_post.
-- Thumbnail diambil via get_file (kecil, di bawah limit 20 MB) — hanya untuk media.
+API notes:
+- Bot must be admin in the channel to receive channel_post updates.
+- Thumbnails are fetched via get_file (small, under the 20 MB limit) — media only.
 """
 
 import asyncio
@@ -38,9 +38,9 @@ from telegram.ext import (
 )
 
 # ---------------------------------------------------------------------------
-# Konfigurasi & environment
+# Configuration & environment
 # ---------------------------------------------------------------------------
-load_dotenv()  # memuat bot/.env saat dijalankan dari folder bot/
+load_dotenv()  # loads bot/.env when run from the bot/ directory
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 STORAGE_CHANNEL_ID = int(os.environ["STORAGE_CHANNEL_ID"])
@@ -49,7 +49,7 @@ TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 
 
 def _turso_http_url(url: str) -> str:
-    # Transport WebSocket libsql_client ditolak Turso (HTTP 400) → pakai HTTPS (Hrana over HTTP).
+    # libsql_client WebSocket transport is rejected by Turso (HTTP 400) → use HTTPS (Hrana over HTTP).
     if url.startswith("libsql://"):
         return "https://" + url[len("libsql://") :]
     return url
@@ -61,20 +61,20 @@ logging.basicConfig(
     format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
     level=logging.INFO,
 )
-# Kurangi noise dari httpx (PTB internal HTTP).
+# Suppress httpx noise (PTB internal HTTP).
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("cloud-drive-bot")
 
-# Kontrak caption: "Judul | part/total | tag1, tag2"
+# Caption contract: "Title | part/total | tag1, tag2"
 CAPTION_RE = re.compile(
     r"^(?P<title>.+?)\s*\|\s*(?P<part>\d+)\s*/\s*(?P<total>\d+)\s*\|\s*(?P<tags>.*)$"
 )
 
 # ---------------------------------------------------------------------------
-# Helper murni (tanpa I/O)
+# Pure helpers (no I/O)
 # ---------------------------------------------------------------------------
 def slugify(text: str) -> str:
-    """Ubah judul menjadi slug URL-safe & stabil (kunci unik item)."""
+    """Convert a title to a URL-safe, stable slug (unique item key)."""
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
     text = re.sub(r"[^\w\s-]", "", text).strip().lower()
     text = re.sub(r"[-\s]+", "-", text)
@@ -82,7 +82,7 @@ def slugify(text: str) -> str:
 
 
 def parse_caption(caption: str | None):
-    """Return dict {title, part, total, tags} bila cocok kontrak, else None."""
+    """Return dict {title, part, total, tags} if caption matches the contract, else None."""
     if not caption:
         return None
     m = CAPTION_RE.match(caption.strip())
@@ -98,7 +98,7 @@ def parse_caption(caption: str | None):
 
 
 def detect_kind(message) -> str | None:
-    """Tentukan 'media' (punya thumbnail) atau 'game' (arsip). None bila bukan file."""
+    """Return 'media' (has thumbnail) or 'game' (archive). None if not a file."""
     if message.photo or message.video or message.animation:
         return "media"
     doc = message.document
@@ -106,12 +106,12 @@ def detect_kind(message) -> str | None:
         mime = doc.mime_type or ""
         if mime.startswith("image/") or mime.startswith("video/"):
             return "media"
-        return "game"  # arsip .7z / .zip / split parts dll.
+        return "game"  # .7z / .zip / split parts etc.
     return None
 
 
 def get_file_meta(message):
-    """Return (file_name, file_size) untuk part ini."""
+    """Return (file_name, file_size) for this part."""
     if message.document:
         return message.document.file_name, message.document.file_size or 0
     if message.video:
@@ -124,21 +124,21 @@ def get_file_meta(message):
 
 
 def derive_media_meta(message):
-    """Metadata fallback untuk MEDIA yang captionnya tak sesuai kontrak.
+    """Fallback metadata for MEDIA whose caption doesn't match the contract.
 
-    Selalu menghasilkan title (tak pernah None) supaya media tak pernah hilang.
-    Return (parsed_dict, has_caption); has_caption=True bila judul berasal dari
-    caption asli — dipakai agar anggota album TANPA caption tak menimpa judul
-    yang sudah diisi anggota album yang BER-caption.
+    Always produces a title (never None) so media is never lost.
+    Returns (parsed_dict, has_caption); has_caption=True when the title came from
+    the actual caption — used so album members WITHOUT a caption don't overwrite
+    the title set by the member that HAS one (album update order is not guaranteed).
     """
     caption = message.caption
     tags: list[str] = []
     title = None
     if caption and caption.strip():
         text = caption.strip()
-        # Hashtag sering menempel pada konten yang di-forward → jadikan tag.
+        # Hashtags often appear in forwarded content → treat them as tags.
         tags = [t.lstrip("#") for t in re.findall(r"#\w+", text)]
-        # Judul = baris pertama tanpa hashtag, dipangkas.
+        # Title = first line without hashtags, trimmed.
         first = re.sub(r"#\w+", "", text.splitlines()[0]).strip(" -|")
         title = first[:120] or None
     has_caption = title is not None
@@ -152,10 +152,10 @@ def derive_media_meta(message):
 
 
 def pick_thumb_file_id(message) -> str | None:
-    """Ambil file_id thumbnail bawaan Telegram untuk item media."""
+    """Return the file_id of Telegram's built-in thumbnail for a media item."""
     if message.photo:
-        # message.photo = list PhotoSize (kecil -> besar). Ambil terbesar (di bawah
-        # limit get_file 20 MB) supaya preview di web tajam.
+        # message.photo = list of PhotoSize (small → large). Take the largest one
+        # (under the 20 MB get_file limit) for a sharp preview in the web UI.
         return message.photo[-1].file_id
     if message.video and message.video.thumbnail:
         return message.video.thumbnail.file_id
@@ -167,14 +167,14 @@ def pick_thumb_file_id(message) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Operasi Turso (idempotent)
+# Turso operations (idempotent)
 # ---------------------------------------------------------------------------
 async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
     """Upsert item by slug, return item_id.
 
-    set_title=False → JANGAN timpa judul yang sudah ada. Dipakai anggota album
-    tanpa caption agar tak menimpa judul yang sudah diisi anggota ber-caption
-    (urutan kedatangan update album tidak dijamin).
+    set_title=False → do NOT overwrite an existing title. Used for album members
+    without a caption so they don't clobber the title set by a captioned member
+    (album update order is not guaranteed).
     """
     await db.execute(
         """
@@ -193,7 +193,7 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
 
 
 async def upsert_part(db, item_id, part_number, channel_msg_id, file_name, file_size) -> int:
-    """Upsert part by channel_msg_id (kunci idempotensi & target copy_message). Return part_id."""
+    """Upsert part by channel_msg_id (idempotency key & copy_message target). Return part_id."""
     await db.execute(
         """
         INSERT INTO parts (item_id, part_number, channel_msg_id,
@@ -212,7 +212,7 @@ async def upsert_part(db, item_id, part_number, channel_msg_id, file_name, file_
 
 
 async def recompute_totals(db, item_id):
-    """Sinkronkan total_size & total_parts dari baris parts yang ada."""
+    """Sync total_size & total_parts from the existing parts rows."""
     await db.execute(
         """
         UPDATE items SET
@@ -226,7 +226,7 @@ async def recompute_totals(db, item_id):
 
 
 async def sync_tags(db, item_id, tags):
-    """Pastikan tags ada dan terhubung ke item (many-to-many)."""
+    """Ensure tags exist and are linked to the item (many-to-many)."""
     for name in tags:
         await db.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", [name])
         rs = await db.execute("SELECT id FROM tags WHERE name = ?", [name])
@@ -248,13 +248,13 @@ async def upsert_thumbnail(db, part_id, mime, data_b64):
 
 
 # ---------------------------------------------------------------------------
-# Handler channel_post
+# channel_post handler
 # ---------------------------------------------------------------------------
 async def warn_owner(context, text):
     try:
         await context.bot.send_message(chat_id=OWNER_USER_ID, text=text)
-    except Exception:  # noqa: BLE001 — jangan biarkan gagal-kirim merusak handler
-        log.exception("Gagal mengirim warning ke owner")
+    except Exception:  # noqa: BLE001 — don't let a failed send break the handler
+        log.exception("Failed to send warning to owner")
 
 
 async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -267,24 +267,24 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kind = detect_kind(message)
     if kind is None:
-        # Post teks biasa (pengumuman, dll.) — bukan file, abaikan.
+        # Plain text post (announcement, etc.) — not a file, ignore.
         return
 
     parsed = parse_caption(message.caption)
     if parsed is not None:
         has_caption = True
     elif kind == "media":
-        # Media tak butuh caption terstruktur — turunkan metadata & tetap index.
+        # Media doesn't need a structured caption — derive metadata and index anyway.
         parsed, has_caption = derive_media_meta(message)
     else:
-        # Game multi-part WAJIB caption (judul = kunci grouping, part/total = perakitan).
-        log.warning("Caption invalid pada msg %s (game)", msg_id)
+        # Multi-part games REQUIRE a caption (title = grouping key, part/total = assembly order).
+        log.warning("Invalid caption on msg %s (game)", msg_id)
         await warn_owner(
             context,
-            "⚠️ Caption tidak sesuai format, file BELUM terindeks.\n"
-            f"Pesan: https://t.me/c/{str(STORAGE_CHANNEL_ID)[4:]}/{msg_id}\n"
-            f"Caption: {message.caption or '(kosong)'}\n\n"
-            "Format wajib: Judul | part/total | tag1, tag2",
+            "⚠️ Caption does not match the required format — file NOT indexed.\n"
+            f"Message: https://t.me/c/{str(STORAGE_CHANNEL_ID)[4:]}/{msg_id}\n"
+            f"Caption: {message.caption or '(empty)'}\n\n"
+            "Required format: Title | part/total | tag1, tag2",
         )
         return
 
@@ -292,17 +292,17 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mgid = message.media_group_id
 
     if kind == "media" and mgid:
-        # ALBUM (media group): semua foto/video se-grup → SATU item multi-part.
-        # slug dari media_group_id agar stabil walau pesan ber-caption tiba belakangan.
-        # part_number = msg_id → unik per item, urut sesuai album, anti-race antar update.
+        # ALBUM (media group): all photos/videos in the group → ONE multi-part item.
+        # Slug derived from media_group_id for stability even if the captioned message arrives last.
+        # part_number = msg_id → unique per item, ordered per album, race-safe across updates.
         slug = f"album-{mgid}"
         part_number = msg_id
     elif kind == "media":
-        # Media tunggal: tiap post = item tersendiri (judul boleh berulang).
+        # Single media: each post = its own item (titles may repeat).
         slug = f"{slugify(title)}-{msg_id}"
         part_number = parsed["part"]
     else:
-        # Game: slug murni dari judul agar part 1..N ter-group jadi satu item.
+        # Game: slug purely from title so parts 1..N are grouped into one item.
         slug = slugify(title)
         part_number = parsed["part"]
 
@@ -314,38 +314,38 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await recompute_totals(db, item_id)
         await sync_tags(db, item_id, parsed["tags"])
 
-        # Harvest thumbnail per-part (hanya media; tiap foto/video punya thumbnail sendiri).
+        # Harvest thumbnail per-part (media only; each photo/video has its own thumbnail).
         if kind == "media":
             await harvest_thumbnail(context, db, part_id, message)
 
         log.info(
-            "Terindeks: %s [%s] part %s (item_id=%s, msg=%s)",
+            "Indexed: %s [%s] part %s (item_id=%s, msg=%s)",
             slug, kind, part_number, item_id, msg_id,
         )
     except Exception:  # noqa: BLE001
-        log.exception("Gagal indexing msg %s", msg_id)
+        log.exception("Failed to index msg %s", msg_id)
         await warn_owner(
             context,
-            f"⚠️ Error saat indexing '{title}' (msg {msg_id}). Cek log bot.",
+            f"⚠️ Error indexing '{title}' (msg {msg_id}). Check bot logs.",
         )
 
 
 async def harvest_thumbnail(context, db, part_id, message):
-    """Download thumbnail bawaan Telegram untuk SATU part -> base64 -> tabel thumbnails."""
+    """Download Telegram's built-in thumbnail for ONE part → base64 → thumbnails table."""
     file_id = pick_thumb_file_id(message)
     if not file_id:
-        log.info("Media tanpa thumbnail (part_id=%s), dilewati", part_id)
+        log.info("Media has no thumbnail (part_id=%s), skipping", part_id)
         return
     tg_file = await context.bot.get_file(file_id)
     buf = io.BytesIO()
     await tg_file.download_to_memory(out=buf)
     data_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    # Thumbnail bawaan Telegram berformat JPEG.
+    # Telegram's built-in thumbnails are JPEG.
     await upsert_thumbnail(db, part_id, "image/jpeg", data_b64)
 
 
 # ---------------------------------------------------------------------------
-# Handler /start — download via copy_message (owner-only)
+# /start handler — download via copy_message (owner-only)
 # ---------------------------------------------------------------------------
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -353,16 +353,16 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message is None:
         return
 
-    # Keamanan: hanya owner yang boleh memicu download.
+    # Security: only the owner may trigger downloads.
     if user is None or user.id != OWNER_USER_ID:
-        await message.reply_text("⛔ Akses ditolak. Bot ini privat.")
+        await message.reply_text("⛔ Access denied. This bot is private.")
         return
 
-    # Deep link "?start=<slug>" → PTB mengisi context.args.
+    # Deep link "?start=<slug>" → PTB fills context.args.
     if not context.args:
         await message.reply_text(
-            "Halo! Buka dashboard, klik menu ⋮ pada sebuah item lalu pilih Unduh — "
-            "filenya akan dikirim ke sini."
+            "Hello! Open the dashboard, click ⋮ on an item, then choose Download — "
+            "the file will be sent here."
         )
         return
 
@@ -373,7 +373,7 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "SELECT id, title FROM items WHERE slug = ? AND deleted_at IS NULL", [slug]
     )
     if not rs.rows:
-        await message.reply_text("Item tidak ditemukan atau sudah dihapus.")
+        await message.reply_text("Item not found or already deleted.")
         return
     item_id, title = rs.rows[0][0], rs.rows[0][1]
 
@@ -381,25 +381,25 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "SELECT channel_msg_id FROM parts WHERE item_id = ? ORDER BY part_number", [item_id]
     )
     if not parts.rows:
-        await message.reply_text("Item ini belum memiliki file.")
+        await message.reply_text("This item has no files.")
         return
 
     total = len(parts.rows)
-    await message.reply_text(f'Mengirim "{title}" ({total} part)…')
+    await message.reply_text(f'Sending "{title}" ({total} part(s))…')
     for row in parts.rows:
         msg_id = row[0]
         try:
-            # copy_message = operasi referensi (lewat limit ukuran) & menyembunyikan channel.
+            # copy_message = reference operation (bypasses size limits) & hides the channel.
             await context.bot.copy_message(
                 chat_id=user.id, from_chat_id=STORAGE_CHANNEL_ID, message_id=msg_id
             )
         except Exception:  # noqa: BLE001
-            log.exception("Gagal copy_message msg %s", msg_id)
-        await asyncio.sleep(0.3)  # jaga jarak dari flood limit
+            log.exception("Failed to copy_message msg %s", msg_id)
+        await asyncio.sleep(0.3)  # respect flood limits
 
 
 # ---------------------------------------------------------------------------
-# JobQueue — purge harian item sampah >7 hari
+# JobQueue — daily purge of trashed items older than 7 days
 # ---------------------------------------------------------------------------
 async def purge_job(context: ContextTypes.DEFAULT_TYPE):
     db = context.bot_data["db"]
@@ -421,11 +421,11 @@ async def purge_job(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.delete_message(
                     chat_id=STORAGE_CHANNEL_ID, message_id=row[0]
                 )
-            except Exception:  # noqa: BLE001 — pesan mungkin sudah terhapus
-                log.exception("Gagal delete_message msg %s", row[0])
+            except Exception:  # noqa: BLE001 — message may already be deleted
+                log.exception("Failed to delete_message msg %s", row[0])
             await asyncio.sleep(0.2)
-        # Hard delete eksplisit (tidak bergantung pada PRAGMA foreign_keys).
-        # thumbnails kini ber-FK ke parts → hapus duluan sebelum parts.
+        # Explicit hard delete (not relying on PRAGMA foreign_keys).
+        # thumbnails has a FK to parts → delete thumbnails first.
         await db.execute(
             "DELETE FROM thumbnails WHERE part_id IN (SELECT id FROM parts WHERE item_id = ?)",
             [item_id],
@@ -435,35 +435,35 @@ async def purge_job(context: ContextTypes.DEFAULT_TYPE):
         await db.execute("DELETE FROM items WHERE id = ?", [item_id])
         purged += 1
 
-    log.info("Purge selesai: %s item dihapus permanen", purged)
+    log.info("Purge complete: %s item(s) permanently deleted", purged)
     try:
         await context.bot.send_message(
             chat_id=OWNER_USER_ID,
-            text=f"🧹 Purge: {purged} item dihapus permanen dari channel & database.",
+            text=f"🧹 Purge: {purged} item(s) permanently deleted from channel & database.",
         )
     except Exception:  # noqa: BLE001
-        log.exception("Gagal kirim ringkasan purge")
+        log.exception("Failed to send purge summary")
 
 
 # ---------------------------------------------------------------------------
-# Lifecycle Turso
+# Turso lifecycle
 # ---------------------------------------------------------------------------
 async def post_init(app: Application):
     app.bot_data["db"] = libsql_client.create_client(
         url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN
     )
-    log.info("Koneksi Turso siap")
+    log.info("Turso connection ready")
 
 
 async def post_shutdown(app: Application):
     db = app.bot_data.get("db")
     if db is not None:
         await db.close()
-        log.info("Koneksi Turso ditutup")
+        log.info("Turso connection closed")
 
 
 # ---------------------------------------------------------------------------
-# Handler Private Chat (Bot Drop)
+# Private chat handler (Bot Drop)
 # ---------------------------------------------------------------------------
 async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -473,17 +473,18 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kind = detect_kind(message)
     if not kind:
-        # Bukan media/dokumen
+        # Not a media/document message
         return
 
     msg_id = message.message_id
     chat_id = message.chat_id
     web_url = os.environ.get("NEXT_PUBLIC_WEB_URL", "http://localhost:3000").rstrip("/")
-    
+
     link = f"{web_url}/upload-bot?msg_id={msg_id}&chat_id={chat_id}"
-    
+
     await message.reply_text(
-        f"✅ File diterima di Bot!\n\nSilakan klik tautan di bawah ini untuk melengkapi data file (Judul & Tag) melalui web. Bot akan otomatis meneruskannya ke Channel setelah data disimpan.\n\n👉 {link}",
+        f"✅ File received!\n\nClick the link below to complete the file details (Title & Tags) via the web. "
+        f"The bot will automatically forward it to the Channel once saved.\n\n👉 {link}",
         disable_web_page_preview=True
     )
 
@@ -497,10 +498,10 @@ def main():
         .build()
     )
 
-    # /start (download, owner-only) — chat privat.
+    # /start (download, owner-only) — private chat.
     app.add_handler(CommandHandler("start", on_start))
 
-    # Handler bot drop (menerima file di chat privat bot)
+    # Bot Drop handler (receives files in the bot's private chat)
     app.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & (filters.Document.ALL | filters.VIDEO | filters.PHOTO | filters.ANIMATION),
@@ -508,7 +509,7 @@ def main():
         )
     )
 
-    # Hanya proses channel_post dari STORAGE_CHANNEL_ID.
+    # Only process channel_post from STORAGE_CHANNEL_ID.
     app.add_handler(
         MessageHandler(
             filters.Chat(STORAGE_CHANNEL_ID) & filters.UpdateType.CHANNEL_POST,
@@ -516,10 +517,10 @@ def main():
         )
     )
 
-    # Purge harian item sampah >7 hari (03:00 UTC).
+    # Daily purge of trashed items older than 7 days (03:00 UTC).
     app.job_queue.run_daily(purge_job, time=dtime(hour=3, minute=0))
 
-    log.info("Bot mulai polling…")
+    log.info("Bot starting polling…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

@@ -2,21 +2,21 @@
 
 import { getGallery } from "@/app/actions";
 
-// Cache galeri album (array data-URL base64 per part) selama satu sesi browser.
-// Thumbnail part TIDAK pernah berubah dari sisi web (hanya bot indexing yang
-// menulisnya), jadi aman disimpan di memori sampai reload penuh halaman.
-// Tujuannya menghilangkan baca-ulang Turso tiap kali preview dibuka — penyebab
-// jeda saat membuka album & lambat saat membuka file yang sama berulang kali.
+// Album gallery cache (array of base64 data-URLs per part) for one browser session.
+// Part thumbnails never change from the web side (only the indexing bot writes them),
+// so it's safe to keep them in memory until a full page reload.
+// This eliminates redundant Turso reads every time a preview is opened — the main
+// cause of lag when opening albums and reopening the same file repeatedly.
 const cache = new Map<number, string[]>();
 const inflight = new Map<number, Promise<string[]>>();
 
-// Ambil galeri dari cache secara sinkron (untuk render instan tanpa flash).
+// Synchronous cache lookup — enables instant render without a loading flash.
 export function getCachedGallery(id: number): string[] | undefined {
   return cache.get(id);
 }
 
-// Muat galeri: kembalikan dari cache bila ada, kalau belum fetch sekali lalu
-// simpan. `inflight` mencegah dua fetch paralel untuk id yang sama.
+// Load gallery: return from cache if available, otherwise fetch once and store.
+// `inflight` prevents two parallel fetches for the same id.
 export function loadGallery(id: number): Promise<string[]> {
   const hit = cache.get(id);
   if (hit) return Promise.resolve(hit);
@@ -37,7 +37,7 @@ export function loadGallery(id: number): Promise<string[]> {
   return p;
 }
 
-// Prefetch latar (fire-and-forget) — mengisi cache sebelum preview dibuka.
+// Background prefetch (fire-and-forget) — warms the cache before a preview is opened.
 export function prefetchGallery(id: number): void {
   if (!cache.has(id) && !inflight.has(id)) void loadGallery(id).catch(() => {});
 }

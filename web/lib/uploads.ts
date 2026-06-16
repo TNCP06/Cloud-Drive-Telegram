@@ -3,7 +3,7 @@ import { db } from "./db";
 import { sqliteToMs } from "./format";
 import type { Kind, UploadJob, UploadStatus, WatcherStatus } from "./types";
 
-// Status watcher dari heartbeat (online jika denyut < 30 detik lalu).
+// Watcher status from heartbeat (online if heartbeat is < 30 seconds old).
 export async function getWatcherStatus(): Promise<WatcherStatus> {
   try {
     const rs = await db.execute("SELECT last_seen, status FROM watcher_heartbeat WHERE id = 1");
@@ -24,8 +24,8 @@ export async function getUploadJobs(): Promise<UploadJob[]> {
         "FROM upload_jobs ORDER BY id DESC LIMIT 100"
     );
   } catch {
-    // Koneksi sesaat putus → kembalikan kosong agar /upload tetap render (status watcher
-    // tetap tampil); polling berikutnya memulihkan daftar.
+    // Momentary connection drop → return empty so /upload still renders (watcher
+    // status still shows); the next poll will restore the list.
     return [];
   }
   return rs.rows.map((r) => ({

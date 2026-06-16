@@ -1,18 +1,18 @@
 """
-Watcher upload — jembatan web → Telegram (Telethon), dijalankan DI LAPTOP.
+Upload watcher — bridge between web → Telegram (Telethon), runs ON THE LAPTOP.
 
-Web hanya menaruh antrian ke tabel `upload_jobs` (path file ada di laptop).
-Script ini polling antrian itu, lalu untuk tiap job:
-  - game  : split 7-Zip → upload tiap part sebagai dokumen
-  - media : upload 1 file sebagai media (Telegram bikin thumbnail)
-dengan caption kontrak "Judul | i/total | tags", lalu update progress/status ke DB.
-Bot (channel_post) yang meng-index hasilnya — pastikan bot.py juga jalan.
+The web only inserts rows into the `upload_jobs` table (file paths are on the laptop).
+This script polls that table and for each job:
+  - game  : 7-Zip split → upload each part as a document
+  - media : upload 1 file as media (Telegram generates the thumbnail)
+with the caption contract "Title | i/total | tags", then updates progress/status in the DB.
+The bot (channel_post handler) indexes the result — make sure bot.py is also running.
 
-Jalankan & biarkan menyala:
+Start and keep running:
     python watcher.py
 
-Butuh: worker.session (login Telethon, lihat login.py), bot HARUS admin channel,
-dan env TG_API_ID/HASH, STORAGE_CHANNEL_ID, TURSO_*, (opsional) SEVENZIP_PATH, WORKER_OUT_DIR.
+Requires: worker.session (Telethon login, see login.py), bot MUST be admin in the channel,
+and env vars TG_API_ID/HASH, STORAGE_CHANNEL_ID, TURSO_*, (optional) SEVENZIP_PATH, WORKER_OUT_DIR.
 """
 
 import asyncio
@@ -59,7 +59,7 @@ async def claim_next(db):
         "tags": r[3], "path": r[4], "part_size": r[5],
     }
     await db.execute(
-        "UPDATE upload_jobs SET status='running', progress=0, message='memulai…', "
+        "UPDATE upload_jobs SET status='running', progress=0, message='starting...', "
         "updated_at=datetime('now') WHERE id=? AND status='pending'",
         [job["id"]],
     )
@@ -86,7 +86,7 @@ async def set_status(db, jid, status, message, pct=None):
 
 
 # ---------------------------------------------------------------------------
-# Split (raise, tidak sys.exit seperti worker.split_with_7zip)
+# Split (raises, unlike worker.split_with_7zip which calls sys.exit)
 # ---------------------------------------------------------------------------
 def split_game(path, title, part_mb):
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -96,17 +96,17 @@ def split_game(path, title, part_mb):
     try:
         subprocess.run(cmd, check=True)
     except FileNotFoundError:
-        raise RuntimeError(f"7-Zip tidak ditemukan: '{SEVENZIP}'. Set SEVENZIP_PATH di .env.")
+        raise RuntimeError(f"7-Zip not found: '{SEVENZIP}'. Set SEVENZIP_PATH in .env.")
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"7-Zip gagal (exit {e.returncode}).")
+        raise RuntimeError(f"7-Zip failed (exit {e.returncode}).")
     parts = collect_parts(archive)
     if not parts:
-        raise RuntimeError("Split selesai tapi tidak ada part ditemukan.")
+        raise RuntimeError("Split finished but no parts found.")
     return parts
 
 
 # ---------------------------------------------------------------------------
-# Proses satu job
+# Process a single job
 # ---------------------------------------------------------------------------
 async def process(client, db, channel, job):
     jid, kind, title = job["id"], job["kind"], job["title"].strip()
@@ -128,17 +128,17 @@ async def process(client, db, channel, job):
     try:
         if kind == "game":
             if not os.path.exists(path):
-                raise RuntimeError(f"Path tidak ditemukan di laptop: {path}")
+                raise RuntimeError(f"Path not found on laptop: {path}")
             paths = split_game(path, title, int(job["part_size"] or 1500))
             as_document = True
         else:
             if not os.path.isfile(path):
-                raise RuntimeError(f"File media tidak ditemukan di laptop: {path}")
+                raise RuntimeError(f"Media file not found on laptop: {path}")
             paths = [path]
             as_document = False
 
         total = len(paths)
-        await set_status(db, jid, "running", f"mengunggah {total} part…", 0)
+        await set_status(db, jid, "running", f"uploading {total} part(s)…", 0)
 
         for i, p in enumerate(paths, start=1):
             caption = build_caption(title, i, total, tags)
@@ -158,7 +158,7 @@ async def process(client, db, channel, job):
         state["running"] = False
         await upd_task
 
-        # Hapus file split yang kita buat (game). File media asli tidak disentuh.
+        # Delete the split files we created (game). The original media file is untouched.
         removed = 0
         if kind == "game":
             for p in paths:
@@ -167,9 +167,9 @@ async def process(client, db, channel, job):
                     removed += 1
                 except OSError:
                     pass
-        msg = f"{total} part terupload" + (f" — {removed} file split dibersihkan" if removed else "")
+        msg = f"{total} part(s) uploaded" + (f" — {removed} split file(s) cleaned up" if removed else "")
         await set_status(db, jid, "done", msg, 100)
-        print(f"  ✓ Job #{jid} selesai. {msg}")
+        print(f"  ✓ Job #{jid} done. {msg}")
     except Exception as e:  # noqa: BLE001
         state["running"] = False
         try:
@@ -177,7 +177,7 @@ async def process(client, db, channel, job):
         except Exception:
             pass
         await set_status(db, jid, "error", str(e)[:300])
-        print(f"  ✗ Job #{jid} gagal: {e}")
+        print(f"  ✗ Job #{jid} failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -190,11 +190,11 @@ async def resolve_channel(client):
         async for d in client.iter_dialogs():
             if d.id == STORAGE_CHANNEL_ID:
                 return d.entity
-    raise RuntimeError(f"Channel {STORAGE_CHANNEL_ID} tidak terakses oleh akun ini.")
+    raise RuntimeError(f"Channel {STORAGE_CHANNEL_ID} is not accessible by this account.")
 
 
 async def heartbeat(db, state):
-    """Tulis denyut ke Turso tiap 10s → web tahu watcher aktif/tidak."""
+    """Write a heartbeat to Turso every 10s so the web UI knows whether the watcher is active."""
     while True:
         try:
             await db.execute(
@@ -214,9 +214,9 @@ async def main():
     async with TelegramClient(SESSION, API_ID, API_HASH) as client:
         channel = await resolve_channel(client)
         hb = asyncio.create_task(heartbeat(db, state))
-        print(f"Watcher siap. Channel: {getattr(channel, 'title', channel)}")
-        print(f"Output split: {OUT_DIR}")
-        print("Polling upload_jobs… (Ctrl+C untuk berhenti)")
+        print(f"Watcher ready. Channel: {getattr(channel, 'title', channel)}")
+        print(f"Split output: {OUT_DIR}")
+        print("Polling upload_jobs… (Ctrl+C to stop)")
         try:
             while True:
                 job = await claim_next(db)
@@ -231,7 +231,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Tulis PID → tombol "Matikan watcher" di web bisa menghentikan proses ini.
+    # Write PID → the "Stop watcher" button in the web UI can kill this process.
     pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watcher.pid")
     try:
         with open(pid_file, "w") as f:
@@ -241,7 +241,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nWatcher dihentikan.")
+        print("\nWatcher stopped.")
     finally:
         try:
             os.remove(pid_file)

@@ -15,7 +15,7 @@ export function LoginForm({ from }: { from: string }) {
           <Icon name="cloud" size={24} stroke={1.7} />
         </div>
         <h1>Vault</h1>
-        <p className="login-sub">Masukkan password untuk masuk</p>
+        <p className="login-sub">Enter your password to sign in</p>
 
         <input type="hidden" name="from" value={from} />
         <input
@@ -31,7 +31,7 @@ export function LoginForm({ from }: { from: string }) {
 
         <button className="btn primary" type="submit" disabled={pending}>
           {pending ? <span className="spinner sm" /> : <Icon name="check" size={16} />}
-          Masuk
+          Sign in
         </button>
       </form>
     </div>

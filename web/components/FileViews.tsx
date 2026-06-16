@@ -18,12 +18,12 @@ export function Chip({ tag, big }: { tag: Tag | undefined; big?: boolean }) {
   );
 }
 
-/* ---- Star (interaktif) ---- */
+/* ---- Star (interactive) ---- */
 function Star({ on, onClick, cls = "star" }: { on: boolean; onClick: () => void; cls?: string }) {
   return (
     <button
       className={cls + (on ? " on" : "")}
-      title={on ? "Hapus dari favorit" : "Tandai favorit"}
+      title={on ? "Remove from favorites" : "Mark as favorite"}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -34,7 +34,7 @@ function Star({ on, onClick, cls = "star" }: { on: boolean; onClick: () => void;
   );
 }
 
-/* ---- Thumbnail tile (ikon kind) ---- */
+/* ---- Thumbnail tile (kind icon) ---- */
 function TypeTile({ kind, size = 40 }: { kind: DriveFile["kind"]; size?: number }) {
   const meta = KINDS[kind];
   return (
@@ -58,13 +58,13 @@ interface ItemProps {
   onStar: (item: DriveFile) => void;
   onMenu: (item: DriveFile, anchor: HTMLElement) => void;
   onOpen: (item: DriveFile) => void;
-  /** >1 saat beberapa versi game dikelompokkan jadi satu kartu. */
+  /** >1 when multiple game versions are grouped into one card. */
   versionCount?: number;
-  /** klik badge "N versi" → tampilkan semua versi family ini. */
+  /** Clicking the "N versions" badge → show all versions in this family. */
   onPickFamily?: (family: string) => void;
 }
 
-/** Badge versi (mis. "v0.6.0") + opsi "N versi" yang bisa diklik. */
+/** Version badge (e.g. "v0.6.0") + optional "N versions" button. */
 function VersionBadge({
   item,
   versionCount,
@@ -78,13 +78,13 @@ function VersionBadge({
       {more && onPickFamily && (
         <button
           className="vermore"
-          title="Lihat semua versi"
+          title="Show all versions"
           onClick={(e) => {
             e.stopPropagation();
             onPickFamily(item.family);
           }}
         >
-          {versionCount} versi
+          {versionCount} versions
         </button>
       )}
     </span>
@@ -98,7 +98,7 @@ export function FileCard({ item, tags, onStar, onMenu, onOpen, versionCount, onP
     <div className="card" onClick={() => onOpen(item)}>
       <button
         className="kebab"
-        title="Aksi"
+        title="Actions"
         onClick={(e) => {
           e.stopPropagation();
           onMenu(item, e.currentTarget);
@@ -120,8 +120,8 @@ export function FileCard({ item, tags, onStar, onMenu, onOpen, versionCount, onP
       </div>
       <div className="meta">
         {item.trashed && item.deletedAt != null
-          ? `Dihapus permanen dalam ${trashDaysLeft(item.deletedAt)} hari`
-          : `${fmtSize(item.size)}${item.parts > 1 ? ` · ${item.parts} part` : ""} · ${fmtDate(item.modified)}`}
+          ? `Permanently deleted in ${trashDaysLeft(item.deletedAt)} days`
+          : `${fmtSize(item.size)}${item.parts > 1 ? ` · ${item.parts} parts` : ""} · ${fmtDate(item.modified)}`}
       </div>
       <VersionBadge item={item} versionCount={versionCount} onPickFamily={onPickFamily} />
       {itemTags.length > 0 && (
@@ -166,7 +166,7 @@ export function FileRow({ item, tags, onStar, onMenu, onOpen, versionCount, onPi
                   onPickFamily(item.family);
                 }}
               >
-                {versionCount} versi
+                {versionCount} versions
               </button>
             )}
           </div>
@@ -181,7 +181,7 @@ export function FileRow({ item, tags, onStar, onMenu, onOpen, versionCount, onPi
       </div>
       <div className="col c-mod">
         {item.trashed && item.deletedAt != null
-          ? `${trashDaysLeft(item.deletedAt)} hari lagi`
+          ? `${trashDaysLeft(item.deletedAt)} days left`
           : fmtDate(item.modified)}
       </div>
       <div className="col c-size">{fmtSize(item.size)}</div>

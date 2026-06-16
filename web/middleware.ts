@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
 
-// Lindungi semua route. Jika APP_PASSWORD belum diset → auth NONAKTIF (tidak mengunci).
+// Protect all routes. If APP_PASSWORD is not set → auth is DISABLED (no lock).
 export async function middleware(req: NextRequest) {
   const pw = process.env.APP_PASSWORD;
   if (!pw) return NextResponse.next();

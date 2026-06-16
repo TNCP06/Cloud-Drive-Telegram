@@ -1,23 +1,23 @@
 """
-Telegram Cloud Drive — worker upload (Telethon / MTProto).
+Telegram Cloud Drive — upload worker (Telethon / MTProto).
 
-Milestone 3: dijalankan dari laptop untuk upload file besar.
-- game : split folder/arsip dengan 7-Zip (~1.5 GB/part, mode store) lalu kirim tiap
-         part ke channel sebagai dokumen, dengan caption kontrak
-         "Judul | part/total | tag1, tag2".
-- media: kirim 1 file utuh sebagai media (bukan dokumen) supaya Telegram membuat
-         thumbnail otomatis (nanti di-harvest bot), caption "Judul | 1/1 | tag".
+Milestone 3: run from the laptop to upload large files.
+- game : split folder/archive with 7-Zip (~1.5 GB/part, store mode) then send each
+         part to the channel as a document, with the caption contract
+         "Title | part/total | tag1, tag2".
+- media: send 1 file whole as media (not a document) so Telegram generates a
+         thumbnail automatically (harvested later by the bot), caption "Title | 1/1 | tag".
 
-Kenapa Telethon (user session), bukan bot: Bot API dibatasi 50 MB upload; MTProto
-(user) sampai ~2 GB/file. Bot tetap yang meng-index lewat handler channel_post.
+Why Telethon (user session) instead of the bot: Bot API is limited to 50 MB uploads;
+MTProto (user) supports ~2 GB/file. The bot still indexes via the channel_post handler.
 
-Contoh (PowerShell):
-  python worker.py game "D:\Games\Eternum" --title "Eternum" --tags "rpg, fantasy"
-  python worker.py game "D:\Games\Eternum.7z.001" --title "Eternum" --tags "rpg" --skip-split
-  python worker.py media "D:\Videos\trailer.mp4" --title "Trailer Eternum" --tags "video, promo"
+Examples (PowerShell):
+  python worker.py game "D:\\Games\\Eternum" --title "Eternum" --tags "rpg, fantasy"
+  python worker.py game "D:\\Games\\Eternum.7z.001" --title "Eternum" --tags "rpg" --skip-split
+  python worker.py media "D:\\Videos\\trailer.mp4" --title "Trailer Eternum" --tags "video, promo"
 
-Login pertama kali akan meminta nomor telepon + kode (interaktif di terminal laptop).
-Session tersimpan sebagai worker.session (JANGAN commit — sudah di .gitignore).
+First login will prompt for phone number + code (interactive in the terminal).
+Session is saved as worker.session (DO NOT commit — already in .gitignore).
 """
 
 import argparse
@@ -40,28 +40,28 @@ SESSION = os.environ.get("WORKER_SESSION", "worker")
 
 
 # ---------------------------------------------------------------------------
-# Helper
+# Helpers
 # ---------------------------------------------------------------------------
 def normalize_tags(raw: str | None) -> str:
-    """'rpg ,  fantasy' -> 'rpg, fantasy' (string siap dipakai di caption)."""
+    """'rpg ,  fantasy' -> 'rpg, fantasy' (ready-to-use string for the caption)."""
     if not raw:
         return ""
     return ", ".join(t.strip() for t in raw.split(",") if t.strip())
 
 
 def build_caption(title: str, idx: int, total: int, tags: str) -> str:
-    """Format kontrak: 'Judul | part/total | tag1, tag2'."""
+    """Caption contract: 'Title | part/total | tag1, tag2'."""
     return f"{title} | {idx}/{total} | {tags}"
 
 
 def safe_name(title: str) -> str:
-    """Nama arsip aman dari judul."""
+    """Safe archive name derived from the title."""
     name = re.sub(r"[^\w\-. ]", "", title).strip().replace(" ", "_")
     return name or "archive"
 
 
 def split_with_7zip(input_path: str, out_dir: str, title: str, part_mb: int, sevenzip: str) -> list[str]:
-    """Jalankan 7-Zip split (store mode) -> kembalikan daftar path part terurut."""
+    """Run 7-Zip split (store mode) → return sorted list of part paths."""
     os.makedirs(out_dir, exist_ok=True)
     archive = os.path.join(out_dir, f"{safe_name(title)}.7z")
     cmd = [sevenzip, "a", f"-v{part_mb}m", "-mx=0", "-y", archive, input_path]
@@ -70,25 +70,25 @@ def split_with_7zip(input_path: str, out_dir: str, title: str, part_mb: int, sev
         subprocess.run(cmd, check=True)
     except FileNotFoundError:
         sys.exit(
-            f"ERROR: '{sevenzip}' tidak ditemukan. Install 7-Zip atau pakai "
+            f"ERROR: '{sevenzip}' not found. Install 7-Zip or use "
             f"--sevenzip \"C:\\Program Files\\7-Zip\\7z.exe\"."
         )
     except subprocess.CalledProcessError as e:
-        sys.exit(f"ERROR: 7-Zip gagal (exit {e.returncode}).")
+        sys.exit(f"ERROR: 7-Zip failed (exit {e.returncode}).")
     return collect_parts(archive)
 
 
 def collect_parts(path: str) -> list[str]:
-    """Kumpulkan part split terurut dari sebuah path (file .001/.7z, atau folder)."""
+    """Collect sorted split parts from a path (file .001/.7z, or directory)."""
     if os.path.isdir(path):
         parts = glob.glob(os.path.join(path, "*.7z.*")) or glob.glob(os.path.join(path, "*.0*"))
     else:
-        # path bisa "name.7z.001" atau "name.7z" -> ambil semua "name.7z.*"
-        base = re.sub(r"\.\d{3}$", "", path)  # buang sufiks .001
+        # path may be "name.7z.001" or "name.7z" → grab all "name.7z.*"
+        base = re.sub(r"\.\d{3}$", "", path)  # strip .001 suffix
         parts = glob.glob(base + ".*")
         if not parts and os.path.isfile(path):
             parts = [path]
-    # urutkan numerik berdasarkan sufiks angka
+    # sort numerically by trailing digit suffix
     def key(p):
         m = re.search(r"\.(\d+)$", p)
         return int(m.group(1)) if m else 0
@@ -111,8 +111,8 @@ def make_progress(name: str):
 async def upload_parts(client, channel, paths: list[str], title: str, tags: str, as_document: bool):
     total = len(paths)
     if total == 0:
-        sys.exit("ERROR: tidak ada file untuk diunggah.")
-    print(f"→ Mengunggah {total} part ke channel {STORAGE_CHANNEL_ID}")
+        sys.exit("ERROR: no files to upload.")
+    print(f"→ Uploading {total} part(s) to channel {STORAGE_CHANNEL_ID}")
     for i, path in enumerate(paths, start=1):
         caption = build_caption(title, i, total, tags)
         name = os.path.basename(path)
@@ -125,27 +125,27 @@ async def upload_parts(client, channel, paths: list[str], title: str, tags: str,
             progress_callback=make_progress(f"[{i}/{total}] {name}"),
         )
         print(f"  ✓ {name} — \"{caption}\"")
-    print("Selesai. Bot akan meng-index lewat handler channel_post.")
+    print("Done. The bot will index via the channel_post handler.")
 
 
 async def run(args):
     tags = normalize_tags(args.tags)
     title = args.title.strip()
-    did_split = False  # hanya file yang KITA split yang boleh dihapus
+    did_split = False  # only files WE split may be deleted
 
     if args.command == "media":
         if not os.path.isfile(args.input):
-            sys.exit(f"ERROR: file media tidak ditemukan: {args.input}")
+            sys.exit(f"ERROR: media file not found: {args.input}")
         paths = [args.input]
         as_document = False
     else:  # game
         if args.skip_split:
             paths = collect_parts(args.input)
             if not paths:
-                sys.exit(f"ERROR: tidak menemukan part split di: {args.input}")
+                sys.exit(f"ERROR: no split parts found at: {args.input}")
         else:
             if not os.path.exists(args.input):
-                sys.exit(f"ERROR: input tidak ditemukan: {args.input}")
+                sys.exit(f"ERROR: input not found: {args.input}")
             out_dir = args.out or os.path.join(
                 os.path.dirname(os.path.abspath(args.input)), "_upload_parts"
             )
@@ -157,8 +157,8 @@ async def run(args):
         channel = await client.get_entity(STORAGE_CHANNEL_ID)
         await upload_parts(client, channel, paths, title, tags, as_document)
 
-    # Hapus file split yang kita buat (kecuali --keep). File media asli & part
-    # --skip-split milik user tidak disentuh.
+    # Delete split files we created (except --keep). The original media file and
+    # --skip-split parts provided by the user are never touched.
     if did_split and not args.keep:
         removed = 0
         for p in paths:
@@ -167,27 +167,27 @@ async def run(args):
                 removed += 1
             except OSError:
                 pass
-        print(f"Cleanup: {removed} file split dihapus dari {os.path.dirname(paths[0])}")
+        print(f"Cleanup: {removed} split file(s) deleted from {os.path.dirname(paths[0])}")
 
 
 def main():
-    p = argparse.ArgumentParser(description="Telegram Cloud Drive — worker upload (Telethon).")
+    p = argparse.ArgumentParser(description="Telegram Cloud Drive — upload worker (Telethon).")
     sub = p.add_subparsers(dest="command", required=True)
 
-    g = sub.add_parser("game", help="Split (7-Zip) + upload arsip game multi-part.")
-    g.add_argument("input", help="Folder/arsip game, atau path part .001 bila --skip-split.")
-    g.add_argument("--title", required=True, help="Judul item.")
-    g.add_argument("--tags", default="", help='Tag dipisah koma, mis. "rpg, fantasy".')
-    g.add_argument("--part-size", type=int, default=1500, help="Ukuran tiap part (MB). Default 1500.")
-    g.add_argument("--out", help="Folder output part. Default: _upload_parts di samping input.")
-    g.add_argument("--skip-split", action="store_true", help="Input sudah ter-split, langsung upload.")
-    g.add_argument("--sevenzip", default="7z", help="Path 7z.exe bila tidak ada di PATH.")
-    g.add_argument("--keep", action="store_true", help="Jangan hapus file split setelah upload sukses.")
+    g = sub.add_parser("game", help="Split (7-Zip) + upload multi-part game archive.")
+    g.add_argument("input", help="Game folder/archive, or path to .001 part if using --skip-split.")
+    g.add_argument("--title", required=True, help="Item title.")
+    g.add_argument("--tags", default="", help='Comma-separated tags, e.g. "rpg, fantasy".')
+    g.add_argument("--part-size", type=int, default=1500, help="Size of each part (MB). Default 1500.")
+    g.add_argument("--out", help="Output folder for parts. Default: _upload_parts next to input.")
+    g.add_argument("--skip-split", action="store_true", help="Input is already split, upload directly.")
+    g.add_argument("--sevenzip", default="7z", help="Path to 7z.exe if not in PATH.")
+    g.add_argument("--keep", action="store_true", help="Keep split files after a successful upload.")
 
-    m = sub.add_parser("media", help="Upload 1 file media (video/gambar) utuh.")
-    m.add_argument("input", help="Path file media.")
-    m.add_argument("--title", required=True, help="Judul item.")
-    m.add_argument("--tags", default="", help='Tag dipisah koma, mis. "video, promo".')
+    m = sub.add_parser("media", help="Upload a single media file (video/image).")
+    m.add_argument("input", help="Path to the media file.")
+    m.add_argument("--title", required=True, help="Item title.")
+    m.add_argument("--tags", default="", help='Comma-separated tags, e.g. "video, promo".')
 
     args = p.parse_args()
     asyncio.run(run(args))

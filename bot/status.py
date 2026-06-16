@@ -1,6 +1,6 @@
 """
-Lihat isi katalog Turso (monitoring manual).
-Pakai:  python status.py
+View the Turso catalog contents (manual monitoring).
+Usage:  python status.py
 """
 
 import asyncio
@@ -21,17 +21,17 @@ async def main():
         "SELECT id, slug, title, kind, total_parts, total_size, is_favorite, deleted_at "
         "FROM items ORDER BY id"
     )
-    print(f"=== {len(items.rows)} item ===")
+    print(f"=== {len(items.rows)} item(s) ===")
     for r in items.rows:
         fav = "★" if r[6] else " "
-        trash = "  [SAMPAH]" if r[7] else ""
+        trash = "  [TRASH]" if r[7] else ""
         gb = (r[5] or 0) / 1024 / 1024 / 1024
-        print(f"  {fav} #{r[0]} [{r[3]:5}] {r[2]}  — {r[4]} part, {gb:.2f} GB — slug={r[1]}{trash}")
+        print(f"  {fav} #{r[0]} [{r[3]:5}] {r[2]}  — {r[4]} part(s), {gb:.2f} GB — slug={r[1]}{trash}")
     th = await db.execute(
         "SELECT p.item_id, COUNT(*) FROM thumbnails t "
         "JOIN parts p ON p.id = t.part_id GROUP BY p.item_id ORDER BY p.item_id"
     )
-    print("Thumbnail per item (item_id: jumlah):", {r[0]: r[1] for r in th.rows})
+    print("Thumbnails per item (item_id: count):", {r[0]: r[1] for r in th.rows})
     await db.close()
 
 

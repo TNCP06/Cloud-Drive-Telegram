@@ -5,9 +5,9 @@ import path from "node:path";
 import os from "node:os";
 import type { FsEntry, FsListing, FsShortcut } from "@/lib/types";
 
-// CATATAN: ini membaca filesystem ASLI laptop tempat web ini berjalan (localhost).
-// Aman karena dipakai lokal/pribadi. Jangan ekspos dashboard ini ke internet
-// tanpa autentikasi — listDir bisa menelusuri seluruh disk.
+// NOTE: this reads the REAL filesystem of the laptop running this web server (localhost).
+// Safe because it's used locally/privately. Do not expose this dashboard to the internet
+// without authentication — listDir can traverse the entire disk.
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -33,7 +33,7 @@ async function buildShortcuts(): Promise<FsShortcut[]> {
   const out: FsShortcut[] = [];
   for (const c of cands) if (await exists(c.path)) out.push(c);
 
-  // Drive letters yang ada (lewati floppy A/B).
+  // Available drive letters (skip floppy A/B).
   for (const L of "CDEFGHIJ".split("")) {
     const d = `${L}:\\`;
     if (await exists(d)) out.push({ label: d, path: d });
@@ -41,7 +41,7 @@ async function buildShortcuts(): Promise<FsShortcut[]> {
   return out;
 }
 
-// Folder sistem yang sering melempar permission error — lewati saja.
+// System folders that frequently throw permission errors — skip them.
 const SKIP = new Set(["$RECYCLE.BIN", "System Volume Information", "$WinREAgent", "Config.Msi"]);
 
 export async function listDir(dirPath?: string): Promise<FsListing> {
@@ -59,34 +59,34 @@ export async function listDir(dirPath?: string): Promise<FsListing> {
       const full = path.join(cwd, d.name);
       let isDir = d.isDirectory();
       let size = 0;
-      // Resolusi symlink/junction (umum di OneDrive) → tentukan dir vs file.
+      // Resolve symlinks/junctions (common with OneDrive) → determine dir vs file.
       if (d.isSymbolicLink()) {
         try {
           const st = await fs.stat(full);
           isDir = st.isDirectory();
           size = isDir ? 0 : st.size;
         } catch {
-          continue; // target tak terjangkau (mis. cloud-only) → lewati
+          continue; // unreachable target (e.g. cloud-only) — skip
         }
       } else if (!isDir) {
         try {
           size = (await fs.stat(full)).size;
         } catch {
-          // file terkunci → biarkan size 0
+          // locked file — leave size as 0
         }
       }
       tmp.push({ name: d.name, path: full, isDir, size });
     }
     tmp.sort((a, b) =>
       a.isDir === b.isDir
-        ? a.name.localeCompare(b.name, "id", { sensitivity: "base" })
+        ? a.name.localeCompare(b.name, "en", { sensitivity: "base" })
         : a.isDir
           ? -1
           : 1
     );
-    entries = tmp.slice(0, 3000); // batasi agar folder raksasa tetap ringan
+    entries = tmp.slice(0, 3000); // cap entries so huge directories stay responsive
   } catch (e) {
-    error = e instanceof Error ? e.message : "Tidak bisa membaca folder ini.";
+    error = e instanceof Error ? e.message : "Cannot read this folder.";
   }
 
   const parentRaw = path.dirname(cwd);

@@ -1,6 +1,6 @@
-// Auth sederhana berbasis password tunggal di env (APP_PASSWORD).
-// Cookie menyimpan SHA-256(password), bukan password mentah.
-// Dipakai bersama oleh middleware (edge) & server action — keduanya punya Web Crypto.
+// Simple single-password auth based on APP_PASSWORD env var.
+// The cookie stores SHA-256(password), not the raw password.
+// Shared by middleware (edge) and server actions — both have access to Web Crypto.
 
 export const AUTH_COOKIE = "tcd_auth";
 
