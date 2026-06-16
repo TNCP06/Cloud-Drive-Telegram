@@ -18,6 +18,7 @@ Architecture:
 Endpoints:
   GET /stream/{part_id}  — serve video bytes (206 Partial Content)
   GET /health            — simple health check
+  GET /logs              — view recent logs
 
 Run:
   python streamer.py
@@ -30,7 +31,7 @@ import logging
 import os
 import shutil
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -40,6 +41,27 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from telethon import TelegramClient
+
+# ---------------------------------------------------------------------------
+# In-memory log buffer for debugging
+# ---------------------------------------------------------------------------
+class MemoryHandler(logging.Handler):
+    def __init__(self, capacity=100):
+        super().__init__()
+        self.buffer = deque(maxlen=capacity)
+    
+    def emit(self, record):
+        self.buffer.append(self.format(record))
+
+mem_handler = MemoryHandler(capacity=200)
+mem_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(), mem_handler]
+)
+log = logging.getLogger("streamer")
 
 # ---------------------------------------------------------------------------
 # Configuration & environment
@@ -83,12 +105,6 @@ MIME_MAP = {
     ".avi": "video/x-msvideo", ".flv": "video/x-flv",
     ".3gp": "video/3gpp", ".ts": "video/mp2t",
 }
-
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    level=logging.INFO,
-)
-log = logging.getLogger("streamer")
 
 # ---------------------------------------------------------------------------
 # Global state (initialised in lifespan)
@@ -409,7 +425,12 @@ app = FastAPI(title="Telegram Cloud Drive Streamer", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 @app.get("/health")
 async def health():
-    return {"status": "ok", "cache_dir": str(CACHE_DIR)}
+    return {"status": "ok", "time": time.time()}
+
+
+@app.get("/logs")
+async def get_logs():
+    return {"logs": list(mem_handler.buffer)}
 
 
 @app.get("/stream/{part_id}")
