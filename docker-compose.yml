@@ -25,6 +25,7 @@ services:
     env_file: .env
     environment:
       UPLOAD_STAGING_DIR: /staging
+      STREAMER_URL: http://streamer:8080
     ports:
       - "3000:3000"
     volumes:
@@ -52,5 +53,25 @@ services:
       - ./bot/worker.session:/app/worker.session
     restart: unless-stopped
 
+  streamer:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    command: ["python", "-u", "streamer.py"]
+    env_file: .env
+    environment:
+      CACHE_DIR: /cache
+      CACHE_MAX_SIZE_GB: "15"            # auto-cleanup (LRU) if exceeded
+      PREFETCH_BUFFER_MB: "16"           # YouTube-style: buffer 16 MB ahead
+      CHUNK_SIZE_MB: "1"                 # 1 MB per chunk (responsive seeking)
+      INITIAL_CHUNKS: "4"               # fast start: download first 4 MB
+      PREFETCH_TIMEOUT_S: "90"           # stop prefetch after 90s idle
+      STREAMER_SESSION: streamer
+    volumes:
+      - cache:/cache                     # expendable — can be pruned anytime
+      - ./bot/streamer.session:/app/streamer.session
+    restart: unless-stopped
+
 volumes:
   staging:
+  cache:         # video streaming cache — expendable, data lives in Telegram

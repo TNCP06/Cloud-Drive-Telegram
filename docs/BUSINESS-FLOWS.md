@@ -129,6 +129,36 @@ small API call.
 
 ---
 
+## E2. Video streaming (no laptop, no download — YouTube-style)
+
+In-browser playback of single-part media videos (`.mp4`, `.webm`, `.m4v`, `.mov`) without
+downloading the whole file first.
+
+1. **Web** (PreviewDrawer): `isStreamableVideo(item)` detects a single-part media item with a
+   browser-playable extension → renders `<video src="/api/stream/{firstPartId}">` instead of
+   a static thumbnail.
+2. **Browser** `<video>` sends: `GET /api/stream/123` with `Range: bytes=0-`.
+3. **Next.js** (`api/stream/[partId]/route.ts`): verifies auth cookie, proxies the request
+   (incl. Range header) to `http://streamer:8080/stream/123`.
+4. **Streamer** (`streamer.py`):
+   a. First request → query Turso for `parts.channel_msg_id` + `file_size`, create `meta.json`.
+   b. Download initial 4 chunks (4 MB fast start) via Telethon `iter_download`.
+   c. Serve chunk 0 as `HTTP 206 Partial Content` with `Content-Range`.
+   d. Start background **prefetch** — download chunks 1, 2, 3… up to 16 MB ahead.
+5. **Subsequent requests** (browser auto-requests next range): served from disk cache (instant).
+   Prefetch keeps downloading ahead; when user's play position catches up, prefetch resumes.
+6. **Seek**: browser sends `Range: bytes=<new-offset>-`. Streamer cancels old prefetch, downloads
+   the new chunk, starts a new prefetch from there. Previously cached chunks survive (seeking
+   back is instant).
+7. **Cache full** (>15 GB): before downloading a new chunk, LRU eviction deletes the entire
+   part directory (all chunks) of the least-recently-accessed video.
+
+> **Limitations:** only single-part media, browser-playable formats only (no MKV/AVI),
+> latency ~200-500 ms on first cold request, ~3-5 concurrent viewers before Telegram flood limits.
+> Repeat views are 100% cache — zero Telegram egress.
+
+---
+
 ## F. Delete → restore → purge (soft delete)
 
 1. **Delete (web)**: `softDelete()` sets `items.deleted_at = now`. Item disappears from the

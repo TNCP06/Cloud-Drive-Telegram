@@ -23,6 +23,8 @@ export interface DriveFile {
   trashed: boolean;        // deleted_at != NULL
   deletedAt: number | null;
   thumb: string | null;    // data URL (only media items have this)
+  firstPartId: number | null;  // parts.id of the first part (for streaming URL)
+  fileName: string | null;     // parts.file_name (for video vs image detection)
   family: string;          // base name (title without version) for grouping
   familyKey: string;       // grouping key (lowercase)
   version: string | null;  // version label, e.g. "v0.6.0" (games only)

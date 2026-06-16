@@ -49,6 +49,23 @@ Same upload logic as the watcher but argparse-driven (`game` / `media` subcomman
 contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`, `upload_parts`,
 `run`, `main`.
 
+### `streamer.py` — video streaming server (FastAPI + Telethon, **server/VPS**)
+HTTP 206 Partial Content server for single-part media items. Browser `<video>` hits
+`GET /stream/{part_id}` with a `Range` header → sparse chunk cache on disk → Telethon
+`iter_download` from the channel on miss. YouTube-style 1 MB chunks, 16 MB prefetch buffer,
+15 GB LRU cache (eviction unit = entire part directory).
+
+Key functions: `_turso_http_url` (libsql→https), `_ensure_chunk` (disk-or-download with
+double-checked lock), `_init_part_meta` (Turso query → `meta.json` creation),
+`_download_initial_chunks` (fast start: first 4 chunks), `_prefetch_worker` (background
+asyncio task: download ahead, seek-aware, timeout-aware), `_start_prefetch` (cancel-and-restart
+on seek), `_evict_if_needed` (LRU by `meta.json` `last_accessed`), `_get_tg_message`
+(in-memory message cache), `stream` (main route: parse Range, serve chunks, trigger prefetch),
+`health` (liveness endpoint). Lifespan: Telethon connect/disconnect + Turso init/close.
+**Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `TURSO_*`, `STREAMER_SESSION`
+(default `streamer`), `CACHE_DIR`, `CACHE_MAX_SIZE_GB`, `PREFETCH_BUFFER_MB`, `CHUNK_SIZE_MB`,
+`PREFETCH_TIMEOUT_S`, `INITIAL_CHUNKS`, `STREAMER_PORT` (default 8080).
+
 ### Supporting scripts
 - `login.py` — one-time Telethon login → creates `worker.session`.
 - `schema.sql` — full Turso schema (run once). `migration-tags-color.sql` + `run-migration.py`
@@ -66,15 +83,16 @@ contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`,
 
 ### `web/lib/` — server-side data & helpers
 - `db.ts` — `@libsql/client` singleton (`server-only`; auth token never reaches the browser).
-- `types.ts` — `Kind`, `Tag`, `DriveFile` (UI shape), `UploadJob` (now incl. `origin`,
-  `partsDone`, `totalBytes`), `UploadOrigin`, `UploadStatus`, `WatcherStatus`,
-  `FsEntry`/`FsListing`/`FsShortcut`.
+- `types.ts` — `Kind`, `Tag`, `DriveFile` (UI shape; incl. `firstPartId` + `fileName` for
+  streaming), `UploadJob` (now incl. `origin`, `partsDone`, `totalBytes`), `UploadOrigin`,
+  `UploadStatus`, `WatcherStatus`, `FsEntry`/`FsListing`/`FsShortcut`.
 - `staging.ts` — shared resumable-upload staging paths. `STAGING_ROOT`
   (`UPLOAD_STAGING_DIR`, `/staging` in Docker), `jobDir(token)`, `stagedFilePath(token,name)`
   with strict token/path-traversal guards. Used by the upload API + the watcher reads the same dir.
 - `items.ts` — `getDriveData()`: the main read. One batched query set → shapes `DriveFile[]` +
-  `Tag[]`. Computes each item's **cover** thumbnail (first part by `channel_msg_id`) and, for
-  games, splits title into `family`/`version` via `parseTitle`.
+  `Tag[]`. Computes each item's **cover** thumbnail (first part by `channel_msg_id`), fetches
+  `firstPartId`/`fileName` for single-part media (video streaming), and for games, splits title
+  into `family`/`version` via `parseTitle`.
 - `version.ts` — `parseTitle()`: split a game title into `family` + `version` (e.g.
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Games only.
 - `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and kind metadata.
@@ -110,19 +128,25 @@ contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`,
   bytes already staged (resume point); `POST ?offset=` appends a chunk, replies `409` with the
   real offset if out of sync. `api/upload/complete/route.ts` — verifies the staged file size,
   then inserts an `upload_jobs` row (`origin='upload'`, `cleanup_source=1`).
+- `api/stream/[partId]/route.ts` — **streaming proxy** (`nodejs` runtime). Authenticates via
+  cookie, then proxies `Range` requests to the streamer service (`STREAMER_URL`, default
+  `http://streamer:8080`). Pipes the 206 response body back to the browser's `<video>` element.
 - `page.tsx` (main grid), `trash/page.tsx`, `upload/page.tsx`, `upload-bot/page.tsx`,
   `login/` (`page.tsx` + `actions.ts` + `LoginForm.tsx`). `loading.tsx`/`error.tsx` per route.
 
 ### `web/` — auth & config
 - `lib/auth.ts` — `AUTH_COOKIE`, `sha256Hex` (shared by edge middleware + actions).
 - `middleware.ts` — gate all routes on `SHA-256(APP_PASSWORD)` cookie; **no `APP_PASSWORD` ⇒
-  auth off**. `/api/upload` is excluded from the matcher to avoid the 10 MB middleware body-size
-  limit (upload chunks are 16 MB; the route performs its own cookie auth check internally).
+  auth off**. `/api/upload` and `/api/stream` are excluded from the matcher to avoid the 10 MB
+  middleware body-size limit; both routes perform their own cookie auth check internally.
 
 ### `web/components/` — UI (client)
 - `DriveApp.tsx` — top-level app shell/state (largest component). `Sidebar.tsx` — nav/filters.
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s. `PreviewDrawer.tsx` — item detail +
-  on-demand gallery (`getGallery`). `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
+  on-demand gallery (`getGallery`) + **video streaming**: `isStreamableVideo()` detects single-
+  part media with browser-playable extensions (.mp4/.webm/.m4v/.mov) and renders a `<video>`
+  element sourced from `/api/stream/{firstPartId}` with the thumbnail as poster.
+  `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
 - `UploadManager.tsx` — upload queue UI + watcher/bot start/stop; **Source toggle**: "Upload
   from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).
   `FileUploader.tsx` — **resumable browser uploader** (16 MB chunks, auto-resume on drop via

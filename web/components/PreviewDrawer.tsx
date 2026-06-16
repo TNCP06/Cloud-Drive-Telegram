@@ -14,6 +14,16 @@ import type { DriveFile, Kind, Tag } from "@/lib/types";
 const THUMB_MAX_DIM = 320;
 const THUMB_QUALITY = 0.85;
 
+// Browser-playable video formats (MKV/AVI need transcoding — excluded).
+const STREAMABLE_EXTS = new Set([".mp4", ".webm", ".m4v", ".mov"]);
+
+function isStreamableVideo(item: DriveFile): boolean {
+  if (item.kind !== "media" || item.parts !== 1 || !item.firstPartId || !item.fileName) return false;
+  const dot = item.fileName.lastIndexOf(".");
+  if (dot < 0) return false;
+  return STREAMABLE_EXTS.has(item.fileName.substring(dot).toLowerCase());
+}
+
 async function resizeToJpeg(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new window.Image();
@@ -246,7 +256,18 @@ export function PreviewDrawer({
       <div className="viewer-scrim" onClick={onClose}></div>
       <div className={"viewer" + (multi ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
         <div className="viewer-stage" onClick={onClose}>
-          {active ? (
+          {isStreamableVideo(item) ? (
+            <video
+              key={item.id}
+              src={`/api/stream/${item.firstPartId}`}
+              poster={active || undefined}
+              controls
+              autoPlay
+              preload="metadata"
+              onClick={(e) => e.stopPropagation()}
+              style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
+            />
+          ) : active ? (
             <Image src={active} alt={item.name} fill unoptimized onClick={(e) => e.stopPropagation()} style={{ objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
           ) : (
             <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />

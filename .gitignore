@@ -86,3 +86,6 @@ pnpm-debug.log*
 # ---------------------------------------------------------------------------
 temp/
 tmp/
+claude.md
+web-cloud-drive-design/
+gemini.md

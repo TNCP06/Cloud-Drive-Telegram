@@ -7,7 +7,7 @@ import type { DriveFile, Kind, Tag } from "./types";
 
 // Fetch and shape all drive data from Turso (used by the main page and /trash).
 export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] }> {
-  const [itemsRs, tagsRs, itemTagsRs, thumbsRs] = await Promise.all([
+  const [itemsRs, tagsRs, itemTagsRs, thumbsRs, streamRs] = await Promise.all([
     db.execute(
       "SELECT id, slug, title, kind, total_parts, total_size, is_favorite, date_added, updated_at, deleted_at FROM items"
     ),
@@ -22,6 +22,12 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
          FROM thumbnails t JOIN parts p ON p.id = t.part_id
        )
        SELECT item_id, mime, data FROM cover WHERE rn = 1`
+    ),
+    // First part info for streamable videos (single-part media items).
+    db.execute(
+      `SELECT p.item_id, p.id AS part_id, p.file_name
+       FROM parts p JOIN items i ON i.id = p.item_id
+       WHERE i.kind = 'media' AND i.total_parts = 1 AND p.part_number = 1`
     ),
   ]);
 
@@ -47,6 +53,15 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
     thumbByItem.set(Number(r.item_id), `data:${String(r.mime)};base64,${String(r.data)}`);
   }
 
+  // Map item_id → { partId, fileName } for streamable single-part media.
+  const streamByItem = new Map<number, { partId: number; fileName: string }>();
+  for (const r of streamRs.rows) {
+    streamByItem.set(Number(r.item_id), {
+      partId: Number(r.part_id),
+      fileName: String(r.file_name ?? ""),
+    });
+  }
+
   const files: DriveFile[] = itemsRs.rows.map((r) => {
     const id = Number(r.id);
     const name = String(r.title);
@@ -57,6 +72,7 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
       kind === "game"
         ? parseTitle(name)
         : { family: name, familyKey: String(r.slug), version: null };
+    const stream = streamByItem.get(id);
     return {
       id,
       slug: String(r.slug),
@@ -71,6 +87,8 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
       trashed: deletedAt != null,
       deletedAt,
       thumb: thumbByItem.get(id) ?? null,
+      firstPartId: stream?.partId ?? null,
+      fileName: stream?.fileName ?? null,
       family: tp.family,
       familyKey: tp.familyKey,
       version: tp.version,
@@ -79,3 +97,4 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
 
   return { files, tags };
 }
+

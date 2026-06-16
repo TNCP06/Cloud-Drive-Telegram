@@ -28,13 +28,15 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 | **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Turso; serve downloads via `copy_message`; daily trash purge; Bot Drop intake. |
 | **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for games); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes; heartbeat. |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
-| **Web dashboard** | Vercel (or localhost) | `web/` (Next.js 15) | Browse/search/edit/delete metadata; trigger download/upload; control watcher; Bot Drop form. |
+| **Streamer** | Server/VPS (Docker) | `bot/streamer.py` | YouTube-style video streaming: sparse 1 MB chunk cache + Telethon `iter_download` on miss; prefetch ahead; LRU eviction at 15 GB. |
+| **Web dashboard** | Vercel (or localhost) | `web/` (Next.js 15) | Browse/search/edit/delete metadata; trigger download/upload; stream video; control watcher; Bot Drop form. |
 | **Turso** | Cloud (free tier) | schema in `bot/schema.sql` | All metadata. Always-on, SQLite-compatible. |
 
-> **Process topology matters.** `bot.py` and `watcher.py` are **separate processes** that
-> only communicate through Turso tables — they never call each other. `bot/run-all.cmd`
-> starts both (minimized) on the laptop. The web app can start/stop both the *watcher* and
-> the *bot* (via `startBot`/`stopBot` server actions) when running on the same machine.
+> **Process topology matters.** `bot.py`, `watcher.py`, and `streamer.py` are **separate
+> processes** that only communicate through Turso tables — they never call each other.
+> `bot/run-all.cmd` starts bot + watcher (minimized) on the laptop. The web app can
+> start/stop both the *watcher* and the *bot* (via `startBot`/`stopBot` server actions)
+> when running on the same machine.
 
 ---
 
@@ -64,6 +66,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 
 Key principle (storage path): **the web never streams file bytes to Telegram.** The watcher
 pushes parts to Telegram (MTProto); downloads go Telegram→user's chat (`copy_message`).
+Video streaming goes Telegram→streamer cache→Next.js proxy→browser `<video>` element.
 
 Two upload entry points:
 - **`local`** — pick a path on the machine that runs the watcher (laptop mode). The file never
@@ -151,8 +154,9 @@ separate: the bot only obeys `/start` downloads and Bot Drop from `OWNER_USER_ID
 - **DB:** Turso (libSQL). Bot connects over **HTTPS** (Hrana-over-HTTP) — `libsql://` URLs are
   rewritten to `https://` because the WebSocket transport is rejected (HTTP 400).
 - **Server/VPS:** the whole stack ships as Docker (`docker-compose.yml` + `web/Dockerfile` +
-  `bot/Dockerfile`). web & watcher share a `staging` volume for browser uploads; bot & watcher
-  run as always-on services. `web/Dockerfile` receives `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
+  `bot/Dockerfile`). web & watcher share a `staging` volume for browser uploads; the `streamer`
+  service gets a `cache` volume for expendable video chunks. bot, watcher, & streamer run as
+  always-on services. `web/Dockerfile` receives `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
   as build args (Next.js pre-renders API routes at build time). Portable to any host — full guide
   in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
   Under Docker the web's watcher/bot start-stop buttons are inert (processes are compose-managed).
