@@ -9,7 +9,7 @@ import { Sidebar, type Counts, type Storage } from "./Sidebar";
 import { FileCard, FileRow, Menu, MenuItem } from "./FileViews";
 import { PreviewDrawer } from "./PreviewDrawer";
 import { TagManager } from "./TagManager";
-import { toggleFavorite, softDelete, restore, updateMetadata } from "@/app/actions";
+import { toggleFavorite, softDelete, restore, purgeNow, updateMetadata } from "@/app/actions";
 import { prefetchGallery } from "@/lib/gallery-cache";
 
 type View = "all" | "recent" | "starred" | "trash" | "tag";
@@ -46,7 +46,18 @@ export function DriveApp({
   const [menu, setMenu] = useState<{ anchor: HTMLElement; item: DriveFile } | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [manageTags, setManageTags] = useState(false);
+  // Destructive-action confirmation. mode "trash" = move to Trash (reversible);
+  // mode "purge" = delete from Telegram + DB now (irreversible).
+  const [confirm, setConfirm] = useState<{ item: DriveFile; mode: "trash" | "purge" } | null>(null);
+  // Transient error notification (e.g. permanent delete failed). Auto-dismisses.
+  const [toast, setToast] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [toast]);
   const searchRef = useRef<HTMLInputElement>(null);
 
   /* ---- keyboard: ⌘K focuses search ---- */
@@ -92,6 +103,20 @@ export function DriveApp({
     startTransition(() => {
       restore(item.id);
     });
+  const doPurge = (item: DriveFile) =>
+    startTransition(async () => {
+      const r = await purgeNow(item.id);
+      if (!r.ok) setToast(r.error ?? "Failed to delete permanently.");
+    });
+  // Run a confirmed destructive action, then dismiss the dialog (and the preview
+  // drawer if it was showing the same item, since it may now be gone).
+  const runConfirm = () => {
+    if (!confirm) return;
+    if (confirm.mode === "purge") doPurge(confirm.item);
+    else doTrash(confirm.item);
+    if (previewId === confirm.item.id) setPreviewId(null);
+    setConfirm(null);
+  };
   const doSave = (
     item: DriveFile,
     input: { title: string; kind: DriveFile["kind"]; tags: string }
@@ -428,14 +453,26 @@ export function DriveApp({
       {menu && (
         <Menu anchor={menu.anchor} onClose={() => setMenu(null)} width={206}>
           {menu.item.trashed ? (
-            <MenuItem
-              icon="restore"
-              label="Restore"
-              onClick={() => {
-                doRestore(menu.item);
-                setMenu(null);
-              }}
-            />
+            <>
+              <MenuItem
+                icon="restore"
+                label="Restore"
+                onClick={() => {
+                  doRestore(menu.item);
+                  setMenu(null);
+                }}
+              />
+              <div className="menu-sep"></div>
+              <MenuItem
+                icon="trash"
+                label="Delete permanently"
+                danger
+                onClick={() => {
+                  setConfirm({ item: menu.item, mode: "purge" });
+                  setMenu(null);
+                }}
+              />
+            </>
           ) : (
             <>
               <MenuItem
@@ -462,7 +499,7 @@ export function DriveApp({
                 label="Delete"
                 danger
                 onClick={() => {
-                  doTrash(menu.item);
+                  setConfirm({ item: menu.item, mode: "trash" });
                   setMenu(null);
                 }}
               />
@@ -481,10 +518,8 @@ export function DriveApp({
           onNavigateFile={navigatePreview}
           onClose={() => setPreviewId(null)}
           onStar={doStar}
-          onTrash={(it) => {
-            doTrash(it);
-            setPreviewId(null);
-          }}
+          onTrash={(it) => setConfirm({ item: it, mode: "trash" })}
+          onPurge={(it) => setConfirm({ item: it, mode: "purge" })}
           onRestore={(it) => {
             doRestore(it);
             setPreviewId(null);
@@ -504,12 +539,91 @@ export function DriveApp({
         />
       )}
 
+      {confirm && (
+        <ConfirmDelete
+          item={confirm.item}
+          mode={confirm.mode}
+          onCancel={() => setConfirm(null)}
+          onConfirm={runConfirm}
+        />
+      )}
+
       {isPending && (
         <div className="saving-pill">
           <span className="spinner" />
           Saving…
         </div>
       )}
+
+      {toast && (
+        <div className="saving-pill err" role="alert" onClick={() => setToast(null)}>
+          <Icon name="trash" size={15} />
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConfirmDelete({
+  item,
+  mode,
+  onCancel,
+  onConfirm,
+}: {
+  item: DriveFile;
+  mode: "trash" | "purge";
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  const name = item.version ? item.family : item.name;
+  const purge = mode === "purge";
+
+  return (
+    <div
+      className="overlay"
+      style={{ zIndex: 320 }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className="dialog" style={{ maxWidth: 420 }}>
+        <div className="dhead">
+          <h2>{purge ? "Delete permanently" : "Move to Trash"}</h2>
+        </div>
+        <div className="dbody">
+          <p className="sub" style={{ fontSize: 14, lineHeight: 1.5 }}>
+            {purge ? (
+              <>
+                &ldquo;{name}&rdquo; will be <strong>permanently deleted</strong> from the
+                Telegram channel and the database right now. This cannot be undone.
+              </>
+            ) : (
+              <>
+                &ldquo;{name}&rdquo; will be moved to Trash. It is removed from Telegram
+                automatically after 7 days; until then you can restore it.
+              </>
+            )}
+          </p>
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn danger" onClick={onConfirm}>
+            <Icon name="trash" size={16} />
+            {purge ? "Delete forever" : "Delete"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
