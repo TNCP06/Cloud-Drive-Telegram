@@ -233,11 +233,14 @@ async def _get_tg_message(channel_msg_id: int):
     return msg
 
 
-async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: int, total_size: int, slice_start: int, slice_end: int):
+async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: int, total_size: int, slice_start: int, slice_end: int, request=None):
     """
     Downloads/reads a chunk, saves it to disk, and yields bytes within [slice_start, slice_end].
     If slice_start >= slice_end, it just ensures the chunk is on disk without yielding.
     """
+    if request and await request.is_disconnected():
+        raise asyncio.CancelledError()
+
     chunk_path = CACHE_DIR / f"part_{part_id}" / f"chunk_{chunk_index:06d}"
     
     # 1. Read from disk if complete
@@ -304,12 +307,18 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                         match = re.search(r"WAIT_(\d+)", str(e))
                         wait_time = int(match.group(1)) if match else 5
                     log.warning("Telegram flood wait: %ds (attempt %d bypass). Sleeping...", wait_time, attempt + 1)
-                    await asyncio.sleep(wait_time + 1)
+                    for _ in range(wait_time + 1):
+                        if request and await request.is_disconnected():
+                            raise asyncio.CancelledError()
+                        await asyncio.sleep(1)
                 except Exception as e:
                     log.error("Telegram download error on bypass chunk %d: %s", chunk_index, e)
                     if attempt == 4:
                         raise
-                    await asyncio.sleep(2)
+                    for _ in range(2):
+                        if request and await request.is_disconnected():
+                            raise asyncio.CancelledError()
+                        await asyncio.sleep(1)
             raise RuntimeError(f"Failed to stream chunk {chunk_index} after 5 attempts")
 
         # Evict cache if needed
@@ -363,13 +372,19 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                     match = re.search(r"WAIT_(\d+)", str(e))
                     wait_time = int(match.group(1)) if match else 5
                 log.warning("Telegram flood wait: %ds (attempt %d). Sleeping...", wait_time, attempt + 1)
-                await asyncio.sleep(wait_time + 1)
+                for _ in range(wait_time + 1):
+                    if request and await request.is_disconnected():
+                        raise asyncio.CancelledError()
+                    await asyncio.sleep(1)
             except Exception as e:
                 file_mode = "ab"
                 log.error("Telegram download error on chunk %d: %s", chunk_index, e)
                 if attempt == 4:
                     raise
-                await asyncio.sleep(2)
+                for _ in range(2):
+                    if request and await request.is_disconnected():
+                        raise asyncio.CancelledError()
+                    await asyncio.sleep(1)
         
         raise RuntimeError(f"Failed to download chunk {chunk_index} after 5 attempts")
 
@@ -604,7 +619,7 @@ async def stream(part_id: int, request: Request):
                 slice_start = max(start - chunk_start_byte, 0)
                 slice_end = min(end - chunk_start_byte + 1, CHUNK_SIZE)
                 
-                async for chunk_data in _ensure_chunk_stream(part_id, channel_msg_id, ci, total_size, slice_start, slice_end):
+                async for chunk_data in _ensure_chunk_stream(part_id, channel_msg_id, ci, total_size, slice_start, slice_end, request):
                     yield chunk_data
             except asyncio.CancelledError:
                 # Client disconnected, stop generating
