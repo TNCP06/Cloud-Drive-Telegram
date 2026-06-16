@@ -444,15 +444,25 @@ async def stream(part_id: int, request: Request):
         start = 0
         end = min(CHUNK_SIZE, total_size) - 1
     else:
-        # Parse "bytes=start-" or "bytes=start-end"
+        # Parse "bytes=start-" or "bytes=start-end" or "bytes=-end"
         range_spec = range_header.replace("bytes=", "").strip()
         parts = range_spec.split("-", 1)
-        start = int(parts[0])
-        if parts[1]:
-            end = min(int(parts[1]), total_size - 1)
-        else:
-            # bytes=N- → serve one chunk from N
-            end = min(start + CHUNK_SIZE - 1, total_size - 1)
+        try:
+            if parts[0] == "":
+                # bytes=-N (last N bytes)
+                start = max(0, total_size - int(parts[1]))
+                end = total_size - 1
+            else:
+                start = int(parts[0])
+                if len(parts) > 1 and parts[1]:
+                    end = min(int(parts[1]), total_size - 1)
+                else:
+                    # bytes=N- → serve one chunk from N
+                    end = min(start + CHUNK_SIZE - 1, total_size - 1)
+        except ValueError:
+            # Fallback if range is completely malformed
+            start = 0
+            end = min(CHUNK_SIZE, total_size) - 1
 
     # Clamp
     start = max(0, start)
