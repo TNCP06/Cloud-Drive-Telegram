@@ -6,7 +6,7 @@ import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
 // Proxy authenticated streaming requests to the Python streamer service.
 // Excluded from middleware (avoids edge-runtime body-size limit), so auth
 // is checked manually here — same pattern as the upload route.
-export const runtime = "nodejs";
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 const STREAMER_URL = process.env.STREAMER_URL || "http://streamer:8080";
