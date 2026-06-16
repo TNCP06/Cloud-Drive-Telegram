@@ -116,6 +116,9 @@ channel = None  # resolved Telegram channel entity
 # Per-part-id asyncio locks to prevent duplicate chunk downloads
 _part_locks: dict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
 
+# Per-video lock to prevent Telegram FloodWait from concurrent overlapping downloads
+_tg_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
 # Telethon message cache: channel_msg_id → message object
 _msg_cache: dict[int, object] = {}
 
@@ -285,12 +288,14 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                 try:
                     current_offset = byte_offset + downloaded_so_far
                     current_remaining = chunk_bytes - downloaded_so_far
-                    async for piece in tg_client.iter_download(
-                        msg.media, offset=current_offset,
-                        request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
-                    ):
-                        yield piece
-                        downloaded_so_far += len(piece)
+                    
+                    async with _tg_locks[channel_msg_id]:
+                        async for piece in tg_client.iter_download(
+                            msg.media, offset=current_offset,
+                            request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
+                        ):
+                            yield piece
+                            downloaded_so_far += len(piece)
                     return
                 except telethon.errors.FloodError as e:
                     wait_time = getattr(e, 'seconds', None)
@@ -328,24 +333,25 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                     current_offset = byte_offset + downloaded_so_far
                     current_remaining = chunk_bytes - downloaded_so_far
 
-                    async for piece in tg_client.iter_download(
-                        msg.media, offset=current_offset,
-                        request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
-                    ):
-                        f.write(piece)
+                    async with _tg_locks[channel_msg_id]:
+                        async for piece in tg_client.iter_download(
+                            msg.media, offset=current_offset,
+                            request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
+                        ):
+                            f.write(piece)
 
-                        piece_start = downloaded_so_far
-                        piece_end = downloaded_so_far + len(piece)
-                        downloaded_so_far += len(piece)
+                            piece_start = downloaded_so_far
+                            piece_end = downloaded_so_far + len(piece)
+                            downloaded_so_far += len(piece)
 
-                        # Yield logic if requested
-                        if slice_start < slice_end:
-                            overlap_start = max(slice_start, piece_start)
-                            overlap_end = min(slice_end, piece_end)
-                            if overlap_start < overlap_end:
-                                rel_start = overlap_start - piece_start
-                                rel_end = overlap_end - piece_start
-                                yield piece[rel_start:rel_end]
+                            # Yield logic if requested
+                            if slice_start < slice_end:
+                                overlap_start = max(slice_start, piece_start)
+                                overlap_end = min(slice_end, piece_end)
+                                if overlap_start < overlap_end:
+                                    rel_start = overlap_start - piece_start
+                                    rel_end = overlap_end - piece_start
+                                    yield piece[rel_start:rel_end]
 
                 os.rename(temp_path, chunk_path)
                 return  # Success
