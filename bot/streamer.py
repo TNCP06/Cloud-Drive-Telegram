@@ -89,8 +89,8 @@ TURSO_DATABASE_URL = _turso_http_url(os.environ["TURSO_DATABASE_URL"])
 
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/cache"))
 CACHE_MAX_BYTES = int(os.environ.get("CACHE_MAX_SIZE_GB", "15")) * 1073741824
-PREFETCH_BUFFER = int(os.environ.get("PREFETCH_BUFFER_MB", "20")) * 1048576
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE_MB", "5")) * 1048576
+PREFETCH_BUFFER = int(os.environ.get("PREFETCH_BUFFER_MB", "30")) * 1048576
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE_MB", "15")) * 1048576
 PREFETCH_TIMEOUT = int(os.environ.get("PREFETCH_TIMEOUT_S", "90"))
 INITIAL_CHUNKS = int(os.environ.get("INITIAL_CHUNKS", "1"))
 STREAMER_PORT = int(os.environ.get("STREAMER_PORT", "8080"))
@@ -230,60 +230,107 @@ async def _get_tg_message(channel_msg_id: int):
     return msg
 
 
-async def _download_chunk(channel_msg_id: int, chunk_index: int, total_size: int) -> bytes:
-    """Download a single chunk from Telegram via iter_download."""
-    byte_offset = chunk_index * CHUNK_SIZE
-    remaining = total_size - byte_offset
-    chunk_bytes = min(CHUNK_SIZE, remaining)
+async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: int, total_size: int, slice_start: int, slice_end: int):
+    """
+    Downloads/reads a chunk, saves it to disk, and yields bytes within [slice_start, slice_end].
+    If slice_start >= slice_end, it just ensures the chunk is on disk without yielding.
+    """
+    chunk_path = CACHE_DIR / f"part_{part_id}" / f"chunk_{chunk_index:06d}"
+    
+    # 1. Read from disk if complete
+    if chunk_path.exists():
+        if slice_start < slice_end:
+            import aiofiles
+            async with aiofiles.open(chunk_path, "rb") as f:
+                if slice_start > 0:
+                    await f.seek(slice_start)
+                remaining = slice_end - slice_start
+                while remaining > 0:
+                    piece = await f.read(min(remaining, 65536))
+                    if not piece:
+                        break
+                    yield piece
+                    remaining -= len(piece)
+        return
 
-    msg = await _get_tg_message(channel_msg_id)
-    if not msg or not msg.media:
-        raise ValueError(f"Message {channel_msg_id} has no media")
+    # 2. Lock and download
+    async with _part_locks[part_id][chunk_index]:
+        # Double check
+        if chunk_path.exists():
+            if slice_start < slice_end:
+                import aiofiles
+                async with aiofiles.open(chunk_path, "rb") as f:
+                    if slice_start > 0:
+                        await f.seek(slice_start)
+                    remaining = slice_end - slice_start
+                    while remaining > 0:
+                        piece = await f.read(min(remaining, 65536))
+                        if not piece:
+                            break
+                        yield piece
+                        remaining -= len(piece)
+            return
 
-    for attempt in range(5):
-        data = bytearray()
-        try:
-            async for piece in tg_client.iter_download(
-                msg.media, offset=byte_offset,
-                request_size=DOWNLOAD_REQUEST_SIZE, limit=chunk_bytes,
-            ):
-                data.extend(piece)
-            return bytes(data)
-        except telethon.errors.FloodError as e:
-            wait_time = getattr(e, 'seconds', None)
-            if wait_time is None:
-                # Parse "FLOOD_PREMIUM_WAIT_7"
-                match = re.search(r"WAIT_(\d+)", str(e))
-                wait_time = int(match.group(1)) if match else 5
-            log.warning("Telegram flood wait: %ds (attempt %d). Sleeping...", wait_time, attempt + 1)
-            await asyncio.sleep(wait_time + 1)
-        except Exception as e:
-            log.error("Telegram download error on chunk %d: %s", chunk_index, e)
-            if attempt == 4:
-                raise
-            await asyncio.sleep(2)
+        # Evict cache if needed
+        await _evict_if_needed(CHUNK_SIZE)
 
-    return bytes()
+        byte_offset = chunk_index * CHUNK_SIZE
+        remaining_file = total_size - byte_offset
+        chunk_bytes = min(CHUNK_SIZE, remaining_file)
 
+        msg = await _get_tg_message(channel_msg_id)
+        if not msg or not msg.media:
+            raise ValueError(f"Message {channel_msg_id} has no media")
 
-async def _ensure_chunk(part_id: int, channel_msg_id: int,
-                        chunk_index: int, total_size: int) -> bytes:
-    """Return chunk bytes — from disk if cached, otherwise download & save."""
-    path = _chunk_path(part_id, chunk_index)
-    if path.exists():
-        return path.read_bytes()
+        temp_path = chunk_path.with_suffix(".tmp")
+        downloaded_so_far = 0
+        file_mode = "wb"
 
-    async with _part_locks[part_id]:
-        # Double-check after acquiring lock
-        if path.exists():
-            return path.read_bytes()
+        import aiofiles
+        for attempt in range(5):
+            try:
+                async with aiofiles.open(temp_path, file_mode) as f:
+                    current_offset = byte_offset + downloaded_so_far
+                    current_remaining = chunk_bytes - downloaded_so_far
 
-        _evict_if_needed(CHUNK_SIZE)
-        log.info("Downloading part %d chunk %d from Telegram", part_id, chunk_index)
-        data = await _download_chunk(channel_msg_id, chunk_index, total_size)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-        return data
+                    async for piece in tg_client.iter_download(
+                        msg.media, offset=current_offset,
+                        request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
+                    ):
+                        await f.write(piece)
+
+                        piece_start = downloaded_so_far
+                        piece_end = downloaded_so_far + len(piece)
+                        downloaded_so_far += len(piece)
+
+                        # Yield logic if requested
+                        if slice_start < slice_end:
+                            overlap_start = max(slice_start, piece_start)
+                            overlap_end = min(slice_end, piece_end)
+                            if overlap_start < overlap_end:
+                                rel_start = overlap_start - piece_start
+                                rel_end = overlap_end - piece_start
+                                yield piece[rel_start:rel_end]
+
+                os.rename(temp_path, chunk_path)
+                return  # Success
+            except telethon.errors.FloodError as e:
+                file_mode = "ab"  # append on retry
+                wait_time = getattr(e, 'seconds', None)
+                if wait_time is None:
+                    import re
+                    match = re.search(r"WAIT_(\d+)", str(e))
+                    wait_time = int(match.group(1)) if match else 5
+                log.warning("Telegram flood wait: %ds (attempt %d). Sleeping...", wait_time, attempt + 1)
+                await asyncio.sleep(wait_time + 1)
+            except Exception as e:
+                file_mode = "ab"
+                log.error("Telegram download error on chunk %d: %s", chunk_index, e)
+                if attempt == 4:
+                    raise
+                await asyncio.sleep(2)
+        
+        raise RuntimeError(f"Failed to download chunk {chunk_index} after 5 attempts")
 
 
 # ---------------------------------------------------------------------------
@@ -357,8 +404,13 @@ async def _prefetch_worker(part_id: int, channel_msg_id: int,
             if _chunk_path(part_id, idx).exists():
                 idx += 1
                 continue
-
-            await _ensure_chunk(part_id, channel_msg_id, idx, total_size)
+            
+            try:
+                async for _ in _ensure_chunk_stream(part_id, channel_msg_id, idx, total_size, 0, 0):
+                    pass
+            except Exception as e:
+                log.error("Prefetch error for part %d chunk %d: %s", part_id, idx, e)
+            
             idx += 1
             # Yield to event loop
             await asyncio.sleep(0.05)
@@ -389,10 +441,10 @@ def _start_prefetch(part_id: int, channel_msg_id: int,
 # ---------------------------------------------------------------------------
 async def _download_initial_chunks(part_id: int, channel_msg_id: int,
                                    total_size: int, total_chunks: int) -> None:
-    """Download the first INITIAL_CHUNKS chunks for fast playback start."""
-    count = min(INITIAL_CHUNKS, total_chunks)
-    for i in range(count):
-        await _ensure_chunk(part_id, channel_msg_id, i, total_size)
+    """Download the first few chunks synchronously for fast start."""
+    for i in range(min(INITIAL_CHUNKS, total_chunks)):
+        async for _ in _ensure_chunk_stream(part_id, channel_msg_id, i, total_size, 0, 0):
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -520,21 +572,18 @@ async def stream(part_id: int, request: Request):
     async def byte_generator():
         for ci in range(first_chunk, last_chunk + 1):
             try:
-                chunk_data = await _ensure_chunk(part_id, channel_msg_id, ci, total_size)
+                chunk_start_byte = ci * CHUNK_SIZE
+                slice_start = max(start - chunk_start_byte, 0)
+                slice_end = min(end - chunk_start_byte + 1, CHUNK_SIZE)
+                
+                async for chunk_data in _ensure_chunk_stream(part_id, channel_msg_id, ci, total_size, slice_start, slice_end):
+                    yield chunk_data
             except asyncio.CancelledError:
                 # Client disconnected, stop generating
                 raise
             except Exception as e:
                 log.error("Error generating chunk %d: %s", ci, e)
                 break
-
-            # Slice within the chunk
-            chunk_start_byte = ci * CHUNK_SIZE
-            slice_start = max(start - chunk_start_byte, 0)
-            slice_end = min(end - chunk_start_byte + 1, len(chunk_data))
-            
-            if slice_start < slice_end:
-                yield chunk_data[slice_start:slice_end]
 
     content_length = end - start + 1
 
