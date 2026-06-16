@@ -478,17 +478,6 @@ def _start_prefetch(part_id: int, channel_msg_id: int,
 
 
 # ---------------------------------------------------------------------------
-# Initial chunk download (fast start)
-# ---------------------------------------------------------------------------
-async def _download_initial_chunks(part_id: int, channel_msg_id: int,
-                                   total_size: int, total_chunks: int) -> None:
-    """Download the first few chunks synchronously for fast start."""
-    for i in range(min(INITIAL_CHUNKS, total_chunks)):
-        async for _ in _ensure_chunk_stream(part_id, channel_msg_id, i, total_size, 0, 0):
-            pass
-
-
-# ---------------------------------------------------------------------------
 # FastAPI lifespan
 # ---------------------------------------------------------------------------
 @asynccontextmanager
@@ -556,10 +545,6 @@ async def stream(part_id: int, request: Request):
     if meta is None:
         try:
             meta = await _init_part_meta(part_id)
-            # Fast-start: download initial chunks synchronously before yielding stream
-            await _download_initial_chunks(
-                part_id, meta["channel_msg_id"], meta["total_size"], meta["total_chunks"]
-            )
         except ValueError as exc:
             return Response(str(exc), status_code=404)
 
