@@ -270,7 +270,7 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
             return
 
         # Evict cache if needed
-        await _evict_if_needed(CHUNK_SIZE)
+        _evict_if_needed(CHUNK_SIZE)
 
         byte_offset = chunk_index * CHUNK_SIZE
         remaining_file = total_size - byte_offset
