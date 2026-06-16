@@ -116,7 +116,8 @@ contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`,
 ### `web/` — auth & config
 - `lib/auth.ts` — `AUTH_COOKIE`, `sha256Hex` (shared by edge middleware + actions).
 - `middleware.ts` — gate all routes on `SHA-256(APP_PASSWORD)` cookie; **no `APP_PASSWORD` ⇒
-  auth off**.
+  auth off**. `/api/upload` is excluded from the matcher to avoid the 10 MB middleware body-size
+  limit (upload chunks are 16 MB; the route performs its own cookie auth check internally).
 
 ### `web/components/` — UI (client)
 - `DriveApp.tsx` — top-level app shell/state (largest component). `Sidebar.tsx` — nav/filters.
@@ -125,7 +126,8 @@ contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`,
 - `UploadManager.tsx` — upload queue UI + watcher/bot start/stop; **Source toggle**: "Upload
   from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).
   `FileUploader.tsx` — **resumable browser uploader** (16 MB chunks, auto-resume on drop via
-  server offset, progress/speed, Retry). `TagManager.tsx` / `TagPicker.tsx` — category library +
+  server offset, progress/speed, Retry). Fallback token strips both `-` and `.` to satisfy
+  `TOKEN_RE` in `staging.ts`. `TagManager.tsx` / `TagPicker.tsx` — category library +
   chip picker. `AppSkeleton.tsx` — loading skeleton.
 
 ---

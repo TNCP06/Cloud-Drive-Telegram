@@ -1,14 +1,29 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { cookies } from "next/headers";
 import { mkdir, stat, appendFile } from "node:fs/promises";
 import { jobDir, stagedFilePath } from "@/lib/staging";
+import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
 
 // Resumable upload endpoint (chunked). The browser sends a big file in sequential
 // chunks; if the connection drops, it asks GET for the current offset and resumes
 // from there instead of restarting. Must run on a Node server (next start) — NOT a
 // Vercel serverless function, whose small body limit would break large uploads.
+//
+// This route is excluded from middleware (to bypass the 10 MB middleware body-size
+// limit), so it performs its own cookie auth check below.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const UNAUTHORIZED = () =>
+  NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+
+async function checkAuth(): Promise<boolean> {
+  const pw = process.env.APP_PASSWORD;
+  if (!pw) return true; // no password set → auth disabled
+  const token = (await cookies()).get(AUTH_COOKIE)?.value;
+  return !!token && token === (await sha256Hex(pw));
+}
 
 async function sizeOf(p: string): Promise<number> {
   try {
@@ -20,6 +35,7 @@ async function sizeOf(p: string): Promise<number> {
 
 // GET ?token=&name=  → how many bytes the server already has (for resume).
 export async function GET(req: NextRequest) {
+  if (!(await checkAuth())) return UNAUTHORIZED();
   const sp = req.nextUrl.searchParams;
   const token = sp.get("token") ?? "";
   const name = sp.get("name") ?? "";
@@ -36,6 +52,7 @@ export async function GET(req: NextRequest) {
 // If offset doesn't match what we have, reply 409 with the real offset so the
 // client re-syncs (this is what makes a flaky connection safe).
 export async function POST(req: NextRequest) {
+  if (!(await checkAuth())) return UNAUTHORIZED();
   const sp = req.nextUrl.searchParams;
   const token = sp.get("token") ?? "";
   const name = sp.get("name") ?? "";

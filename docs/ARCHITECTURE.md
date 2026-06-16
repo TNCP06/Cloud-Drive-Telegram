@@ -152,7 +152,9 @@ separate: the bot only obeys `/start` downloads and Bot Drop from `OWNER_USER_ID
   rewritten to `https://` because the WebSocket transport is rejected (HTTP 400).
 - **Server/VPS:** the whole stack ships as Docker (`docker-compose.yml` + `web/Dockerfile` +
   `bot/Dockerfile`). web & watcher share a `staging` volume for browser uploads; bot & watcher
-  run as always-on services. Portable to any host — full guide in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
+  run as always-on services. `web/Dockerfile` receives `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
+  as build args (Next.js pre-renders API routes at build time). Portable to any host — full guide
+  in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
   Under Docker the web's watcher/bot start-stop buttons are inert (processes are compose-managed).
 
 See [`CODE-MAP.md`](./CODE-MAP.md) for a file-by-file function reference and
