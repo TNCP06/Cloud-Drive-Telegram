@@ -2,19 +2,20 @@
 
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
-import type { Kind } from "@/lib/types";
+import type { Kind, Tag } from "@/lib/types";
+import { tagColorKey } from "@/lib/kinds";
 import { spawn } from "node:child_process";
 import { openSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
 
-// Lokasi script watcher (default: ../bot relatif ke folder web). Override via env kalau perlu.
+// Watcher script location (default: ../bot relative to web folder). Override via env if needed.
 const WATCHER_DIR = process.env.WATCHER_DIR || path.resolve(process.cwd(), "..", "bot");
 const PYTHON_BIN = process.env.PYTHON_BIN || "python";
 const PID_FILE = path.join(WATCHER_DIR, "watcher.pid");
 
-// Server actions untuk metadata Turso (instan, tanpa menyentuh Telegram).
-// Catatan: softDelete HANYA set deleted_at. File asli di Telegram baru dihapus
-// saat purge (>7 hari) oleh JobQueue bot → restore bersifat lossless.
+// Server actions for Turso metadata (instant, without touching Telegram).
+// Note: softDelete ONLY sets deleted_at. The actual file on Telegram is deleted
+// at purge time (>7 days) by the bot's JobQueue → restore is lossless.
 
 function refresh() {
   revalidatePath("/");
@@ -45,20 +46,21 @@ export async function restore(id: number) {
   refresh();
 }
 
-// Edit metadata (judul / jenis / tag). Murni operasi Turso — TIDAK menyentuh
-// Telegram, watcher, atau worker.session → aman dijalankan saat upload berjalan
-// & tanpa restart bot. Penting: slug SENGAJA tidak diubah. Slug adalah kunci
-// grouping multi-part game (ON CONFLICT saat indexing) sekaligus target deep-link
-// unduhan; mengubahnya bisa bentrok & mematahkan tautan lama. family/versi game
-// diturunkan ulang dari title saat dibaca, jadi rename tetap terlihat di UI.
+// Edit metadata (title / kind / tags). Pure Turso operation — does NOT touch
+// Telegram, the watcher, or worker.session → safe to run while an upload is in
+// progress and without restarting the bot. Important: slug is intentionally NOT
+// changed. The slug is the grouping key for multi-part games (ON CONFLICT during
+// indexing) and the deep-link target for downloads; changing it risks conflicts
+// and breaks existing links. family/version are re-derived from title on read,
+// so a rename still appears in the UI.
 export async function updateMetadata(
   id: number,
   input: { title: string; kind: Kind; tags: string }
 ) {
   const title = input.title.trim();
-  if (!title) throw new Error("Judul tidak boleh kosong.");
+  if (!title) throw new Error("Title cannot be empty.");
   if (input.kind !== "game" && input.kind !== "media") {
-    throw new Error("Jenis tidak valid.");
+    throw new Error("Invalid kind.");
   }
 
   await db.execute({
@@ -66,8 +68,8 @@ export async function updateMetadata(
     args: [title, input.kind, id],
   });
 
-  // Tag: normalisasi (dedup, buang kosong) → upsert nama → ganti relasi item ini.
-  // Tidak menghapus tag yatim agar tak balapan dgn indexing upload yang berjalan.
+  // Tags: normalize (dedup, drop blanks) → upsert names → replace relations for this item.
+  // Orphaned tags are not deleted to avoid racing with an ongoing upload's indexing.
   const names = Array.from(
     new Set(
       input.tags
@@ -96,9 +98,77 @@ export async function updateMetadata(
   refresh();
 }
 
-// Galeri: thumbnail SELURUH part sebuah item, urut sesuai album (channel_msg_id).
-// Dipakai PreviewDrawer untuk menampilkan semua foto/video album. Dimuat on-demand
-// saat drawer dibuka → grid utama tetap ringan (hanya cover per item).
+// --- Category (tag) library management ---------------------------------------
+// Colour is stored in tags.color (palette key, e.g. "sage"). Empty string means
+// "derive from name" via tagColorKey — this is the fallback for old rows and for
+// tags created by the bot (which doesn't know about colours).
+
+function resolveColor(stored: string | null | undefined, name: string): string {
+  const s = String(stored ?? "").trim();
+  return s || tagColorKey(name);
+}
+
+export async function listTags(): Promise<Tag[]> {
+  const rs = await db.execute("SELECT id, name, color FROM tags ORDER BY name COLLATE NOCASE");
+  return rs.rows.map((r) => ({
+    id: Number(r.id),
+    name: String(r.name),
+    color: resolveColor(r.color as string, String(r.name)),
+  }));
+}
+
+export async function createTag(name: string, color = "") {
+  const n = name.trim();
+  if (!n) throw new Error("Category name cannot be empty.");
+  await db.execute({
+    sql: "INSERT INTO tags (name, color) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
+    args: [n, color],
+  });
+  refresh();
+}
+
+export async function recolorTag(id: number, color: string) {
+  await db.execute({ sql: "UPDATE tags SET color = ? WHERE id = ?", args: [color, id] });
+  refresh();
+}
+
+// Rename a tag. If another tag already owns the target name, merge into it:
+// move this tag's item relations onto the existing one, then drop the duplicate.
+export async function renameTag(id: number, name: string) {
+  const n = name.trim();
+  if (!n) throw new Error("Category name cannot be empty.");
+
+  const existing = await db.execute({
+    sql: "SELECT id FROM tags WHERE name = ? COLLATE NOCASE AND id != ?",
+    args: [n, id],
+  });
+
+  if (existing.rows.length) {
+    const targetId = Number(existing.rows[0].id);
+    // Re-point relations; ON CONFLICT keeps the row already on the target.
+    await db.execute({
+      sql: "UPDATE OR IGNORE item_tags SET tag_id = ? WHERE tag_id = ?",
+      args: [targetId, id],
+    });
+    await db.execute({ sql: "DELETE FROM item_tags WHERE tag_id = ?", args: [id] });
+    await db.execute({ sql: "DELETE FROM tags WHERE id = ?", args: [id] });
+  } else {
+    await db.execute({ sql: "UPDATE tags SET name = ? WHERE id = ?", args: [n, id] });
+  }
+  refresh();
+}
+
+// Delete a tag from the library. Relations are removed (item_tags has ON DELETE
+// CASCADE, but we delete explicitly to be safe across drivers); files are untouched.
+export async function deleteTag(id: number) {
+  await db.execute({ sql: "DELETE FROM item_tags WHERE tag_id = ?", args: [id] });
+  await db.execute({ sql: "DELETE FROM tags WHERE id = ?", args: [id] });
+  refresh();
+}
+
+// Gallery: thumbnails for ALL parts of an item, ordered by album position (channel_msg_id).
+// Used by PreviewDrawer to show all photos/videos in an album. Loaded on-demand
+// when the drawer opens → the main grid stays light (only one cover per item).
 export async function getGallery(itemId: number): Promise<string[]> {
   const rs = await db.execute({
     sql: "SELECT t.mime AS mime, t.data AS data FROM thumbnails t JOIN parts p ON p.id = t.part_id WHERE p.item_id = ? ORDER BY p.channel_msg_id",
@@ -107,7 +177,7 @@ export async function getGallery(itemId: number): Promise<string[]> {
   return rs.rows.map((r) => `data:${String(r.mime)};base64,${String(r.data)}`);
 }
 
-// --- Antrian upload (dieksekusi watcher.py di laptop) ---
+// --- Upload queue (executed by watcher.py on the laptop) ---
 export async function enqueueUpload(input: {
   kind: Kind;
   title: string;
@@ -116,16 +186,16 @@ export async function enqueueUpload(input: {
   partSize: number;
 }) {
   const sourcePath = input.sourcePath.trim();
-  if (!sourcePath) throw new Error("Path file di laptop wajib diisi.");
-  // Media (gambar/file receh) boleh tanpa judul → ambil dari nama file.
-  // Game tetap wajib judul karena judul = kunci grouping antar part-nya.
+  if (!sourcePath) throw new Error("File path on the laptop is required.");
+  // Media (images/small files) may have no title → derive from filename.
+  // Games always require a title because it's the grouping key across parts.
   let title = input.title.trim();
   if (!title) {
     if (input.kind === "media") {
       const base = sourcePath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
       title = base.replace(/\.[^.]+$/, "").trim() || "media";
     } else {
-      throw new Error("Judul wajib diisi untuk game.");
+      throw new Error("Title is required for games.");
     }
   }
   await db.execute({
@@ -143,10 +213,10 @@ export async function cancelUpload(id: number) {
   revalidatePath("/upload");
 }
 
-// Picu eksekusi: queued → pending (watcher di laptop akan mengambilnya).
+// Trigger execution: queued → pending (watcher on the laptop will pick it up).
 export async function startUpload(id: number) {
   await db.execute({
-    sql: "UPDATE upload_jobs SET status='pending', message='diminta mulai…', updated_at=datetime('now') WHERE id = ? AND status='queued'",
+    sql: "UPDATE upload_jobs SET status='pending', message='start requested...', updated_at=datetime('now') WHERE id = ? AND status='queued'",
     args: [id],
   });
   revalidatePath("/upload");
@@ -154,7 +224,7 @@ export async function startUpload(id: number) {
 
 export async function startAllUploads() {
   await db.execute(
-    "UPDATE upload_jobs SET status='pending', message='diminta mulai…', updated_at=datetime('now') WHERE status='queued'"
+    "UPDATE upload_jobs SET status='pending', message='start requested...', updated_at=datetime('now') WHERE status='queued'"
   );
   revalidatePath("/upload");
 }
@@ -166,7 +236,7 @@ export async function clearFinishedUploads() {
   revalidatePath("/upload");
 }
 
-// --- Kontrol proses watcher.py DI LAPTOP (web & watcher satu mesin) ---
+// --- Control watcher.py process ON THE LAPTOP (web and watcher run on the same machine) ---
 async function watcherOnline(): Promise<boolean> {
   try {
     const rs = await db.execute("SELECT last_seen FROM watcher_heartbeat WHERE id = 1");
@@ -182,8 +252,8 @@ export async function startWatcher(): Promise<{ ok: boolean; already?: boolean; 
   if (await watcherOnline()) return { ok: true, already: true };
   try {
     const out = openSync(path.join(WATCHER_DIR, "watcher.log"), "a");
-    // shell:true → "python" diresolusi lewat PATHEXT (.exe) di Windows.
-    // detached + unref → watcher tetap hidup walau dev server di-restart.
+    // shell:true → "python" is resolved via PATHEXT (.exe) on Windows.
+    // detached + unref → watcher stays alive even if the dev server is restarted.
     const child = spawn(PYTHON_BIN, ["-u", "watcher.py"], {
       cwd: WATCHER_DIR,
       detached: true,
@@ -196,9 +266,9 @@ export async function startWatcher(): Promise<{ ok: boolean; already?: boolean; 
       try {
         writeFileSync(PID_FILE, String(child.pid));
       } catch {
-        /* abaikan */
+        /* ignore */
       }
-      // Heartbeat instan → UI langsung "aktif" tanpa menunggu watcher konek.
+      // Instant heartbeat → UI shows "active" immediately without waiting for the watcher to connect.
       await db.execute(
         "INSERT INTO watcher_heartbeat (id, last_seen, status) VALUES (1, datetime('now'), 'idle') " +
           "ON CONFLICT(id) DO UPDATE SET last_seen=datetime('now'), status='idle'"
@@ -207,7 +277,7 @@ export async function startWatcher(): Promise<{ ok: boolean; already?: boolean; 
     revalidatePath("/upload");
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "Gagal menjalankan watcher." };
+    return { ok: false, error: e instanceof Error ? e.message : "Failed to start watcher." };
   }
 }
 
@@ -216,16 +286,16 @@ export async function stopWatcher(): Promise<{ ok: boolean; error?: string }> {
   try {
     if (existsSync(PID_FILE)) pid = readFileSync(PID_FILE, "utf8").trim();
   } catch {
-    /* abaikan */
+    /* ignore */
   }
   if (!pid || !/^\d+$/.test(pid)) {
     return {
       ok: false,
-      error: "PID watcher tidak diketahui (mungkin dijalankan manual). Tutup lewat jendela watcher.",
+      error: "Watcher PID unknown (may have been started manually). Close it via the watcher window.",
     };
   }
   try {
-    // /T = ikut anak proses (7-Zip, dst), /F = paksa.
+    // /T = include child processes (7-Zip, etc.), /F = force.
     await new Promise<void>((resolve) => {
       const k = spawn("taskkill", ["/PID", pid, "/T", "/F"], { windowsHide: true });
       k.on("close", () => resolve());
@@ -234,15 +304,15 @@ export async function stopWatcher(): Promise<{ ok: boolean; error?: string }> {
     try {
       rmSync(PID_FILE);
     } catch {
-      /* abaikan */
+      /* ignore */
     }
-    // Buat heartbeat basi → UI langsung "tidak aktif".
+    // Stale heartbeat → UI shows "inactive" immediately.
     await db.execute(
       "UPDATE watcher_heartbeat SET last_seen = datetime('now','-1 hour'), status = NULL WHERE id = 1"
     );
     revalidatePath("/upload");
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "Gagal menghentikan watcher." };
+    return { ok: false, error: e instanceof Error ? e.message : "Failed to stop watcher." };
   }
 }

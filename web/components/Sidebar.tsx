@@ -21,10 +21,10 @@ export interface Storage {
 }
 
 const NAVS = [
-  { id: "all", icon: "all", label: "Semua file" },
-  { id: "recent", icon: "recent", label: "Terbaru" },
-  { id: "starred", icon: "star", label: "Favorit" },
-  { id: "trash", icon: "trash", label: "Sampah" },
+  { id: "all", icon: "all", label: "All files" },
+  { id: "recent", icon: "recent", label: "Recent" },
+  { id: "starred", icon: "star", label: "Favorites" },
+  { id: "trash", icon: "trash", label: "Trash" },
 ] as const;
 
 export function Sidebar({
@@ -35,6 +35,7 @@ export function Sidebar({
   storage,
   onNav,
   onTag,
+  onManageTags,
 }: {
   view: string;
   tag: number | null;
@@ -43,6 +44,7 @@ export function Sidebar({
   storage: Storage;
   onNav: (v: string) => void;
   onTag: (id: number) => void;
+  onManageTags: () => void;
 }) {
   return (
     <aside className="sidebar">
@@ -82,7 +84,10 @@ export function Sidebar({
 
         <div className="nav-group">
           <div className="nav-label">
-            <span>Kategori</span>
+            <span>Tags</span>
+            <button onClick={onManageTags} title="Manage categories">
+              <Icon name="plus" size={15} />
+            </button>
           </div>
           {tags.map((t) => {
             const c = TAG_COLORS[t.color] || t.color;
@@ -100,7 +105,7 @@ export function Sidebar({
           })}
           {tags.length === 0 && (
             <div style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--faint)" }}>
-              Belum ada kategori.
+              No tags yet.
             </div>
           )}
         </div>
@@ -109,7 +114,7 @@ export function Sidebar({
           <form action={logout}>
             <button type="submit" className="nav-item link" style={{ width: "100%" }}>
               <Icon name="power" size={18} className="ico" />
-              <span>Keluar</span>
+              <span>Sign out</span>
             </button>
           </form>
         </div>
@@ -121,7 +126,7 @@ export function Sidebar({
             {storage.usedLabel.num}
             <small>{storage.usedLabel.unit}</small>
           </div>
-          <div className="cap">di {storage.capLabel}</div>
+          <div className="cap">on {storage.capLabel}</div>
         </div>
         <div className="meter">
           {storage.segments.map(

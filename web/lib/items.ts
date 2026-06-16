@@ -5,16 +5,16 @@ import { tagColorKey } from "./kinds";
 import { parseTitle } from "./version";
 import type { DriveFile, Kind, Tag } from "./types";
 
-// Ambil + shape seluruh data drive dari Turso (dipakai page utama & /trash).
+// Fetch and shape all drive data from Turso (used by the main page and /trash).
 export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] }> {
   const [itemsRs, tagsRs, itemTagsRs, thumbsRs] = await Promise.all([
     db.execute(
       "SELECT id, slug, title, kind, total_parts, total_size, is_favorite, date_added, updated_at, deleted_at FROM items"
     ),
-    db.execute("SELECT id, name FROM tags ORDER BY name COLLATE NOCASE"),
+    db.execute("SELECT id, name, color FROM tags ORDER BY name COLLATE NOCASE"),
     db.execute("SELECT it.item_id AS item_id, it.tag_id AS tag_id FROM item_tags it"),
-    // Cover = thumbnail PART PERTAMA tiap item (album = channel_msg_id terkecil).
-    // Galeri lengkap dimuat on-demand di PreviewDrawer via getGallery().
+    // Cover = thumbnail of the FIRST PART of each item (album = smallest channel_msg_id).
+    // Full gallery is loaded on-demand in PreviewDrawer via getGallery().
     db.execute(
       `WITH cover AS (
          SELECT p.item_id AS item_id, t.mime AS mime, t.data AS data,
@@ -25,11 +25,14 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
     ),
   ]);
 
-  const tags: Tag[] = tagsRs.rows.map((r) => ({
-    id: Number(r.id),
-    name: String(r.name),
-    color: tagColorKey(String(r.name)),
-  }));
+  const tags: Tag[] = tagsRs.rows.map((r) => {
+    const stored = String(r.color ?? "").trim();
+    return {
+      id: Number(r.id),
+      name: String(r.name),
+      color: stored || tagColorKey(String(r.name)),
+    };
+  });
 
   const tagsByItem = new Map<number, number[]>();
   for (const r of itemTagsRs.rows) {
@@ -49,7 +52,7 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
     const name = String(r.title);
     const kind = String(r.kind) as Kind;
     const deletedAt = r.deleted_at ? sqliteToMs(String(r.deleted_at)) : null;
-    // Grouping versi hanya relevan untuk game (media tidak punya versi).
+    // Version grouping is only relevant for games (media has no version).
     const tp =
       kind === "game"
         ? parseTitle(name)

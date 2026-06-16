@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Icon } from "@/lib/icons";
 import { fmtDate } from "@/lib/format";
-import type { Kind, UploadJob, UploadStatus, WatcherStatus } from "@/lib/types";
+import type { Kind, Tag, UploadJob, UploadStatus, WatcherStatus } from "@/lib/types";
+import { TagPicker } from "@/components/TagPicker";
 import {
   enqueueUpload,
   cancelUpload,
@@ -18,21 +19,29 @@ import {
 import { FsBrowser } from "@/components/FsBrowser";
 
 const STATUS_LABEL: Record<UploadStatus, string> = {
-  queued: "Antri",
-  pending: "Menunggu watcher",
-  running: "Mengunggah",
-  done: "Selesai",
-  error: "Gagal",
-  canceled: "Dibatalkan",
+  queued: "Queued",
+  pending: "Waiting for watcher",
+  running: "Uploading",
+  done: "Done",
+  error: "Failed",
+  canceled: "Canceled",
 };
 
-// Nama dasar dari path → tebak judul (buang -pc, ganti -/_ jadi spasi).
+// Derive title from path: strip -pc suffix, replace -/_ with spaces.
 function deriveTitle(p: string): string {
   const base = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
   return base.replace(/-pc$/i, "").replace(/[-_]+/g, " ").trim();
 }
 
-export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: WatcherStatus }) {
+export function UploadManager({
+  jobs,
+  watcher,
+  allTags = [],
+}: {
+  jobs: UploadJob[];
+  watcher: WatcherStatus;
+  allTags?: Tag[];
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const queuedCount = jobs.filter((j) => j.status === "queued").length;
@@ -49,7 +58,7 @@ export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: W
   const [watcherBusy, setWatcherBusy] = useState(false);
   const [watcherErr, setWatcherErr] = useState<string | null>(null);
 
-  // Selalu poll agar status watcher & progress tetap live (lebih cepat saat ada job aktif).
+  // Always poll so watcher status and upload progress stay live (faster when there are active jobs).
   const hasActive = activeCount > 0;
   useEffect(() => {
     const t = setInterval(() => router.refresh(), hasActive ? 3000 : 6000);
@@ -66,7 +75,7 @@ export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: W
         setSourcePath("");
         router.refresh();
       } catch (e) {
-        setErr(e instanceof Error ? e.message : "Gagal menambah antrian.");
+        setErr(e instanceof Error ? e.message : "Failed to add to queue.");
       }
     });
   };
@@ -76,7 +85,7 @@ export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: W
     setWatcherBusy(true);
     try {
       const r = await startWatcher();
-      if (!r.ok) setWatcherErr(r.error ?? "Gagal menjalankan watcher.");
+      if (!r.ok) setWatcherErr(r.error ?? "Failed to start watcher.");
     } finally {
       setWatcherBusy(false);
       router.refresh();
@@ -86,14 +95,14 @@ export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: W
   const onStopWatcher = async () => {
     if (
       watcher.status === "busy" &&
-      !window.confirm("Watcher sedang mengupload. Hentikan paksa? Upload yang sedang berjalan akan gagal.")
+      !window.confirm("Watcher is currently uploading. Force stop? The running upload will fail.")
     )
       return;
     setWatcherErr(null);
     setWatcherBusy(true);
     try {
       const r = await stopWatcher();
-      if (!r.ok) setWatcherErr(r.error ?? "Gagal menghentikan watcher.");
+      if (!r.ok) setWatcherErr(r.error ?? "Failed to stop watcher.");
     } finally {
       setWatcherBusy(false);
       router.refresh();
@@ -106,41 +115,41 @@ export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: W
         <div className="up-head">
           <Link className="btn subtle" href="/">
             <Icon name="back" size={16} />
-            Kembali
+            Back
           </Link>
           <h1>Upload via laptop</h1>
         </div>
 
-        {/* PERINGATAN */}
+        {/* WARNING */}
         <div className="up-warn">
           <Icon name="warn" size={20} />
           <div>
-            <strong>Laptop harus menyala &amp; watcher aktif.</strong> File besar diupload dari
-            laptop (lewat Telegram MTProto), <em>bukan</em> dari browser ini. Form di bawah hanya
-            menaruh antrian — lalu nyalakan watcher (tombol di bawah) dan klik <b>Mulai</b>. Jangan
-            matikan laptop saat status masih <b>Mengunggah</b>.
+            <strong>Laptop must be on &amp; watcher active.</strong> Large files are uploaded from
+            the laptop (via Telegram MTProto), <em>not</em> from this browser. The form below only
+            queues the job — then start the watcher (button below) and click <b>Start</b>. Do not
+            turn off the laptop while the status is still <b>Uploading</b>.
           </div>
         </div>
 
-        {/* STATUS + KONTROL WATCHER */}
+        {/* WATCHER STATUS + CONTROL */}
         <div className="watcher-row">
           <span className={"wdot " + (watcher.online ? (watcher.status === "busy" ? "busy" : "on") : "off")} />
           <span className="wlabel">
             {watcher.online
               ? watcher.status === "busy"
-                ? "Watcher memproses upload…"
-                : "Watcher aktif"
-              : "Watcher tidak aktif"}
+                ? "Watcher is uploading…"
+                : "Watcher active"
+              : "Watcher inactive"}
           </span>
           {watcher.online ? (
             <button className="btn subtle sm wbtn" onClick={onStopWatcher} disabled={watcherBusy}>
               {watcherBusy ? <span className="spinner sm" /> : <Icon name="power" size={14} />}
-              Matikan watcher
+              Stop watcher
             </button>
           ) : (
             <button className="btn primary sm wbtn" onClick={onStartWatcher} disabled={watcherBusy}>
               {watcherBusy ? <span className="spinner sm" /> : <Icon name="power" size={14} />}
-              Nyalakan watcher
+              Start watcher
             </button>
           )}
         </div>
@@ -149,8 +158,8 @@ export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: W
           <div className="up-warn danger">
             <Icon name="warn" size={20} />
             <div>
-              <strong>{activeCount} upload menunggu tapi watcher tidak aktif.</strong> Klik{" "}
-              <b>Nyalakan watcher</b> di atas agar proses berjalan.
+              <strong>{activeCount} upload(s) waiting but watcher is inactive.</strong> Click{" "}
+              <b>Start watcher</b> above to process them.
             </div>
           </div>
         )}
@@ -158,62 +167,62 @@ export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: W
         {/* FORM */}
         <div className="up-form">
           <div className="field">
-            <label>Jenis</label>
+            <label>Type</label>
             <div className="seg-radio">
               <button className={kind === "game" ? "on" : ""} onClick={() => setKind("game")}>
-                <Icon name="archive" size={15} /> Game (di-split)
+                <Icon name="archive" size={15} /> Game (split)
               </button>
               <button className={kind === "media" ? "on" : ""} onClick={() => setKind("media")}>
-                <Icon name="video" size={15} /> Media (1 file)
+                <Icon name="video" size={15} /> Media (single file)
               </button>
             </div>
           </div>
 
           <div className="field">
             <label>
-              Judul{" "}
+              Title{" "}
               {kind === "game" ? (
-                <span className="hint">— sertakan versi, mis. &quot;ReRudy 0.6.0&quot;</span>
+                <span className="hint">— include version, e.g. &quot;ReRudy 0.6.0&quot;</span>
               ) : (
-                <span className="hint">— opsional, otomatis dari nama file bila dikosongkan</span>
+                <span className="hint">— optional, auto-filled from filename if left blank</span>
               )}
             </label>
             <input
               className="input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder={kind === "game" ? "ReRudy 0.6.0" : "(opsional) otomatis dari nama file"}
+              placeholder={kind === "game" ? "ReRudy 0.6.0" : "(optional) auto-filled from filename"}
             />
           </div>
 
           <div className="field">
-            <label>{kind === "game" ? "Folder game" : "File media"} di laptop</label>
+            <label>{kind === "game" ? "Game folder" : "Media file"} on laptop</label>
             <div className="pick-row">
               <button type="button" className="btn" onClick={() => setBrowse(true)}>
                 <Icon name={kind === "game" ? "folder" : "upload"} size={16} />
-                Telusuri laptop…
+                Browse laptop…
               </button>
               <input
                 className="input"
                 value={sourcePath}
                 onChange={(e) => setSourcePath(e.target.value)}
-                placeholder="path terisi otomatis — atau tempel manual: C:\…"
+                placeholder="path auto-filled — or paste manually: C:\…"
               />
             </div>
             <div className="pick-note">
-              Telusuri langsung folder/file asli di laptop — path lengkap (termasuk OneDrive) terisi
-              otomatis. Tak perlu salin-tempel manual.
+              Browse directly to the folder/file on the laptop — the full path (including OneDrive)
+              is filled in automatically. No manual copy-paste needed.
             </div>
           </div>
 
           <div className="up-row">
             <div className="field" style={{ flex: 1 }}>
-              <label>Tag (pisahkan koma)</label>
-              <input className="input" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="rpg, fantasy" />
+              <label>Categories</label>
+              <TagPicker value={tags} onChange={setTags} suggestions={allTags} placeholder="rpg, fantasy" />
             </div>
             {kind === "game" && (
               <div className="field" style={{ width: 150 }}>
-                <label>Ukuran part (MB)</label>
+                <label>Part size (MB)</label>
                 <input
                   className="input"
                   type="number"
@@ -230,30 +239,30 @@ export function UploadManager({ jobs, watcher }: { jobs: UploadJob[]; watcher: W
           <div className="up-actions">
             <button className="btn primary" onClick={submit} disabled={isPending}>
               {isPending ? <span className="spinner sm" /> : <Icon name="plus" size={16} stroke={2} />}
-              Tambah ke antrian
+              Add to queue
             </button>
           </div>
         </div>
 
-        {/* ANTRIAN */}
+        {/* QUEUE */}
         <div className="up-listhead">
-          <h2>Antrian {hasActive && <span className="up-live">● live</span>}</h2>
+          <h2>Queue {hasActive && <span className="up-live">● live</span>}</h2>
           <div style={{ display: "flex", gap: 8 }}>
             {queuedCount > 0 && (
               <button className="btn primary" onClick={() => startTransition(() => startAllUploads())}>
-                <Icon name="upload" size={15} /> Mulai semua ({queuedCount})
+                <Icon name="upload" size={15} /> Start all ({queuedCount})
               </button>
             )}
             {jobs.some((j) => ["done", "error", "canceled"].includes(j.status)) && (
               <button className="btn subtle" onClick={() => startTransition(() => clearFinishedUploads())}>
-                <Icon name="trash" size={15} /> Bersihkan selesai
+                <Icon name="trash" size={15} /> Clear finished
               </button>
             )}
           </div>
         </div>
 
         {jobs.length === 0 ? (
-          <div className="up-empty">Belum ada antrian upload.</div>
+          <div className="up-empty">No uploads queued.</div>
         ) : (
           <div className="up-list">
             {jobs.map((j) => (
@@ -312,16 +321,16 @@ function JobRow({
         {job.status === "queued" && (
           <div style={{ display: "flex", gap: 6 }}>
             <button className="btn primary sm" onClick={onStart}>
-              Mulai
+              Start
             </button>
             <button className="btn subtle sm" onClick={onCancel}>
-              Batal
+              Cancel
             </button>
           </div>
         )}
         {job.status === "pending" && (
           <button className="btn subtle sm" onClick={onCancel}>
-            Batal
+            Cancel
           </button>
         )}
       </div>

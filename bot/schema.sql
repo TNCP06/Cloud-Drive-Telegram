@@ -26,8 +26,9 @@ CREATE TABLE IF NOT EXISTS parts (
 );
 
 CREATE TABLE IF NOT EXISTS tags (
-    id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE NOT NULL
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name  TEXT UNIQUE NOT NULL,
+    color TEXT NOT NULL DEFAULT ''   -- palette key (sage, ochre, …) or '' = derive from name
 );
 
 CREATE TABLE IF NOT EXISTS item_tags (

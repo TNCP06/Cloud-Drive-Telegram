@@ -464,6 +464,43 @@ button { font-family: inherit; }
 .tagmgr-row .ct { font-size: 12px; color: var(--faint); }
 .tagmgr-row .del { border: 0; background: none; cursor: pointer; color: var(--faint); padding: 5px; border-radius: 6px; display: grid; place-items: center; }
 .tagmgr-row .del:hover { color: #A8362B; background: color-mix(in oklab, #B23A2E 10%, transparent); }
+.tagmgr-row .nm { cursor: text; }
+.tagmgr-new { display: flex; gap: 8px; align-items: center; padding: 4px 0 14px; border-bottom: 1px solid var(--line); }
+.tagmgr-new .input { flex: 1; }
+.tagmgr-new .btn { flex: none; }
+.tagmgr-empty { padding: 22px 8px; color: var(--faint); font-size: 13.5px; text-align: center; }
+
+/* chip-based category picker (replaces comma-separated text inputs) */
+.tagpick { position: relative; }
+.tagpick-box {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  width: 100%; min-height: 42px; padding: 6px 8px;
+  border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  background: var(--surface); cursor: text;
+}
+.tagpick-box:focus-within { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--card); }
+.tagpick-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 500; color: var(--ink);
+  background: var(--card-2); border: 1px solid var(--line-2);
+  border-radius: 99px; padding: 3px 6px 3px 9px;
+}
+.tagpick-chip i { width: 6px; height: 6px; border-radius: 99px; background: var(--c); flex: none; }
+.tagpick-chip .x { display: grid; place-items: center; border: 0; background: none; cursor: pointer; color: var(--faint); padding: 1px; border-radius: 99px; }
+.tagpick-chip .x:hover { color: var(--ink); background: var(--line-2); }
+.tagpick-box input { flex: 1; min-width: 90px; border: 0; outline: 0; background: none; font-size: 14px; font-family: var(--ui); color: var(--ink); padding: 3px 2px; }
+.tagpick-box input::placeholder { color: var(--faint); }
+.tagpick-menu {
+  position: absolute; z-index: 320; left: 0; right: 0; top: calc(100% + 5px);
+  background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-md);
+  box-shadow: var(--sh-3); padding: 5px; max-height: 220px; overflow-y: auto;
+  animation: pop .12s ease;
+}
+.tagpick-opt { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 0; background: none; cursor: pointer; padding: 8px 9px; border-radius: var(--r-sm); font-size: 13.5px; color: var(--ink); }
+.tagpick-opt:hover { background: var(--card-2); }
+.tagpick-opt .nm { flex: 1; }
+.tagpick-opt.create { color: var(--accent); }
+.tagpick-opt.create svg { color: var(--accent); }
 
 .swatches { display: flex; gap: 8px; flex-wrap: wrap; }
 .swatch { width: 28px; height: 28px; border-radius: 8px; cursor: pointer; border: 2px solid transparent; position: relative; }

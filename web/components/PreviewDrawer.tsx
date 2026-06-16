@@ -5,6 +5,7 @@ import { Icon } from "@/lib/icons";
 import { KINDS, TAG_COLORS } from "@/lib/kinds";
 import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import { getCachedGallery, loadGallery } from "@/lib/gallery-cache";
+import { TagPicker } from "./TagPicker";
 import type { DriveFile, Kind, Tag } from "@/lib/types";
 
 export function PreviewDrawer({
@@ -39,16 +40,16 @@ export function PreviewDrawer({
   const [title, setTitle] = useState(item.name);
   const [kind, setKind] = useState<Kind>(item.kind);
   const [tagsText, setTagsText] = useState(itemTags.map((t) => t.name).join(", "));
-  // Inisialisasi dari cache → bila galeri sudah pernah dimuat (atau di-prefetch),
-  // semua foto tampil instan pada render pertama tanpa flash cover dulu.
+  // Initialise from cache — if the gallery was already loaded (or pre-fetched),
+  // all photos appear instantly on first render without a cover flash.
   const [gallery, setGallery] = useState<string[] | null>(() =>
     item.kind === "media" && item.parts > 1 ? getCachedGallery(item.id) ?? null : null
   );
   const [activeIdx, setActiveIdx] = useState(0);
-  // Panel detail tersembunyi di balik tombol titik-3; foto tampil full-screen.
+  // Detail panel is hidden behind the kebab button; photos show full-screen.
   const [showDetails, setShowDetails] = useState(false);
 
-  // Reset form bila item yang dibuka berganti (atau keluar dari mode edit).
+  // Reset form when the opened item changes (or when leaving edit mode).
   useEffect(() => {
     setEditing(false);
     setShowDetails(false);
@@ -57,12 +58,12 @@ export function PreviewDrawer({
     setTagsText(item.tags.map((id) => tags.find((t) => t.id === id)?.name).filter(Boolean).join(", "));
   }, [item.id, item.name, item.kind, item.tags, tags]);
 
-  // Galeri album dimuat on-demand (hanya media multi-part). Cover (item.thumb)
-  // tampil instan; strip thumbnail muncul setelah fetch selesai.
+  // Album gallery is loaded on-demand (only for multi-part media). The cover (item.thumb)
+  // shows instantly; the thumbnail strip appears after the fetch completes.
   useEffect(() => {
     setActiveIdx(0);
     if (item.kind === "media" && item.parts > 1) {
-      // Cache hit → tampilkan langsung, tanpa menyentuh database sama sekali.
+      // Cache hit → render immediately without touching the database at all.
       const cached = getCachedGallery(item.id);
       if (cached) {
         setGallery(cached);
@@ -83,15 +84,15 @@ export function PreviewDrawer({
   const images = gallery && gallery.length > 0 ? gallery : item.thumb ? [item.thumb] : [];
   const active = images[Math.min(activeIdx, images.length - 1)];
 
-  // Item tanpa gambar (game/arsip/dll) tetap tampil full-screen dengan ikon
-  // besar + judul + titik-3; detail muncul saat titik-3 ditekan, sama seperti foto.
+  // Items without images (games/archives/etc.) still display full-screen with a large
+  // icon + title + kebab; details appear when the kebab is pressed, same as for photos.
   const multi = images.length > 1;
   const last = images.length - 1;
-  // Navigasi melewati batas part → lompat ke file tetangga di daftar.
+  // Navigation past a part boundary → jump to the neighbouring file in the list.
   const canPrev = activeIdx > 0 || hasPrevFile;
   const canNext = activeIdx < last || hasNextFile;
 
-  // Pindah ke part berikut/sebelumnya; bila sudah di ujung, pindah ke file lain.
+  // Move to the next/previous part; if already at the edge, jump to the next file.
   const go = (delta: number) => {
     if (delta > 0) {
       if (activeIdx < last) setActiveIdx(activeIdx + 1);
@@ -102,7 +103,7 @@ export function PreviewDrawer({
     }
   };
 
-  // Keyboard: Esc menutup (panel detail dulu bila terbuka); ←/→ ganti foto/file.
+  // Keyboard: Esc closes (detail panel first if open); ←/→ navigates photos/files.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -123,13 +124,13 @@ export function PreviewDrawer({
     onSave(item, { title, kind, tags: tagsText });
   };
 
-  // Titik-3 (kebab) sekarang hanya membuka metadata, read-only.
+  // Kebab button only opens the metadata panel (read-only).
   const openDetails = () => {
     setEditing(false);
     setShowDetails(true);
   };
 
-  // Tombol edit di bar atas membuka popup langsung dalam mode edit.
+  // Edit button in the top bar opens the panel directly in edit mode.
   const openEdit = () => {
     setEditing(true);
     setShowDetails(true);
@@ -137,7 +138,7 @@ export function PreviewDrawer({
 
   return (
     <>
-      {/* ---- Lapisan foto full-screen ---- */}
+      {/* ---- Full-screen photo layer ---- */}
       <div className="viewer-scrim" onClick={onClose}></div>
       <div className={"viewer" + (multi ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
         <div className="viewer-stage" onClick={onClose}>
@@ -148,12 +149,12 @@ export function PreviewDrawer({
           )}
         </div>
 
-        {/* Kontrol melayang di atas foto. Tutup/edit/hapus di kiri, unduh/
-            favorit/titik-3 di kanan — kedua sisi seimbang agar judul di tengah.
-            Titik-3 hanya membuka metadata. */}
+        {/* Floating controls above the photo. Close/edit/delete on the left, download/
+            favorite/kebab on the right — balanced so the title stays centered.
+            Kebab only opens the metadata panel. */}
         <div className="viewer-top">
           <div className="viewer-tools">
-            <button className="viewer-iconbtn" onClick={onClose} title="Tutup">
+            <button className="viewer-iconbtn" onClick={onClose} title="Close">
               <Icon name="close" size={17} />
             </button>
             {!item.trashed && (
@@ -161,7 +162,7 @@ export function PreviewDrawer({
                 <button className="viewer-iconbtn" onClick={openEdit} title="Edit metadata">
                   <Icon name="edit" size={17} />
                 </button>
-                <button className="viewer-iconbtn" onClick={() => onTrash(item)} title="Hapus">
+                <button className="viewer-iconbtn" onClick={() => onTrash(item)} title="Delete">
                   <Icon name="trash" size={17} />
                 </button>
               </>
@@ -170,7 +171,7 @@ export function PreviewDrawer({
           <span className="viewer-name">{item.version ? item.family : item.name}</span>
           <div className="viewer-tools">
             {item.trashed ? (
-              <button className="viewer-iconbtn" onClick={() => onRestore(item)} title="Pulihkan">
+              <button className="viewer-iconbtn" onClick={() => onRestore(item)} title="Restore">
                 <Icon name="restore" size={17} />
               </button>
             ) : (
@@ -181,7 +182,7 @@ export function PreviewDrawer({
                     href={deepLink}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title="Unduh"
+                    title="Download"
                   >
                     <Icon name="download" size={17} />
                   </a>
@@ -189,13 +190,13 @@ export function PreviewDrawer({
                 <button
                   className={"viewer-iconbtn" + (item.starred ? " on" : "")}
                   onClick={() => onStar(item)}
-                  title="Favorit"
+                  title="Favorite"
                 >
                   <Icon name="star" size={17} fill={item.starred} />
                 </button>
               </>
             )}
-            <button className="viewer-iconbtn" onClick={openDetails} title="Detail metadata">
+            <button className="viewer-iconbtn" onClick={openDetails} title="Metadata details">
               <Icon name="kebab" size={17} />
             </button>
           </div>
@@ -207,7 +208,7 @@ export function PreviewDrawer({
               className="viewer-nav prev"
               onClick={() => go(-1)}
               disabled={!canPrev}
-              title="Sebelumnya (←)"
+              title="Previous (←)"
             >
               <Icon name="back" size={22} />
             </button>
@@ -215,7 +216,7 @@ export function PreviewDrawer({
               className="viewer-nav next"
               onClick={() => go(1)}
               disabled={!canNext}
-              title="Berikutnya (→)"
+              title="Next (→)"
             >
               <Icon name="chevright" size={22} />
             </button>
@@ -229,7 +230,7 @@ export function PreviewDrawer({
                 key={i}
                 className={"viewer-thumb" + (i === activeIdx ? " on" : "")}
                 onClick={() => setActiveIdx(i)}
-                title={`Bagian ${i + 1}`}
+                title={`Part ${i + 1}`}
               >
                 <img src={src} alt="" />
               </button>
@@ -238,7 +239,7 @@ export function PreviewDrawer({
         )}
       </div>
 
-      {/* ---- Panel detail (muncul saat tombol titik-3 ditekan) ---- */}
+      {/* ---- Detail panel (appears when the kebab button is pressed) ---- */}
       {showDetails && (
         <>
           <div
@@ -247,11 +248,11 @@ export function PreviewDrawer({
           ></div>
           <div className="drawer">
             <div className="dv-head">
-              <strong>{editing ? "Edit metadata" : "Detail"}</strong>
+              <strong>{editing ? "Edit metadata" : "Details"}</strong>
               <button
                 className="iconbtn ghost"
                 onClick={() => setShowDetails(false)}
-                title="Tutup"
+                title="Close"
               >
                 <Icon name="close" size={18} />
               </button>
@@ -261,19 +262,19 @@ export function PreviewDrawer({
               {editing ? (
                 <div className="dv-edit">
                   <label className="dv-field">
-                    <span>Judul</span>
+                    <span>Title</span>
                     <input
                       autoFocus
                       value={title}
                       onChange={(e) => setTitle(e.target.value)}
-                      placeholder="Judul item"
+                      placeholder="Item title"
                       onKeyDown={(e) => {
                         if (e.key === "Enter") save();
                       }}
                     />
                   </label>
                   <label className="dv-field">
-                    <span>Jenis</span>
+                    <span>Type</span>
                     <select value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
                       {(Object.keys(KINDS) as Kind[]).map((k) => (
                         <option key={k} value={k}>
@@ -282,21 +283,19 @@ export function PreviewDrawer({
                       ))}
                     </select>
                   </label>
-                  <label className="dv-field">
-                    <span>Kategori (pisah dengan koma)</span>
-                    <input
+                  <div className="dv-field">
+                    <span>Categories</span>
+                    <TagPicker
                       value={tagsText}
-                      onChange={(e) => setTagsText(e.target.value)}
-                      placeholder="mis. rpg, fantasy"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") save();
-                      }}
+                      onChange={setTagsText}
+                      suggestions={tags}
+                      placeholder="e.g. rpg, fantasy"
                     />
-                  </label>
+                  </div>
                   {kind === "game" && (
                     <p className="dv-hint">
-                      Untuk game, judul juga jadi pengelompok versi (mis. “Eternum 0.6” →
-                      family “Eternum”). Tautan unduh tidak berubah.
+                      For games, the title also groups versions (e.g. &quot;Eternum 0.6&quot; →
+                      family &quot;Eternum&quot;). Download links remain unchanged.
                     </p>
                   )}
                 </div>
@@ -308,26 +307,26 @@ export function PreviewDrawer({
                   </div>
 
                   <div className="dv-section">
-                    <h4>Detail</h4>
+                    <h4>Details</h4>
                     <dl className="dv-meta">
-                      <dt>Jenis</dt>
+                      <dt>Type</dt>
                       <dd>{meta.label}</dd>
-                      <dt>Ukuran</dt>
+                      <dt>Size</dt>
                       <dd>{fmtSize(item.size)}</dd>
                       {item.parts > 1 && (
                         <>
-                          <dt>{item.kind === "media" ? "Isi" : "Bagian"}</dt>
+                          <dt>{item.kind === "media" ? "Contents" : "Parts"}</dt>
                           <dd>
-                            {item.parts} {item.kind === "media" ? "file" : "part"}
+                            {item.parts} {item.kind === "media" ? "files" : "parts"}
                           </dd>
                         </>
                       )}
-                      <dt>Ditambahkan</dt>
+                      <dt>Added</dt>
                       <dd>{fmtDate(item.added)}</dd>
                       {item.trashed && item.deletedAt != null && (
                         <>
-                          <dt>Sampah</dt>
-                          <dd>dihapus permanen dalam {trashDaysLeft(item.deletedAt)} hari</dd>
+                          <dt>Trash</dt>
+                          <dd>permanently deleted in {trashDaysLeft(item.deletedAt)} days</dd>
                         </>
                       )}
                     </dl>
@@ -335,7 +334,7 @@ export function PreviewDrawer({
 
                   {itemTags.length > 0 && (
                     <div className="dv-section">
-                      <h4>Kategori</h4>
+                      <h4>Tags</h4>
                       <div className="dv-tags">
                         {itemTags.map((t) => (
                           <span key={t.id} className="chip" style={{ ["--c" as string]: TAG_COLORS[t.color] }}>
@@ -350,16 +349,16 @@ export function PreviewDrawer({
               )}
             </div>
 
-            {/* Footer hanya untuk mode edit; tindakan lain pindah ke bar atas. */}
+            {/* Footer only shown in edit mode; other actions are in the top bar. */}
             {editing && (
               <div className="dv-actions">
                 <button className="btn primary" onClick={save} disabled={!title.trim()}>
                   <Icon name="check" size={16} />
-                  Simpan
+                  Save
                 </button>
                 <button className="btn" onClick={() => setEditing(false)}>
                   <Icon name="close" size={16} />
-                  Batal
+                  Cancel
                 </button>
               </div>
             )}

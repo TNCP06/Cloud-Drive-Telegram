@@ -8,21 +8,22 @@ import type { DriveFile, Tag } from "@/lib/types";
 import { Sidebar, type Counts, type Storage } from "./Sidebar";
 import { FileCard, FileRow, Menu, MenuItem } from "./FileViews";
 import { PreviewDrawer } from "./PreviewDrawer";
+import { TagManager } from "./TagManager";
 import { toggleFavorite, softDelete, restore, updateMetadata } from "@/app/actions";
 import { prefetchGallery } from "@/lib/gallery-cache";
 
 type View = "all" | "recent" | "starred" | "trash" | "tag";
 
-// Deep link download ke bot (lihat brief M6). NEXT_PUBLIC_* tersedia di client.
+// Bot deep link for download (NEXT_PUBLIC_* is available on the client).
 const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME;
 const deepLink = (slug: string): string | null =>
   BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=${slug}` : null;
 
 const SORTS: Record<string, { label: string; fn: (a: DriveFile, b: DriveFile) => number }> = {
-  modified: { label: "Terakhir diubah", fn: (a, b) => b.modified - a.modified },
-  name: { label: "Nama", fn: (a, b) => a.name.localeCompare(b.name, "id") },
-  size: { label: "Ukuran", fn: (a, b) => (b.size || 0) - (a.size || 0) },
-  kind: { label: "Jenis", fn: (a, b) => a.kind.localeCompare(b.kind) },
+  modified: { label: "Last modified", fn: (a, b) => b.modified - a.modified },
+  name: { label: "Name", fn: (a, b) => a.name.localeCompare(b.name, "en") },
+  size: { label: "Size", fn: (a, b) => (b.size || 0) - (a.size || 0) },
+  kind: { label: "Type", fn: (a, b) => a.kind.localeCompare(b.kind) },
 };
 
 export function DriveApp({
@@ -44,10 +45,11 @@ export function DriveApp({
   const [sortMenu, setSortMenu] = useState<HTMLElement | null>(null);
   const [menu, setMenu] = useState<{ anchor: HTMLElement; item: DriveFile } | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
+  const [manageTags, setManageTags] = useState(false);
   const [isPending, startTransition] = useTransition();
   const searchRef = useRef<HTMLInputElement>(null);
 
-  /* ---- keyboard: ⌘K fokus pencarian ---- */
+  /* ---- keyboard: ⌘K focuses search ---- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -59,9 +61,9 @@ export function DriveApp({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  /* ---- prefetch galeri album di latar (idle) ----
-     Isi cache sesi untuk semua album multi-part begitu data drive siap, jadi
-     preview album terbuka instan (bukan hanya pada pembukaan kedua). */
+  /* ---- background album gallery prefetch (idle)
+     Warm the session cache for all multi-part albums as soon as drive data is ready,
+     so album previews open instantly (not just on the second open). */
   useEffect(() => {
     const albums = files.filter((f) => f.kind === "media" && f.parts > 1);
     if (!albums.length) return;
@@ -115,7 +117,7 @@ export function DriveApp({
     return c;
   }, [files, tags]);
 
-  /* ---- storage meter (komposisi per kind) ---- */
+  /* ---- storage meter (composition by kind) ---- */
   const storage: Storage = useMemo(() => {
     const live = files.filter((f) => !f.trashed);
     const used = live.reduce((s, f) => s + (f.size || 0), 0);
@@ -142,7 +144,7 @@ export function DriveApp({
     };
   }, [files]);
 
-  /* ---- daftar item terfilter + tersortir ---- */
+  /* ---- filtered + sorted item list ---- */
   const items = useMemo(() => {
     let list = files.filter((f) => !f.trashed);
     const q = query.trim().toLowerCase();
@@ -159,11 +161,11 @@ export function DriveApp({
     return [...list].sort(fn);
   }, [files, view, activeTag, query, sort]);
 
-  /* ---- grouping untuk view "Terbaru" ---- */
+  /* ---- grouping for the "Recent" view ---- */
   const grouped = useMemo(() => {
     if (view !== "recent" || query) return null;
     const groups: Record<string, DriveFile[]> = {};
-    const order = ["Hari ini", "Kemarin", "Minggu ini", "Bulan ini", "Lebih lama"];
+    const order = ["Today", "Yesterday", "This week", "This month", "Older"];
     items.forEach((f) => {
       const g = relGroup(f.modified);
       (groups[g] = groups[g] || []).push(f);
@@ -171,7 +173,7 @@ export function DriveApp({
     return order.filter((g) => groups[g]).map((g) => ({ label: g, items: groups[g] }));
   }, [items, view, query]);
 
-  /* ---- navigasi ---- */
+  /* ---- navigation ---- */
   const go = (v: string) => {
     setView(v as View);
     setActiveTag(null);
@@ -187,21 +189,21 @@ export function DriveApp({
 
   const title =
     view === "all"
-      ? "Semua file"
+      ? "All files"
       : view === "recent"
-        ? "Terbaru"
+        ? "Recent"
         : view === "starred"
-          ? "Favorit"
+          ? "Favorites"
           : view === "trash"
-            ? "Sampah"
-            : tags.find((x) => x.id === activeTag)?.name || "Kategori";
+            ? "Trash"
+            : tags.find((x) => x.id === activeTag)?.name || "Tags";
 
-  // Klik "N versi" → tampilkan semua versi family (lewat search) & matikan grouping.
+  // "N versions" click → show all versions in the family (via search) and disable grouping.
   const pickFamily = (family: string) => setQuery(family);
   const openPreview = (item: DriveFile) => setPreviewId(item.id);
   const previewItem = previewId != null ? files.find((f) => f.id === previewId) ?? null : null;
 
-  // Kelompokkan game per family → wakil = versi dengan upload terbaru (date_added).
+  // Group games by family → representative = version with the most recent upload (date_added).
   const collapseVersions = (list: DriveFile[]) => {
     const counts = new Map<string, number>();
     if (!groupVersions || query || view === "trash") return { list, counts };
@@ -225,8 +227,8 @@ export function DriveApp({
     return { list: out, counts };
   };
 
-  // Daftar datar item sesuai urutan yang tampil di layar (mengikuti grouping +
-  // collapse versi). Dipakai untuk navigasi antar-file di dalam preview.
+  // Flat ordered list of items as they appear on screen (respects grouping + version
+  // collapsing). Used for prev/next navigation inside the preview drawer.
   const navList = grouped
     ? grouped.flatMap((g) => collapseVersions(g.items).list)
     : collapseVersions(items).list;
@@ -263,15 +265,15 @@ export function DriveApp({
       <div className="list">
         <div className="list-head">
           <button onClick={() => setSort("name")}>
-            Nama {sort === "name" && <Icon name="chevdown" size={13} />}
+            Name {sort === "name" && <Icon name="chevdown" size={13} />}
           </button>
           <button className="h-mod" onClick={() => setSort("modified")}>
-            Diubah {sort === "modified" && <Icon name="chevdown" size={13} />}
+            Modified {sort === "modified" && <Icon name="chevdown" size={13} />}
           </button>
           <button className="h-size" onClick={() => setSort("size")}>
-            Ukuran {sort === "size" && <Icon name="chevdown" size={13} />}
+            Size {sort === "size" && <Icon name="chevdown" size={13} />}
           </button>
-          <span className="hide-mob">Jenis</span>
+          <span className="hide-mob">Type</span>
           <span></span>
         </div>
         {shown.map((item) => (
@@ -302,6 +304,7 @@ export function DriveApp({
         storage={storage}
         onNav={go}
         onTag={goTag}
+        onManageTags={() => setManageTags(true)}
       />
 
       <div className="main">
@@ -321,7 +324,7 @@ export function DriveApp({
             <input
               ref={searchRef}
               value={query}
-              placeholder="Cari file…"
+              placeholder="Search files…"
               onChange={(e) => setQuery(e.target.value)}
             />
             {query ? (
@@ -340,14 +343,14 @@ export function DriveApp({
             <button
               className={viewMode === "grid" ? "on" : ""}
               onClick={() => setViewMode("grid")}
-              title="Kisi"
+              title="Grid"
             >
               <Icon name="grid" size={16} />
             </button>
             <button
               className={viewMode === "list" ? "on" : ""}
               onClick={() => setViewMode("list")}
-              title="Daftar"
+              title="List"
             >
               <Icon name="rows" size={16} />
             </button>
@@ -381,10 +384,10 @@ export function DriveApp({
           <button
             className={"sortbtn toggle" + (groupVersions ? " on" : "")}
             onClick={() => setGroupVersions((v) => !v)}
-            title="Kelompokkan beberapa versi game jadi satu kartu"
+            title="Group multiple game versions into one card"
           >
             <Icon name={groupVersions ? "check" : "all"} size={15} />
-            Grup versi
+            Group versions
           </button>
           <div className="spacer"></div>
         </div>
@@ -407,7 +410,7 @@ export function DriveApp({
 
       {sortMenu && (
         <Menu anchor={sortMenu} onClose={() => setSortMenu(null)} width={210}>
-          <div className="menu-label">Urutkan menurut</div>
+          <div className="menu-label">Sort by</div>
           {Object.entries(SORTS).map(([k, s]) => (
             <MenuItem
               key={k}
@@ -427,7 +430,7 @@ export function DriveApp({
           {menu.item.trashed ? (
             <MenuItem
               icon="restore"
-              label="Pulihkan"
+              label="Restore"
               onClick={() => {
                 doRestore(menu.item);
                 setMenu(null);
@@ -437,7 +440,7 @@ export function DriveApp({
             <>
               <MenuItem
                 icon="download"
-                label="Unduh"
+                label="Download"
                 onClick={() => {
                   const url = deepLink(menu.item.slug);
                   if (url) window.open(url, "_blank");
@@ -447,7 +450,7 @@ export function DriveApp({
               <div className="menu-sep"></div>
               <MenuItem
                 icon="star"
-                label={menu.item.starred ? "Hapus favorit" : "Tandai favorit"}
+                label={menu.item.starred ? "Remove from favorites" : "Add to favorites"}
                 onClick={() => {
                   doStar(menu.item);
                   setMenu(null);
@@ -456,7 +459,7 @@ export function DriveApp({
               <div className="menu-sep"></div>
               <MenuItem
                 icon="trash"
-                label="Hapus"
+                label="Delete"
                 danger
                 onClick={() => {
                   doTrash(menu.item);
@@ -493,10 +496,18 @@ export function DriveApp({
         />
       )}
 
+      {manageTags && (
+        <TagManager
+          tags={tags}
+          counts={counts.tags}
+          onClose={() => setManageTags(false)}
+        />
+      )}
+
       {isPending && (
         <div className="saving-pill">
           <span className="spinner" />
-          Menyimpan…
+          Saving…
         </div>
       )}
     </div>
@@ -505,16 +516,16 @@ export function DriveApp({
 
 function EmptyState({ view, query }: { view: string; query: string }) {
   const cfg = query
-    ? { icon: "search", h: "Tidak ada hasil", p: `Tidak ada file yang cocok dengan "${query}".` }
+    ? { icon: "search", h: "No results", p: `No files match "${query}".` }
     : view === "trash"
-      ? { icon: "trash", h: "Sampah kosong", p: "Item yang dihapus muncul di sini selama 7 hari sebelum purge." }
+      ? { icon: "trash", h: "Trash is empty", p: "Deleted items appear here for 7 days before being purged." }
       : view === "starred"
-        ? { icon: "star", h: "Belum ada favorit", p: "Tandai file dengan bintang agar mudah ditemukan di sini." }
+        ? { icon: "star", h: "No favorites yet", p: "Star files to find them here quickly." }
         : view === "recent"
-          ? { icon: "recent", h: "Belum ada aktivitas", p: "File yang baru diubah akan muncul di sini." }
+          ? { icon: "recent", h: "No recent activity", p: "Recently modified files will appear here." }
           : view === "tag"
-            ? { icon: "tag", h: "Kategori ini kosong", p: "Beri kategori pada file dari caption saat upload." }
-            : { icon: "cloud", h: "Drive kosong", p: "Kirim file ke channel Telegram dengan caption yang benar untuk mulai mengisi arsip." };
+            ? { icon: "tag", h: "This tag is empty", p: "Tag files via the caption when uploading." }
+            : { icon: "cloud", h: "Drive is empty", p: "Send files to your Telegram channel with the correct caption format to start filling the archive." };
   return (
     <div className="empty">
       <div className="ill">
