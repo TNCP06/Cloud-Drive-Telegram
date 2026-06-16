@@ -20,6 +20,8 @@ services:
       dockerfile: web/Dockerfile
       args:
         NEXT_PUBLIC_BOT_USERNAME: ${NEXT_PUBLIC_BOT_USERNAME:-}
+        TURSO_DATABASE_URL: ${TURSO_DATABASE_URL}
+        TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN}
     env_file: .env
     environment:
       UPLOAD_STAGING_DIR: /staging

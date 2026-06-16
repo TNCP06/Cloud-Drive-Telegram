@@ -10,7 +10,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY web/ ./
 # NEXT_PUBLIC_* are inlined at build time → must be present when building.
 ARG NEXT_PUBLIC_BOT_USERNAME
+ARG TURSO_DATABASE_URL
+ARG TURSO_AUTH_TOKEN
 ENV NEXT_PUBLIC_BOT_USERNAME=$NEXT_PUBLIC_BOT_USERNAME \
+    TURSO_DATABASE_URL=$TURSO_DATABASE_URL \
+    TURSO_AUTH_TOKEN=$TURSO_AUTH_TOKEN \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
