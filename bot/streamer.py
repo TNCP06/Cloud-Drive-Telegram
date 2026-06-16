@@ -269,6 +269,44 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                         remaining -= len(piece)
             return
 
+        # Bypass cache if jumping into the middle of a chunk.
+        # This prevents blocking the video player while we download the start of the chunk.
+        if slice_start > 0 and slice_start < slice_end:
+            byte_offset = chunk_index * CHUNK_SIZE + slice_start
+            remaining_file = total_size - byte_offset
+            chunk_bytes = min(CHUNK_SIZE - slice_start, remaining_file)
+
+            msg = await _get_tg_message(channel_msg_id)
+            if not msg or not msg.media:
+                raise ValueError(f"Message {channel_msg_id} has no media")
+
+            downloaded_so_far = 0
+            for attempt in range(5):
+                try:
+                    current_offset = byte_offset + downloaded_so_far
+                    current_remaining = chunk_bytes - downloaded_so_far
+                    async for piece in tg_client.iter_download(
+                        msg.media, offset=current_offset,
+                        request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
+                    ):
+                        yield piece
+                        downloaded_so_far += len(piece)
+                    return
+                except telethon.errors.FloodError as e:
+                    wait_time = getattr(e, 'seconds', None)
+                    if wait_time is None:
+                        import re
+                        match = re.search(r"WAIT_(\d+)", str(e))
+                        wait_time = int(match.group(1)) if match else 5
+                    log.warning("Telegram flood wait: %ds (attempt %d bypass). Sleeping...", wait_time, attempt + 1)
+                    await asyncio.sleep(wait_time + 1)
+                except Exception as e:
+                    log.error("Telegram download error on bypass chunk %d: %s", chunk_index, e)
+                    if attempt == 4:
+                        raise
+                    await asyncio.sleep(2)
+            raise RuntimeError(f"Failed to stream chunk {chunk_index} after 5 attempts")
+
         # Evict cache if needed
         _evict_if_needed(CHUNK_SIZE)
 
@@ -547,8 +585,10 @@ async def stream(part_id: int, request: Request):
                 if len(parts) > 1 and parts[1]:
                     end = min(int(parts[1]), total_size - 1)
                 else:
-                    # bytes=N- → serve one chunk from N
-                    end = min(start + CHUNK_SIZE - 1, total_size - 1)
+                    # If no end byte, stream up to the end of the file.
+                    # This allows Chrome to keep a single connection open instead of 
+                    # rapidly reconnecting every 15MB, which prevents FloodWait.
+                    end = total_size - 1
         except ValueError:
             # Fallback if range is completely malformed
             start = 0
