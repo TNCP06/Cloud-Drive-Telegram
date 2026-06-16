@@ -88,17 +88,15 @@ def _turso_http_url(url: str) -> str:
 TURSO_DATABASE_URL = _turso_http_url(os.environ["TURSO_DATABASE_URL"])
 
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/cache"))
-CACHE_MAX_SIZE_GB = float(os.environ.get("CACHE_MAX_SIZE_GB", "15"))
-PREFETCH_BUFFER_MB = int(os.environ.get("PREFETCH_BUFFER_MB", "16"))
-CHUNK_SIZE_MB = int(os.environ.get("CHUNK_SIZE_MB", "1"))
-PREFETCH_TIMEOUT_S = int(os.environ.get("PREFETCH_TIMEOUT_S", "90"))
-INITIAL_CHUNKS = int(os.environ.get("INITIAL_CHUNKS", "4"))
+CACHE_MAX_BYTES = int(os.environ.get("CACHE_MAX_SIZE_GB", "15")) * 1073741824
+PREFETCH_BUFFER = int(os.environ.get("PREFETCH_BUFFER_MB", "20")) * 1048576
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE_MB", "5")) * 1048576
+PREFETCH_TIMEOUT = int(os.environ.get("PREFETCH_TIMEOUT_S", "90"))
+INITIAL_CHUNKS = int(os.environ.get("INITIAL_CHUNKS", "1"))
 STREAMER_PORT = int(os.environ.get("STREAMER_PORT", "8080"))
 
 # Derived constants
-CHUNK_SIZE = CHUNK_SIZE_MB * 1048576  # bytes per chunk
-PREFETCH_CHUNKS = (PREFETCH_BUFFER_MB * 1048576) // CHUNK_SIZE
-CACHE_MAX_BYTES = int(CACHE_MAX_SIZE_GB * 1073741824)
+PREFETCH_CHUNKS = PREFETCH_BUFFER // CHUNK_SIZE
 DOWNLOAD_REQUEST_SIZE = 524288  # 512 KB — Telethon iter_download piece size
 
 MIME_MAP = {
@@ -350,7 +348,7 @@ async def _prefetch_worker(part_id: int, channel_msg_id: int,
                 await asyncio.sleep(1)
                 # Check for timeout
                 meta = _read_meta(part_id)
-                if meta and (time.time() - meta.get("last_accessed", 0)) > PREFETCH_TIMEOUT_S:
+                if meta and (time.time() - meta.get("last_accessed", 0)) > PREFETCH_TIMEOUT:
                     log.info("Prefetch for part %d timed out", part_id)
                     return
                 continue
@@ -454,15 +452,20 @@ async def get_logs():
 async def stream(part_id: int, request: Request):
     """Serve video chunks with HTTP 206 Partial Content."""
 
-    # --- 1. Load or create meta ---
+    # --- 1. Check & Init Metadata ---
     meta = _read_meta(part_id)
+    if meta and meta.get("chunk_size") != CHUNK_SIZE:
+        log.warning("Chunk size changed (was %s, now %d), evicting cache for part %d", 
+                    meta.get("chunk_size"), CHUNK_SIZE, part_id)
+        shutil.rmtree(CACHE_DIR / f"part_{part_id}", ignore_errors=True)
+        meta = None
+
     if meta is None:
         try:
             meta = await _init_part_meta(part_id)
-            # Fast start: download initial chunks
+            # Fast-start: download initial chunks synchronously before yielding stream
             await _download_initial_chunks(
-                part_id, meta["channel_msg_id"],
-                meta["total_size"], meta["total_chunks"],
+                part_id, meta["channel_msg_id"], meta["total_size"], meta["total_chunks"]
             )
         except ValueError as exc:
             return Response(str(exc), status_code=404)
