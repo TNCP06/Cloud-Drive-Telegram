@@ -114,7 +114,7 @@ db: libsql_client.Client | None = None
 channel = None  # resolved Telegram channel entity
 
 # Per-part-id asyncio locks to prevent duplicate chunk downloads
-_part_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+_part_locks: dict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 # Telethon message cache: channel_msg_id → message object
 _msg_cache: dict[int, object] = {}
@@ -240,13 +240,12 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
     # 1. Read from disk if complete
     if chunk_path.exists():
         if slice_start < slice_end:
-            import aiofiles
-            async with aiofiles.open(chunk_path, "rb") as f:
+            with open(chunk_path, "rb") as f:
                 if slice_start > 0:
-                    await f.seek(slice_start)
+                    f.seek(slice_start)
                 remaining = slice_end - slice_start
                 while remaining > 0:
-                    piece = await f.read(min(remaining, 65536))
+                    piece = f.read(min(remaining, 65536))
                     if not piece:
                         break
                     yield piece
@@ -254,17 +253,16 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
         return
 
     # 2. Lock and download
-    async with _part_locks[part_id][chunk_index]:
+    async with _part_locks[(part_id, chunk_index)]:
         # Double check
         if chunk_path.exists():
             if slice_start < slice_end:
-                import aiofiles
-                async with aiofiles.open(chunk_path, "rb") as f:
+                with open(chunk_path, "rb") as f:
                     if slice_start > 0:
-                        await f.seek(slice_start)
+                        f.seek(slice_start)
                     remaining = slice_end - slice_start
                     while remaining > 0:
-                        piece = await f.read(min(remaining, 65536))
+                        piece = f.read(min(remaining, 65536))
                         if not piece:
                             break
                         yield piece
@@ -286,10 +284,9 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
         downloaded_so_far = 0
         file_mode = "wb"
 
-        import aiofiles
         for attempt in range(5):
             try:
-                async with aiofiles.open(temp_path, file_mode) as f:
+                with open(temp_path, file_mode) as f:
                     current_offset = byte_offset + downloaded_so_far
                     current_remaining = chunk_bytes - downloaded_so_far
 
@@ -297,7 +294,7 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                         msg.media, offset=current_offset,
                         request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
                     ):
-                        await f.write(piece)
+                        f.write(piece)
 
                         piece_start = downloaded_so_far
                         piece_end = downloaded_so_far + len(piece)
