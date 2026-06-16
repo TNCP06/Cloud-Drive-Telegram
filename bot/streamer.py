@@ -118,6 +118,7 @@ _part_locks: dict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 # Per-video lock to prevent Telegram FloodWait from concurrent overlapping downloads
 _tg_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+_tg_last_req_time: dict[int, float] = {}
 
 # Telethon message cache: channel_msg_id → message object
 _msg_cache: dict[int, object] = {}
@@ -293,6 +294,17 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                     current_remaining = chunk_bytes - downloaded_so_far
                     
                     async with _tg_locks[channel_msg_id]:
+                        import time
+                        now = time.time()
+                        last_req = _tg_last_req_time.get(channel_msg_id, 0)
+                        sleep_time = 1.5 - (now - last_req)
+                        if sleep_time > 0:
+                            for _ in range(int(sleep_time * 10) + 1):
+                                if request and await request.is_disconnected():
+                                    raise asyncio.CancelledError()
+                                await asyncio.sleep(0.1)
+                        _tg_last_req_time[channel_msg_id] = time.time()
+
                         async for piece in tg_client.iter_download(
                             msg.media, offset=current_offset,
                             request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
@@ -343,6 +355,17 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                     current_remaining = chunk_bytes - downloaded_so_far
 
                     async with _tg_locks[channel_msg_id]:
+                        import time
+                        now = time.time()
+                        last_req = _tg_last_req_time.get(channel_msg_id, 0)
+                        sleep_time = 1.5 - (now - last_req)
+                        if sleep_time > 0:
+                            for _ in range(int(sleep_time * 10) + 1):
+                                if request and await request.is_disconnected():
+                                    raise asyncio.CancelledError()
+                                await asyncio.sleep(0.1)
+                        _tg_last_req_time[channel_msg_id] = time.time()
+
                         async for piece in tg_client.iter_download(
                             msg.media, offset=current_offset,
                             request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
