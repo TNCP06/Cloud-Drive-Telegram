@@ -66,7 +66,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 
 Key principle (storage path): **the web never streams file bytes to Telegram.** The watcher
 pushes parts to Telegram (MTProto); downloads go Telegram→user's chat (`copy_message`).
-Video streaming goes Telegram→streamer cache→Next.js proxy→browser `<video>` element.
+Video streaming goes Telegram→streamer cache→Next.js proxy→Service Worker (IndexedDB cache)→browser `<video>` element.
 
 Two upload entry points:
 - **`local`** — pick a path on the machine that runs the watcher (laptop mode). The file never
@@ -132,6 +132,7 @@ These are load-bearing — break them and indexing/downloads break:
   with the smallest `channel_msg_id` (computed in `getDriveData()`); the full gallery loads
   on demand via `getGallery()`.
 - **Streamer Deadlock & Priority Invariants:** To avoid Telethon connection choking and deadlocks during concurrent browser seeks, main client playback requests always take absolute priority. Prefetch tasks for the same video are immediately cancelled and awaited (ensuring they release their Telegram locks) before a main playback request proceeds. Additionally, prefetch tasks are only scheduled to start *after* the main playback request successfully completes yielding its chunks, eliminating concurrent lock contention. Finally, the Next.js API proxy disables Keep-Alive (`Connection: close`) to force immediate Uvicorn request completion, ensuring completed chunks are promoted to cache on connection termination.
+- **Client-side Video Caching (Service Worker + IndexedDB):** Video requests to `/api/stream/*` are intercepted by the client's Service Worker (`web/public/sw.js`). Video chunks of 2 MB are stored locally in IndexedDB (`video-cache-db`). An LRU (Least Recently Used) policy automatically evicts older file caches once the total size exceeds 4 GB. This saves VPS bandwidth and allows instant seeking/playback of cached parts without hitting the VPS.
 
 ---
 

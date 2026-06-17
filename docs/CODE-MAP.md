@@ -129,9 +129,12 @@ and streams local file if active, else chunk-streams via Telethon).
   then inserts an `upload_jobs` row (`origin='upload'`, `cleanup_source=1`).
 - `api/stream/[partId]/route.ts` — **streaming proxy** (`nodejs` runtime). Authenticates via
   cookie, then proxies `Range` requests to the streamer service (`STREAMER_URL`, default
-  `http://streamer:8080`). Pipes the 206 response body back to the browser's `<video>` element.
+  `http://streamer:8080`). Pipes the 206 response body back to the browser's `<video>` element (intercepted and cached by the client-side Service Worker).
 - `page.tsx` (main grid), `trash/page.tsx`, `upload/page.tsx`, `upload-bot/page.tsx`,
   `login/` (`page.tsx` + `actions.ts` + `LoginForm.tsx`). `loading.tsx`/`error.tsx` per route.
+
+### `web/public/` — static assets
+- `sw.js` — **client-side Service Worker**. Intercepts video range requests, caches 2 MB chunks in IndexedDB (`video-cache-db`), reconstructs partial responses, and runs LRU cache eviction targeting a 4 GB limit.
 
 ### `web/` — auth & config
 - `lib/auth.ts` — `AUTH_COOKIE`, `sha256Hex` (shared by edge middleware + actions).
@@ -140,6 +143,7 @@ and streams local file if active, else chunk-streams via Telethon).
   middleware body-size limit; both routes perform their own cookie auth check internally.
 
 ### `web/components/` — UI (client)
+- `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).
 - `DriveApp.tsx` — top-level app shell/state (largest component). `Sidebar.tsx` — nav/filters.
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s. `PreviewDrawer.tsx` — item detail +
   on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the
