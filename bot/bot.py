@@ -593,7 +593,6 @@ async def post_init(app: Application):
         default_commands = [
             BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
-            BotCommand("help", "Show available commands & guide"),
             BotCommand("auth", "Authorize yourself using password"),
             BotCommand("cancel", "Cancel current file upload flow"),
         ]
@@ -603,7 +602,6 @@ async def post_init(app: Application):
         owner_commands = [
             BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
-            BotCommand("help", "Show available commands & guide"),
             BotCommand("cancel", "Cancel current file upload flow"),
             BotCommand("approve", "Authorize a user: /approve <user_id>"),
             BotCommand("revoke", "Revoke authorization: /revoke <user_id>"),
@@ -874,7 +872,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
         await context.bot.send_message(chat_id=message.chat_id, text=text, reply_markup=reply_markup, parse_mode="Markdown")
 
 
-async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_main_menu(update, context, edit=False)
 
 
@@ -1251,8 +1249,7 @@ def main():
     app.add_handler(CommandHandler("list_users", on_list_users))
     app.add_handler(CommandHandler("set_web_url", on_set_web_url))
     app.add_handler(CommandHandler("cancel", on_cancel))
-    app.add_handler(CommandHandler("help", on_help))
-    app.add_handler(CommandHandler("menu", on_help))
+    app.add_handler(CommandHandler("menu", on_menu))
 
     # Callback Query handler for inline buttons
     app.add_handler(CallbackQueryHandler(on_callback_query))
