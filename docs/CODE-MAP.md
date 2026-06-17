@@ -19,9 +19,9 @@ yet — common for video, which Telegram generates asynchronously — it schedul
 `_deferred_harvest` instead of giving up), `_deferred_harvest` (background task: wait 60 s, then
 `forward_message` to owner chat to re-fetch the now-generated thumbnail, store it, delete the
 forward), `on_start` (download via `copy_message` for authorized users), `on_auth` / `on_approve` / 
-`on_revoke` / `on_list_users` (user authorization and management), `on_help` (command list menu),
+`on_revoke` / `on_list_users` / `on_set_web_url` (user authorization, management, and settings), `send_main_menu` / `on_help` (button-driven main menu and guide),
 `on_cancel` (cancel active file upload), `on_private_file` (interactive PM upload & Bot Drop intake),
-`on_private_text` / `on_callback_query` (interactive questionnaire), `purge_job` (daily trash purge),
+`on_private_text` / `on_callback_query` (interactive questionnaire and menu callbacks), `purge_job` (daily trash purge),
 `bot_heartbeat_job` (writes to `bot_heartbeat` every 10 s — web UI liveness check).
 Lifecycle: `post_init`/`post_shutdown` (Turso client, auto-migration for `authorized_users` table, and commands menu registration), `main` (handler registration +
 `run_daily` + `run_repeating` heartbeat). **Env:** `BOT_TOKEN`, `STORAGE_CHANNEL_ID`,

@@ -571,10 +571,27 @@ async def post_init(app: Application):
     except Exception as e:
         log.warning("Migration failed for authorized_users: %s", e)
 
+    # Initialize bot_settings table & web_url configuration
+    try:
+        await db.execute("CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)")
+        rs = await db.execute("SELECT value FROM bot_settings WHERE key = 'web_url'")
+        if rs.rows:
+            app.bot_data["web_url"] = rs.rows[0][0].rstrip("/")
+            log.info("Loaded web_url from DB: %s", app.bot_data["web_url"])
+        else:
+            default_url = os.environ.get("NEXT_PUBLIC_WEB_URL", "http://localhost:3000").rstrip("/")
+            app.bot_data["web_url"] = default_url
+            await db.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('web_url', ?)", [default_url])
+            log.info("Initialized web_url in DB: %s", default_url)
+    except Exception as e:
+        log.warning("Failed to initialize bot_settings: %s", e)
+        app.bot_data["web_url"] = os.environ.get("NEXT_PUBLIC_WEB_URL", "http://localhost:3000").rstrip("/")
+
     # Register commands menu with Telegram
     try:
         # Default commands for regular authorized users
         default_commands = [
+            BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
             BotCommand("help", "Show available commands & guide"),
             BotCommand("auth", "Authorize yourself using password"),
@@ -584,12 +601,14 @@ async def post_init(app: Application):
         
         # Admin/Owner commands (only visible in chat with OWNER_USER_ID)
         owner_commands = [
+            BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
             BotCommand("help", "Show available commands & guide"),
             BotCommand("cancel", "Cancel current file upload flow"),
             BotCommand("approve", "Authorize a user: /approve <user_id>"),
             BotCommand("revoke", "Revoke authorization: /revoke <user_id>"),
             BotCommand("list_users", "List all authorized users"),
+            BotCommand("set_web_url", "Set web dashboard URL"),
         ]
         await app.bot.set_my_commands(owner_commands, scope=BotCommandScopeChat(chat_id=OWNER_USER_ID))
         
@@ -758,45 +777,105 @@ async def on_list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(f"❌ Error reading users: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Menu / Help Command
-# ---------------------------------------------------------------------------
-async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def on_set_web_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
     if not message or not user:
         return
 
+    if user.id != OWNER_USER_ID:
+        await message.reply_text("⛔ Only the owner can change the web URL.")
+        return
+
+    if not context.args:
+        current_url = context.bot_data.get("web_url", "http://localhost:3000")
+        await message.reply_text(
+            f"🌐 Current web dashboard URL is: `{current_url}`\n\n"
+            "To change it, use:\n"
+            "`/set_web_url <new_url>`",
+            parse_mode="Markdown"
+        )
+        return
+
+    new_url = context.args[0].strip().rstrip("/")
+    if not (new_url.startswith("http://") or new_url.startswith("https://")):
+        await message.reply_text("❌ Invalid URL. Must start with http:// or https://")
+        return
+
+    db = context.bot_data["db"]
+    try:
+        await db.execute(
+            "INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('web_url', ?)",
+            [new_url]
+        )
+        context.bot_data["web_url"] = new_url
+        await message.reply_text(f"✅ Web dashboard URL successfully updated to:\n`{new_url}`", parse_mode="Markdown")
+        log.info("Owner updated web_url to: %s", new_url)
+    except Exception as e:
+        log.exception("Failed to update web_url in DB")
+        await message.reply_text(f"❌ Database error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Menu / Help Command
+# ---------------------------------------------------------------------------
+async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool = False):
+    user = update.effective_user
+    message = update.message or (update.callback_query.message if update.callback_query else None)
+    if not user or not message:
+        return
+
     db = context.bot_data["db"]
     is_auth = await is_user_authorized(db, user.id)
     is_owner = (user.id == OWNER_USER_ID)
-
-    text = "🤖 **Telegram Cloud Drive Bot Menu**\n\n"
+    web_url = context.bot_data.get("web_url", "http://localhost:3000")
 
     if not is_auth:
-        text += "🔒 You are currently **NOT authorized** to use this bot.\n"
-        text += "To authorize, please type:\n"
-        text += "`/auth <password>`\n\n"
-        text += "Or contact the bot owner to approve your request."
-        await message.reply_text(text, parse_mode="Markdown")
+        text = (
+            "🤖 **Telegram Cloud Drive Bot**\n\n"
+            "🔒 You are currently **NOT authorized** to use this bot.\n\n"
+            "To authorize, please type:\n"
+            "`/auth <password>`\n\n"
+            "Or ask the owner to approve your Telegram ID."
+        )
+        keyboard = [
+            [InlineKeyboardButton("🔑 Get My Telegram ID", callback_data="menu:get_id")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if edit and update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        else:
+            await context.bot.send_message(chat_id=message.chat_id, text=text, reply_markup=reply_markup, parse_mode="Markdown")
         return
 
-    text += "✨ **Available Commands:**\n"
-    text += "• `/start` - Greet or trigger file download from website\n"
-    text += "• `/help` or `/menu` - Show this list of commands\n"
-    text += "• `/cancel` - Cancel the current file upload flow\n\n"
+    text = (
+        "🤖 **Telegram Cloud Drive Bot Menu**\n\n"
+        "Welcome! Select an option below to interact with the cloud drive:"
+    )
 
-    text += "📥 **How to upload files:**\n"
-    text += "Simply send any file (video, photo, or document) directly to this chat. "
-    text += "The bot will guide you to set a title and tags, then copy/index it into the cloud drive!\n\n"
+    keyboard = [
+        [
+            InlineKeyboardButton("📥 How to Upload", callback_data="menu:upload_guide"),
+            InlineKeyboardButton("👤 My Auth Info", callback_data="menu:auth_info")
+        ],
+        [
+            InlineKeyboardButton("🌐 Open Web Dashboard", url=web_url)
+        ]
+    ]
 
     if is_owner:
-        text += "👑 **Owner Admin Commands:**\n"
-        text += "• `/approve <user_id>` - Authorize a user to use the bot\n"
-        text += "• `/revoke <user_id>` - Revoke user authorization\n"
-        text += "• `/list_users` - List all authorized users\n"
+        keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="menu:admin_menu")])
 
-    await message.reply_text(text, parse_mode="Markdown")
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await context.bot.send_message(chat_id=message.chat_id, text=text, reply_markup=reply_markup, parse_mode="Markdown")
+
+
+async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_main_menu(update, context, edit=False)
 
 
 # ---------------------------------------------------------------------------
@@ -855,7 +934,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg_id = message.message_id
     chat_id = message.chat_id
-    web_url = os.environ.get("NEXT_PUBLIC_WEB_URL", "http://localhost:3000").rstrip("/")
+    web_url = context.bot_data.get("web_url", "http://localhost:3000")
 
     file_name, file_size = get_file_meta(message)
     auto_meta, _ = derive_media_meta(message)
@@ -1013,6 +1092,12 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     db = context.bot_data["db"]
+    
+    # Check menu:get_id which can be triggered by unauthorized users
+    if data == "menu:get_id":
+        await query.message.reply_text(f"👤 Your Telegram ID is: `{user.id}`", parse_mode="Markdown")
+        return
+
     if not await is_user_authorized(db, user.id):
         await query.message.reply_text("⛔ Access denied.")
         return
@@ -1037,6 +1122,95 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         upload_file["tags"] = upload_file["auto_tags"]
         await finish_upload(update, context)
+
+    elif data == "menu:main":
+        await send_main_menu(update, context, edit=True)
+
+    elif data == "menu:upload_guide":
+        text = (
+            "📥 **How to Upload Files:**\n\n"
+            "1. Send or **forward** any file (video, photo, document, animation) directly to this private chat.\n"
+            "2. The bot will ask you for a **Title** (suggesting a derived title from filename or caption).\n"
+            "3. The bot will ask you for **Tags** (optional).\n"
+            "4. The bot will automatically format the caption contract and copy the file to the storage channel, indexing it instantly into the website.\n\n"
+            "⚠️ Use `/cancel` if you need to abort an active upload questionnaire."
+        )
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data == "menu:auth_info":
+        text = (
+            "👤 **Your Authorization Info:**\n\n"
+            f"• **Telegram ID**: `{user.id}`\n"
+            f"• **Username**: `@{user.username or 'none'}`\n"
+            f"• **First Name**: `{user.first_name}`\n"
+            "• **Status**: ✅ Authorized\n\n"
+            "You have full access to download and upload features."
+        )
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data == "menu:admin_menu":
+        if user.id != OWNER_USER_ID:
+            await query.message.reply_text("⛔ Access denied.")
+            return
+        text = (
+            "👑 **Owner Admin Panel**\n\n"
+            "Manage users and bot access control:"
+        )
+        keyboard = [
+            [InlineKeyboardButton("👥 List Users", callback_data="admin:list_users")],
+            [
+                InlineKeyboardButton("➕ Approve User Info", callback_data="admin:approve_info"),
+                InlineKeyboardButton("➖ Revoke User Info", callback_data="admin:revoke_info")
+            ],
+            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data == "admin:approve_info":
+        if user.id != OWNER_USER_ID:
+            return
+        text = (
+            "➕ **How to Approve a User:**\n\n"
+            "To authorize a user, send the command:\n"
+            "`/approve <user_id>`\n\n"
+            "Example:\n"
+            "`/approve 123456789`\n\n"
+            "The user will receive an automatic notification once approved."
+        )
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Admin Panel", callback_data="menu:admin_menu")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data == "admin:revoke_info":
+        if user.id != OWNER_USER_ID:
+            return
+        text = (
+            "➖ **How to Revoke a User:**\n\n"
+            "To revoke user access, send the command:\n"
+            "`/revoke <user_id>`\n\n"
+            "Example:\n"
+            "`/revoke 123456789`"
+        )
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Admin Panel", callback_data="menu:admin_menu")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    elif data == "admin:list_users":
+        if user.id != OWNER_USER_ID:
+            return
+        rs = await db.execute("SELECT user_id, username, first_name, added_at FROM authorized_users")
+        if not rs.rows:
+            text = "👥 **Authorized Users:**\n\nNo other users authorized yet."
+        else:
+            text = "👥 **Authorized Users:**\n\n"
+            for r in rs.rows:
+                text += f"- {r[2]} (@{r[1] or 'none'}, ID: `{r[0]}`), added on {r[3]}\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Back to Admin Panel", callback_data="menu:admin_menu")],
+            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 
 def main():
@@ -1075,6 +1249,7 @@ def main():
     app.add_handler(CommandHandler("approve", on_approve))
     app.add_handler(CommandHandler("revoke", on_revoke))
     app.add_handler(CommandHandler("list_users", on_list_users))
+    app.add_handler(CommandHandler("set_web_url", on_set_web_url))
     app.add_handler(CommandHandler("cancel", on_cancel))
     app.add_handler(CommandHandler("help", on_help))
     app.add_handler(CommandHandler("menu", on_help))
