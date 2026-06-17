@@ -989,30 +989,46 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     context.user_data["upload_state"] = "WAITING_TITLE"
 
-    link = f"{web_url}/upload-bot?msg_id={msg_id}&chat_id={chat_id}"
+    try:
+        # Limit button text length to prevent Telegram API errors (e.g. if auto_title is too long)
+        btn_title = auto_title
+        if len(btn_title) > 40:
+            btn_title = btn_title[:37] + "..."
 
-    # Inline Keyboard for Title selection
-    keyboard = [
-        [InlineKeyboardButton(f"✨ Use Auto Title: {auto_title}", callback_data="upload:skip_title")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        link = f"{web_url}/upload-bot?msg_id={msg_id}&chat_id={chat_id}"
 
-    # Detect if the file was forwarded or copied from another message
-    is_forward = bool(message.forward_date or getattr(message, "forward_origin", None))
-    source_label = "Forwarded/Copied File" if is_forward else "File"
+        # Inline Keyboard for Title selection
+        keyboard = [
+            [InlineKeyboardButton(f"✨ Use Auto Title: {btn_title}", callback_data="upload:skip_title")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await message.reply_text(
-        f"📥 <b>{source_label} Received!</b>\n"
-        f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
-        f"• File Size: <code>{file_size / 1024 / 1024:.2f} MB</code>\n\n"
-        f"Please reply with a <b>Title</b> for this file.\n"
-        f"Or click the button below to use the Auto Title.\n\n"
-        f"🔗 Alternatively, you can complete the details via the web!",
-        reply_markup=reply_markup,
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+        # Detect if the file was forwarded or copied from another message
+        is_forward = bool(message.forward_date or getattr(message, "forward_origin", None))
+        source_label = "Forwarded/Copied File" if is_forward else "File"
+
+        await message.reply_text(
+            f"📥 <b>{source_label} Received!</b>\n"
+            f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
+            f"• File Size: <code>{file_size / 1024 / 1024:.2f} MB</code>\n\n"
+            f"Please reply with a <b>Title</b> for this file.\n"
+            f"Or click the button below to use the Auto Title.\n\n"
+            f"🔗 Alternatively, you can complete the details via the <a href=\"{link}\">web</a>!",
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        log.exception("Failed to start upload flow questionnaire")
+        # Clear state so we don't get stuck in an active upload flow
+        context.user_data.pop("upload_file", None)
+        context.user_data.pop("upload_state", None)
+        await message.reply_text(
+            f"❌ <b>Error processing file:</b> {html.escape(str(e))}\n"
+            "Please try again or check the logs.",
+            parse_mode="HTML"
+        )
 
 
 async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1020,20 +1036,36 @@ async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auto_tags = context.user_data["upload_file"]["auto_tags"]
     auto_tags_str = ", ".join(auto_tags) if auto_tags else "none"
 
-    keyboard = [
-        [InlineKeyboardButton(f"✨ Use Auto Tags: {auto_tags_str}", callback_data="upload:skip_tags")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        btn_tags = auto_tags_str
+        if len(btn_tags) > 40:
+            btn_tags = btn_tags[:37] + "..."
 
-    message = update.message or update.callback_query.message
-    await context.bot.send_message(
-        chat_id=message.chat_id,
-        text="🏷️ <b>Title set!</b>\n\nWhat are the <b>Tags</b> for this file? (Separate with commas, e.g. <code>holiday, video</code>)\n"
-             "Or click the button below to use the Auto Tags.",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
+        keyboard = [
+            [InlineKeyboardButton(f"✨ Use Auto Tags: {btn_tags}", callback_data="upload:skip_tags")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        message = update.message or update.callback_query.message
+        await context.bot.send_message(
+            chat_id=message.chat_id,
+            text="🏷️ <b>Title set!</b>\n\nWhat are the <b>Tags</b> for this file? (Separate with commas, e.g. <code>holiday, video</code>)\n"
+                 "Or click the button below to use the Auto Tags.",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        log.exception("Failed to prompt for tags")
+        # Clear state so we don't get stuck in an active upload flow
+        context.user_data.pop("upload_file", None)
+        context.user_data.pop("upload_state", None)
+        message = update.message or update.callback_query.message
+        await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=f"❌ <b>Error prompting for tags:</b> {html.escape(str(e))}",
+            parse_mode="HTML"
+        )
 
 
 async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
