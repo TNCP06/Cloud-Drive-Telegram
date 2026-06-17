@@ -7,10 +7,8 @@ import { Icon } from "@/lib/icons";
 // putus) — menggantikan crash dengan UI yang bisa "Coba lagi" tanpa reload penuh.
 export default function Error({
   error,
-  reset,
 }: {
   error: Error & { digest?: string };
-  reset: () => void;
 }) {
   useEffect(() => {
     console.error(error);
