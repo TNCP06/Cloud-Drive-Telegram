@@ -26,11 +26,8 @@ export default function Error({
           proses upload di laptop <b>tidak terpengaruh</b> dan tetap berjalan.
         </p>
         <div className="err-actions">
-          <button className="btn primary" onClick={() => reset()}>
-            <Icon name="restore" size={16} /> Coba lagi
-          </button>
-          <button className="btn subtle" onClick={() => location.reload()}>
-            Muat ulang halaman
+          <button className="btn primary" onClick={() => location.reload()}>
+            <Icon name="restore" size={16} /> Muat ulang halaman
           </button>
         </div>
       </div>
