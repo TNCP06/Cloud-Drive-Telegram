@@ -29,14 +29,12 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 | **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for games); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes; heartbeat. |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
 | **Streamer** | Server/VPS (Docker) | `bot/streamer.py` | Video streaming: if local Bot API server is configured, downloads files on-the-fly to a shared disk cache and streams directly; else falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetch. |
-| **Web dashboard** | Vercel (or localhost) | `web/` (Next.js 15) | Browse/search/edit/delete metadata; trigger download/upload; stream video; control watcher; Bot Drop form. |
+| **Web dashboard** | Vercel (or localhost) | `web/` (Next.js 15) | Browse/search/edit/delete metadata; trigger download/upload; stream video; Bot Drop form. |
 | **Turso** | Cloud (free tier) | schema in `bot/schema.sql` | All metadata. Always-on, SQLite-compatible. |
 
 > **Process topology matters.** `bot.py`, `watcher.py`, and `streamer.py` are **separate
 > processes** that only communicate through Turso tables — they never call each other.
-> `bot/run-all.cmd` starts bot + watcher + streamer (minimized) on the laptop. The web app can
-> start/stop both the *watcher* and the *bot* (via `startBot`/`stopBot` server actions)
-> when running on the same machine.
+> `bot/run-all.cmd` starts bot + watcher + streamer (minimized) on the laptop.
 
 ---
 

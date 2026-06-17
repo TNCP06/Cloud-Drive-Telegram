@@ -1,31 +1,7 @@
 import "server-only";
 import { db } from "./db";
 import { sqliteToMs } from "./format";
-import type { BotStatus, Kind, UploadJob, UploadStatus, WatcherStatus } from "./types";
-
-// Watcher status from heartbeat (online if heartbeat is < 30 seconds old).
-export async function getWatcherStatus(): Promise<WatcherStatus> {
-  try {
-    const rs = await db.execute("SELECT last_seen, status FROM watcher_heartbeat WHERE id = 1");
-    if (!rs.rows.length) return { online: false, status: null, lastSeen: null };
-    const lastSeen = sqliteToMs(String(rs.rows[0].last_seen));
-    const status = rs.rows[0].status != null ? (String(rs.rows[0].status) as "idle" | "busy") : null;
-    return { online: Date.now() - lastSeen < 30000, status, lastSeen };
-  } catch {
-    return { online: false, status: null, lastSeen: null };
-  }
-}
-
-export async function getBotStatus(): Promise<BotStatus> {
-  try {
-    const rs = await db.execute("SELECT last_seen FROM bot_heartbeat WHERE id = 1");
-    if (!rs.rows.length) return { online: false, lastSeen: null };
-    const lastSeen = sqliteToMs(String(rs.rows[0].last_seen));
-    return { online: Date.now() - lastSeen < 30000, lastSeen };
-  } catch {
-    return { online: false, lastSeen: null };
-  }
-}
+import type { Kind, UploadJob, UploadStatus } from "./types";
 
 export async function getUploadJobs(): Promise<UploadJob[]> {
   let rs;

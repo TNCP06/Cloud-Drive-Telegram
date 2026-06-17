@@ -98,8 +98,7 @@ and streams local file if active, else chunk-streams via Telethon).
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Games only.
 - `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and kind metadata.
 - `format.ts` — `sqliteToMs()` (SQLite datetime→epoch ms), byte/size formatting.
-- `uploads.ts` — `getUploadJobs()`, `getWatcherStatus()`, `getBotStatus()` — read helpers
-  for the `/upload` page (watcher + bot liveness via their heartbeat tables).
+- `uploads.ts` — `getUploadJobs()` — read helper for the `/upload` page.
 - `gallery-cache.ts` — in-memory cache for `getGallery` results (`GalleryPart[]`). `icons.tsx` — SVG icons.
 
 ### `web/app/` — routes & server actions
@@ -112,9 +111,7 @@ and streams local file if active, else chunk-streams via Telethon).
   (local path), `cancelUpload`, `startUpload`, `retryUpload` (error→pending, keeps `parts_done`
   → resumes from checkpoint), `startAllUploads`, `clearFinishedUploads`. Process control:
   `killTree` (cross-platform: `taskkill` on Windows, process-group `kill` on Linux),
-  `watcherOnline`, `startWatcher`, `stopWatcher`; `botOnline`, `startBot`, `stopBot` — only
-  work when web + scripts share a machine (laptop mode); under Docker the processes are
-  compose-managed services.
+  `watcherOnline`, `startWatcher`, `stopWatcher`; `botOnline`, `startBot`, `stopBot` (deprecated/unused by the UI).
   Thumbnail repair: `reharvestThumbnail(itemId)` — forwards each part's channel message to
   owner chat via Bot API `forwardMessage`, extracts `video.thumbnail.file_id`, downloads via
   `getFile`, stores in `thumbnails`, deletes forward. Fixes thumbnails missed at index time.

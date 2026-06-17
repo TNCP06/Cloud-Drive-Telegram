@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Icon } from "@/lib/icons";
 import { fmtDate } from "@/lib/format";
-import type { BotStatus, Kind, Tag, UploadJob, UploadStatus, WatcherStatus } from "@/lib/types";
+import type { Kind, Tag, UploadJob, UploadStatus } from "@/lib/types";
 import { TagPicker } from "@/components/TagPicker";
 import {
   enqueueUpload,
@@ -14,10 +14,6 @@ import {
   startUpload,
   startAllUploads,
   retryUpload,
-  startWatcher,
-  stopWatcher,
-  startBot,
-  stopBot,
 } from "@/app/actions";
 import { FsBrowser } from "@/components/FsBrowser";
 import { FileUploader } from "@/components/FileUploader";
@@ -41,13 +37,9 @@ function deriveTitle(p: string): string {
 
 export function UploadManager({
   jobs,
-  watcher,
-  bot,
   allTags = [],
 }: {
   jobs: UploadJob[];
-  watcher: WatcherStatus;
-  bot: BotStatus;
   allTags?: Tag[];
 }) {
   const router = useRouter();
@@ -64,12 +56,7 @@ export function UploadManager({
   const [browse, setBrowse] = useState(false);
   const [mode, setMode] = useState<UploadMode>("device");
 
-  const [watcherBusy, setWatcherBusy] = useState(false);
-  const [watcherErr, setWatcherErr] = useState<string | null>(null);
-  const [botBusy, setBotBusy] = useState(false);
-  const [botErr, setBotErr] = useState<string | null>(null);
-
-  // Always poll so watcher status and upload progress stay live (faster when there are active jobs).
+  // Always poll so upload progress stay live (faster when there are active jobs).
   const hasActive = activeCount > 0;
   useEffect(() => {
     const t = setInterval(() => router.refresh(), hasActive ? 3000 : 6000);
@@ -89,59 +76,6 @@ export function UploadManager({
         setErr(e instanceof Error ? e.message : "Failed to add to queue.");
       }
     });
-  };
-
-  const onStartWatcher = async () => {
-    setWatcherErr(null);
-    setWatcherBusy(true);
-    try {
-      const r = await startWatcher();
-      if (!r.ok) setWatcherErr(r.error ?? "Failed to start watcher.");
-    } finally {
-      setWatcherBusy(false);
-      router.refresh();
-    }
-  };
-
-  const onStopWatcher = async () => {
-    if (
-      watcher.status === "busy" &&
-      !window.confirm("Watcher is currently uploading. Force stop? The running upload will fail.")
-    )
-      return;
-    setWatcherErr(null);
-    setWatcherBusy(true);
-    try {
-      const r = await stopWatcher();
-      if (!r.ok) setWatcherErr(r.error ?? "Failed to stop watcher.");
-    } finally {
-      setWatcherBusy(false);
-      router.refresh();
-    }
-  };
-
-  const onStartBot = async () => {
-    setBotErr(null);
-    setBotBusy(true);
-    try {
-      const r = await startBot();
-      if (!r.ok) setBotErr(r.error ?? "Failed to start bot.");
-    } finally {
-      setBotBusy(false);
-      router.refresh();
-    }
-  };
-
-  const onStopBot = async () => {
-    setBotErr(null);
-    setBotBusy(true);
-    try {
-      const r = await stopBot();
-      if (!r.ok) setBotErr(r.error ?? "Failed to stop bot.");
-    } finally {
-      setBotBusy(false);
-      router.refresh();
-    }
   };
 
   return (
@@ -166,59 +100,7 @@ export function UploadManager({
           </div>
         </div>
 
-        {/* WATCHER STATUS + CONTROL */}
-        <div className="watcher-row">
-          <span className={"wdot " + (watcher.online ? (watcher.status === "busy" ? "busy" : "on") : "off")} />
-          <span className="wlabel">
-            {watcher.online
-              ? watcher.status === "busy"
-                ? "Watcher is uploading…"
-                : "Watcher active"
-              : "Watcher inactive"}
-          </span>
-          {watcher.online ? (
-            <button className="btn subtle sm wbtn" onClick={onStopWatcher} disabled={watcherBusy}>
-              {watcherBusy ? <span className="spinner sm" /> : <Icon name="power" size={14} />}
-              Stop watcher
-            </button>
-          ) : (
-            <button className="btn primary sm wbtn" onClick={onStartWatcher} disabled={watcherBusy}>
-              {watcherBusy ? <span className="spinner sm" /> : <Icon name="power" size={14} />}
-              Start watcher
-            </button>
-          )}
-        </div>
-        {watcherErr && <div className="up-err">{watcherErr}</div>}
 
-        {/* BOT STATUS + CONTROL */}
-        <div className="watcher-row">
-          <span className={"wdot " + (bot.online ? "on" : "off")} />
-          <span className="wlabel">
-            {bot.online ? "Bot indexer active" : "Bot indexer offline"}
-          </span>
-          {bot.online ? (
-            <button className="btn subtle sm wbtn" onClick={onStopBot} disabled={botBusy}>
-              {botBusy ? <span className="spinner sm" /> : <Icon name="power" size={14} />}
-              Stop bot
-            </button>
-          ) : (
-            <button className="btn primary sm wbtn" onClick={onStartBot} disabled={botBusy}>
-              {botBusy ? <span className="spinner sm" /> : <Icon name="power" size={14} />}
-              Start bot
-            </button>
-          )}
-        </div>
-        {botErr && <div className="up-err">{botErr}</div>}
-
-        {activeCount > 0 && !watcher.online && (
-          <div className="up-warn danger">
-            <Icon name="warn" size={20} />
-            <div>
-              <strong>{activeCount} upload(s) waiting but watcher is inactive.</strong> Click{" "}
-              <b>Start watcher</b> above to process them.
-            </div>
-          </div>
-        )}
 
         {/* FORM */}
         <div className="up-form">

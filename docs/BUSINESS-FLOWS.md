@@ -223,16 +223,8 @@ All in [`web/app/actions.ts`](../web/app/actions.ts), no Telegram involved:
 
 ## H. Watcher lifecycle & control
 
-- **Heartbeat**: watcher writes `watcher_heartbeat` every 10 s. Web treats it as online if
-  `last_seen` is < 30 s old (`watcherOnline()`). Same for the bot (`bot_heartbeat`).
-- **Start** (`startWatcher`): if not already online, `spawn('python -u watcher.py', {detached,
-  shell})`, write `watcher.pid`, and write an instant heartbeat so the UI shows "active" right
-  away.
-- **Stop** (`stopWatcher`): read `watcher.pid` → `killTree(pid)` — `taskkill /PID <pid> /T /F`
-  on Windows, or `kill` of the detached process group on Linux/macOS — then stale the heartbeat.
-- The start/stop buttons only work when the **web server shares a machine with the scripts**
-  (laptop mode). **Under Docker** the bot & watcher are always-on compose services, so the
-  buttons are inert; the heartbeat dots still report real status.
+- **Heartbeat**: Watcher writes `watcher_heartbeat` every 10 s. Same for the bot (`bot_heartbeat`). While these tables are still updated by the scripts, the frontend UI no longer displays these status indicators or heartbeats.
+- **Process control**: The web UI start/stop buttons for the bot and watcher have been completely removed. The processes are started manually (laptop mode) or managed as always-on compose services (Docker mode). The actions `startWatcher`, `stopWatcher`, `startBot`, and `stopBot` are no longer active in the web page.
 
 ---
 

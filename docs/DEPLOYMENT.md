@@ -124,9 +124,7 @@ docker compose logs -f                      # cek bot & watcher konek, web siap
 ```
 
 Catatan:
-- **Tombol Start/Stop watcher & bot di UI tidak dipakai di mode Docker** — bot & watcher
-  jalan sebagai service `restart: unless-stopped`. Status hijau/merah tetap akurat dari
-  heartbeat. (Tombol itu hanya berfungsi saat web & skrip di mesin yang sama, mode laptop.)
+- **Tombol Start/Stop watcher & bot beserta display status liveness (heartbeat) di UI sudah dihapus**. Bot & watcher dikelola secara terpisah di luar web dashboard (misalnya sebagai compose service `restart: unless-stopped` di Docker, atau dijalankan secara manual di terminal/background).
 - Untuk domain + HTTPS, taruh **Caddy/Nginx** di depan service `web` (port 3000). Upload
   besar **harus** lewat server ini, jangan lewat Vercel (batas body kecil).
 - Folder staging adalah volume Docker `staging`, dibagi web ↔ watcher. Tidak perlu diatur
