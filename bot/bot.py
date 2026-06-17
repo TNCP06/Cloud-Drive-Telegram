@@ -1104,7 +1104,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         # Detect if the file was forwarded or copied from another message
-        is_forward = bool(message.forward_date or getattr(message, "forward_origin", None))
+        is_forward = bool(getattr(message, "forward_origin", None) or getattr(message, "forward_date", None))
         source_label = "Forwarded/Copied Album" if message.media_group_id else ("Forwarded/Copied File" if is_forward else "File")
 
         await message.reply_text(
