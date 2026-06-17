@@ -13,7 +13,7 @@ Pure helpers (no I/O): `slugify`, `parse_caption` (the contract regex), `detect_
 (`media` vs `archive`), `get_file_meta`, `derive_media_meta` (media caption fallback),
 `pick_thumb_file_id`, `process_next_in_queue` (helper to process the next queued file).
 Turso ops (idempotent): `upsert_item` (`set_title` guard for albums), `upsert_part` (keyed on
-`channel_msg_id`), `recompute_totals`, `sync_tags`, `upsert_thumbnail`.
+`channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags`, `upsert_thumbnail`.
 Handlers: `on_channel_post` (index new and edited channel posts, Flow C), `harvest_thumbnail` (if the post has no thumbnail
 yet — common for video, which Telegram generates asynchronously — it schedules
 `_deferred_harvest` instead of giving up), `_deferred_harvest` (background task: wait 60 s, then

@@ -96,7 +96,7 @@ Triggered by any new `channel_post` in `STORAGE_CHANNEL_ID` ([`bot/bot.py`](../b
    - No match **and** `media` → `derive_media_meta()`, index anyway.
    - No match **and** `archive` → `warn_owner()` DM, **do not index**.
 3. Compute `slug` + `part_number` (see kind table in ARCHITECTURE §5).
-4. `upsert_item` → `upsert_part` (keyed on `channel_msg_id`) → `recompute_totals` →
+4. `upsert_item` → `upsert_part` (keyed on `channel_msg_id`, which deletes the old item if it becomes an orphan after part reassignment) → `recompute_totals` →
    `sync_tags` → (media) `harvest_thumbnail`. All idempotent.
 5. `set_title=has_caption` guards album ordering: a captionless album member won't overwrite
    the title set by a captioned member (album update order isn't guaranteed).

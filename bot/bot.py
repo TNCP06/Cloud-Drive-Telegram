@@ -223,6 +223,12 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
 
 async def upsert_part(db, item_id, part_number, channel_msg_id, file_name, file_size, file_id=None) -> int:
     """Upsert part by channel_msg_id (idempotency key & copy_message target). Return part_id."""
+    # Check if this part already exists to get its old item_id
+    old_item_id = None
+    rs_exist = await db.execute("SELECT item_id FROM parts WHERE channel_msg_id = ?", [channel_msg_id])
+    if rs_exist.rows:
+        old_item_id = rs_exist.rows[0][0]
+
     await db.execute(
         """
         INSERT INTO parts (item_id, part_number, channel_msg_id,
@@ -238,7 +244,18 @@ async def upsert_part(db, item_id, part_number, channel_msg_id, file_name, file_
         [item_id, part_number, channel_msg_id, file_name, file_size, file_id],
     )
     rs = await db.execute("SELECT id FROM parts WHERE channel_msg_id = ?", [channel_msg_id])
-    return rs.rows[0][0]
+    part_id = rs.rows[0][0]
+
+    # Clean up old item if the part got reassigned to a different item
+    if old_item_id is not None and old_item_id != item_id:
+        await recompute_totals(db, old_item_id)
+        # Check if the old item has 0 parts left
+        rs_count = await db.execute("SELECT COUNT(*) FROM parts WHERE item_id = ?", [old_item_id])
+        if rs_count.rows and rs_count.rows[0][0] == 0:
+            # Delete from items (foreign keys ON DELETE CASCADE will clean up item_tags, etc.)
+            await db.execute("DELETE FROM items WHERE id = ?", [old_item_id])
+
+    return part_id
 
 
 
