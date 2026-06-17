@@ -33,9 +33,10 @@ import re
 import shutil
 import time
 from collections import defaultdict, deque
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 
+import httpx
 import libsql_client
 import uvicorn
 import telethon.errors
@@ -43,6 +44,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 from telethon import TelegramClient
+from telethon.utils import pack_bot_file_id
 
 # ---------------------------------------------------------------------------
 # In-memory log buffer for debugging
@@ -74,6 +76,8 @@ API_ID = int(os.environ["TG_API_ID"])
 API_HASH = os.environ["TG_API_HASH"]
 STORAGE_CHANNEL_ID = int(os.environ["STORAGE_CHANNEL_ID"])
 SESSION = os.environ.get("STREAMER_SESSION", "streamer")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TELEGRAM_API_URL = os.environ.get("TELEGRAM_API_URL")
 
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 
@@ -95,9 +99,13 @@ PREFETCH_TIMEOUT = int(os.environ.get("PREFETCH_TIMEOUT_S", "90"))
 INITIAL_CHUNKS = int(os.environ.get("INITIAL_CHUNKS", "1"))
 STREAMER_PORT = int(os.environ.get("STREAMER_PORT", "8080"))
 
+# Cache of resolved local file paths: part_id -> local absolute path
+_local_file_paths: dict[int, str] = {}
+
+
 # Derived constants
 PREFETCH_CHUNKS = PREFETCH_BUFFER // CHUNK_SIZE
-DOWNLOAD_REQUEST_SIZE = 524288  # 512 KB — Telethon iter_download piece size
+DOWNLOAD_REQUEST_SIZE = 1048576  # 1 MB — Telethon iter_download piece size
 
 MIME_MAP = {
     ".mp4": "video/mp4", ".webm": "video/webm", ".m4v": "video/mp4",
@@ -128,6 +136,9 @@ _last_request_pos: dict[int, int] = {}
 
 # Active prefetch tasks per part_id
 _prefetch_tasks: dict[int, asyncio.Task] = {}
+
+# Keep track of active main play requests per channel_msg_id to prevent prefetch contention
+_active_downloads: dict[int, int] = defaultdict(int)
 
 
 # ---------------------------------------------------------------------------
@@ -222,9 +233,75 @@ def _evict_if_needed(needed: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Helpers — Local Bot API download & cache eviction
+# ---------------------------------------------------------------------------
+def _evict_local_api_cache_if_needed(needed_bytes: int) -> None:
+    """Evict files from the local Bot API cache directory if disk usage exceeds the limit."""
+    local_dir = Path("/var/lib/telegram-bot-api")
+    if not local_dir.exists():
+        return
+
+    files = []
+    total_size = 0
+    for root, _, filenames in os.walk(local_dir):
+        for name in filenames:
+            file_path = Path(root) / name
+            if file_path.is_file() and not file_path.name.endswith(".session"):
+                try:
+                    stat = file_path.stat()
+                    files.append((stat.st_mtime, stat.st_size, file_path))
+                    total_size += stat.st_size
+                except Exception:
+                    pass
+
+    limit = CACHE_MAX_BYTES
+    if total_size + needed_bytes <= limit:
+        return
+
+    log.info("Local Bot API cache size (%.1f MB) + needed (%.1f MB) exceeds limit (%.1f MB). Evicting...",
+             total_size / 1048576, needed_bytes / 1048576, limit / 1048576)
+
+    files.sort(key=lambda x: x[0])
+    for _mtime, size, file_path in files:
+        if total_size + needed_bytes <= limit:
+            break
+        log.info("Evicting local Bot API cached file: %s (%.1f MB)", file_path.name, size / 1048576)
+        try:
+            file_path.unlink()
+            total_size -= size
+        except Exception as e:
+            log.error("Failed to delete local cache file %s: %s", file_path, e)
+
+    for pid, path in list(_local_file_paths.items()):
+        if not os.path.exists(path):
+            _local_file_paths.pop(pid, None)
+
+
+async def download_via_local_bot_api(file_id: str) -> str:
+    """Request the local Telegram Bot API server to download a file and return the absolute local file path."""
+    if not TELEGRAM_API_URL or not BOT_TOKEN:
+        raise ValueError("TELEGRAM_API_URL and BOT_TOKEN must be set to use local Bot API downloader")
+
+    url = f"{TELEGRAM_API_URL}/bot{BOT_TOKEN}/getFile"
+    log.info("Requesting local Bot API server to download file...")
+
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        resp = await client.post(url, json={"file_id": file_id})
+        resp.raise_for_status()
+        res = resp.json()
+        if not res.get("ok"):
+            raise ValueError(f"Telegram Bot API server error: {res}")
+
+        file_path = res["result"]["file_path"]
+        log.info("Local Bot API server download complete: %s", file_path)
+        return file_path
+
+
+# ---------------------------------------------------------------------------
 # Helpers — Telegram download
 # ---------------------------------------------------------------------------
 async def _get_tg_message(channel_msg_id: int):
+
     """Get a Telegram message, using the in-memory cache."""
     if channel_msg_id in _msg_cache:
         return _msg_cache[channel_msg_id]
@@ -243,6 +320,7 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
         raise asyncio.CancelledError()
 
     chunk_path = CACHE_DIR / f"part_{part_id}" / f"chunk_{chunk_index:06d}"
+    temp_path = chunk_path.with_suffix(".tmp")
     
     # 1. Read from disk if complete
     if chunk_path.exists():
@@ -259,191 +337,238 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                     remaining -= len(piece)
         return
 
-    # 2. Lock and download
-    async with _part_locks[(part_id, chunk_index)]:
-        # Double check
-        if chunk_path.exists():
-            if slice_start < slice_end:
-                with open(chunk_path, "rb") as f:
-                    if slice_start > 0:
-                        f.seek(slice_start)
-                    remaining = slice_end - slice_start
-                    while remaining > 0:
-                        piece = f.read(min(remaining, 65536))
-                        if not piece:
-                            break
-                        yield piece
-                        remaining -= len(piece)
-            return
+    # Wait if there is an active main download for this file (to avoid bandwidth/connection choking)
+    if request is None:
+        while _active_downloads.get(channel_msg_id, 0) > 0:
+            await asyncio.sleep(0.2)
 
-        # Bypass cache if jumping into the middle of a chunk.
-        # This prevents blocking the video player while we download the start of the chunk.
-        if slice_start > 0 and slice_start < slice_end:
-            byte_offset = chunk_index * CHUNK_SIZE + slice_start
-            remaining_file = total_size - byte_offset
-            chunk_bytes = min(CHUNK_SIZE - slice_start, remaining_file)
+    # Increment active downloads immediately to notify prefetch tasks of main playback activity
+    if request is not None:
+        _active_downloads[channel_msg_id] += 1
+        # Cancel any active prefetch task for this part and wait for it to release its locks
+        existing = _prefetch_tasks.get(part_id)
+        if existing and not existing.done():
+            log.info("Main request cancelling active prefetch task for part %d to avoid lock contention", part_id)
+            existing.cancel()
+            try:
+                await existing
+            except asyncio.CancelledError:
+                pass
+
+    downloaded_so_far = 0
+    # Determine the size of the chunk we expect
+    if slice_start > 0 and slice_start < slice_end:
+        byte_offset = chunk_index * CHUNK_SIZE + slice_start
+        remaining_file = total_size - byte_offset
+        chunk_bytes = min(slice_end - slice_start, remaining_file)
+    else:
+        byte_offset = chunk_index * CHUNK_SIZE
+        remaining_file = total_size - byte_offset
+        chunk_bytes = min(CHUNK_SIZE, remaining_file)
+
+    try:
+        # 2. Lock and download
+        async with _part_locks[(part_id, chunk_index)]:
+            # Double check
+            if chunk_path.exists():
+                if slice_start < slice_end:
+                    with open(chunk_path, "rb") as f:
+                        if slice_start > 0:
+                            f.seek(slice_start)
+                        remaining = slice_end - slice_start
+                        while remaining > 0:
+                            piece = f.read(min(remaining, 65536))
+                            if not piece:
+                                break
+                            yield piece
+                            remaining -= len(piece)
+                return
+
+            # Bypass cache if jumping into the middle of a chunk.
+            # This prevents blocking the video player while we download the start of the chunk.
+            if slice_start > 0 and slice_start < slice_end:
+                msg = await _get_tg_message(channel_msg_id)
+                if not msg or not msg.media:
+                    raise ValueError(f"Message {channel_msg_id} has no media")
+
+                for attempt in range(5):
+                    try:
+                        target_offset = byte_offset + downloaded_so_far
+                        target_len = chunk_bytes - downloaded_so_far
+
+                        if target_len <= 0:
+                            return
+
+                        # Telegram API requires offset and limit to be multiples of 4096 (4 KB) for large files,
+                        # and requests must not cross 1 MB boundaries. To satisfy both, we align offset
+                        # to DOWNLOAD_REQUEST_SIZE (512 KB), which is a multiple of 4096 and divides 1 MB.
+                        aligned_offset = (target_offset // DOWNLOAD_REQUEST_SIZE) * DOWNLOAD_REQUEST_SIZE
+                        skipped_bytes = target_offset - aligned_offset
+                        aligned_limit = ((target_len + skipped_bytes + 4095) // 4096) * 4096
+
+                        async with _tg_locks[channel_msg_id]:
+                            import time
+                            now = time.time()
+                            last_req = _tg_last_req_time.get(channel_msg_id, 0)
+                            sleep_time = 0.1 - (now - last_req)
+                            if sleep_time > 0:
+                                for _ in range(int(sleep_time * 10) + 1):
+                                    if request and await request.is_disconnected():
+                                        raise asyncio.CancelledError()
+                                    await asyncio.sleep(0.1)
+                            _tg_last_req_time[channel_msg_id] = time.time()
+
+                            stream_pos = 0
+                            async for piece in tg_client.iter_download(
+                                msg.media, offset=aligned_offset,
+                                request_size=DOWNLOAD_REQUEST_SIZE, limit=aligned_limit,
+                            ):
+                                piece_len = len(piece)
+                                piece_start = stream_pos
+                                piece_end = stream_pos + piece_len
+                                stream_pos += piece_len
+
+                                # We want the bytes in stream range [skipped_bytes, skipped_bytes + target_len]
+                                overlap_start = max(skipped_bytes, piece_start)
+                                overlap_end = min(skipped_bytes + target_len, piece_end)
+                                if overlap_start < overlap_end:
+                                    rel_start = overlap_start - piece_start
+                                    rel_end = overlap_end - piece_start
+                                    try:
+                                        yield piece[rel_start:rel_end]
+                                    except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+                                        log.info("Client disconnected during bypass, aborting part %d chunk %d", part_id, chunk_index)
+                                        raise asyncio.CancelledError()
+                                    downloaded_so_far += (overlap_end - overlap_start)
+                                if downloaded_so_far >= chunk_bytes:
+                                    break
+                        return
+                    except telethon.errors.FloodError as e:
+                        wait_time = getattr(e, 'seconds', None)
+                        if wait_time is None:
+                            import re
+                            match = re.search(r"WAIT_(\d+)", str(e))
+                            wait_time = int(match.group(1)) if match else 5
+                        log.warning("Telegram flood wait: %ds (attempt %d bypass). Sleeping...", wait_time, attempt + 1)
+                        for _ in range(wait_time + 1):
+                            if request and await request.is_disconnected():
+                                raise asyncio.CancelledError()
+                            await asyncio.sleep(1)
+                    except Exception as e:
+                        log.error("Telegram download error on bypass chunk %d: %s", chunk_index, e)
+                        if attempt == 4:
+                            raise
+                        for _ in range(2):
+                            if request and await request.is_disconnected():
+                                raise asyncio.CancelledError()
+                            await asyncio.sleep(1)
+                raise RuntimeError(f"Failed to stream chunk {chunk_index} after 5 attempts")
+
+            # Evict cache if needed
+            _evict_if_needed(CHUNK_SIZE)
 
             msg = await _get_tg_message(channel_msg_id)
             if not msg or not msg.media:
                 raise ValueError(f"Message {channel_msg_id} has no media")
 
-            downloaded_so_far = 0
+            file_mode = "wb"
+
             for attempt in range(5):
                 try:
-                    target_offset = byte_offset + downloaded_so_far
-                    target_len = chunk_bytes - downloaded_so_far
+                    with open(temp_path, file_mode) as f:
+                        current_offset = byte_offset + downloaded_so_far
+                        current_remaining = chunk_bytes - downloaded_so_far
+                        if current_remaining <= 0:
+                            break
 
-                    if target_len <= 0:
-                        return
+                        # Align the limit up to the nearest multiple of 4096 for Telegram requirements.
+                        # Since byte_offset is a multiple of CHUNK_SIZE (multiple of 4096),
+                        # and downloaded_so_far is advanced in multiples of 512 KB,
+                        # current_offset is always a multiple of 4096.
+                        aligned_limit = ((current_remaining + 4095) // 4096) * 4096
 
-                    # Telegram API requires offset and limit to be multiples of 4096 (4 KB) for large files,
-                    # and requests must not cross 1 MB boundaries. To satisfy both, we align offset
-                    # to DOWNLOAD_REQUEST_SIZE (512 KB), which is a multiple of 4096 and divides 1 MB.
-                    aligned_offset = (target_offset // DOWNLOAD_REQUEST_SIZE) * DOWNLOAD_REQUEST_SIZE
-                    skipped_bytes = target_offset - aligned_offset
-                    aligned_limit = ((target_len + skipped_bytes + 4095) // 4096) * 4096
+                        async with _tg_locks[channel_msg_id]:
+                            import time
+                            now = time.time()
+                            last_req = _tg_last_req_time.get(channel_msg_id, 0)
+                            sleep_time = 0.1 - (now - last_req)
+                            if sleep_time > 0:
+                                for _ in range(int(sleep_time * 10) + 1):
+                                    if request and await request.is_disconnected():
+                                        raise asyncio.CancelledError()
+                                    await asyncio.sleep(0.1)
+                            _tg_last_req_time[channel_msg_id] = time.time()
 
-                    async with _tg_locks[channel_msg_id]:
-                        import time
-                        now = time.time()
-                        last_req = _tg_last_req_time.get(channel_msg_id, 0)
-                        sleep_time = 1.5 - (now - last_req)
-                        if sleep_time > 0:
-                            for _ in range(int(sleep_time * 10) + 1):
-                                if request and await request.is_disconnected():
+                            stream_pos = downloaded_so_far
+                            async for piece in tg_client.iter_download(
+                                msg.media, offset=current_offset,
+                                request_size=DOWNLOAD_REQUEST_SIZE, limit=aligned_limit,
+                            ):
+                                # Cooperative abort for prefetch tasks if a main download starts
+                                if request is None and _active_downloads.get(channel_msg_id, 0) > 0:
+                                    log.info("Aborting prefetch of part %d chunk %d because main download started", part_id, chunk_index)
                                     raise asyncio.CancelledError()
-                                await asyncio.sleep(0.1)
-                        _tg_last_req_time[channel_msg_id] = time.time()
 
-                        stream_pos = 0
-                        async for piece in tg_client.iter_download(
-                            msg.media, offset=aligned_offset,
-                            request_size=DOWNLOAD_REQUEST_SIZE, limit=aligned_limit,
-                        ):
-                            piece_len = len(piece)
-                            piece_start = stream_pos
-                            piece_end = stream_pos + piece_len
-                            stream_pos += piece_len
+                                # We only write up to chunk_bytes to the file
+                                write_len = min(len(piece), chunk_bytes - downloaded_so_far)
+                                if write_len > 0:
+                                    f.write(piece[:write_len])
 
-                            # We want the bytes in stream range [skipped_bytes, skipped_bytes + target_len]
-                            overlap_start = max(skipped_bytes, piece_start)
-                            overlap_end = min(skipped_bytes + target_len, piece_end)
-                            if overlap_start < overlap_end:
-                                rel_start = overlap_start - piece_start
-                                rel_end = overlap_end - piece_start
-                                yield piece[rel_start:rel_end]
-                                downloaded_so_far += (overlap_end - overlap_start)
-                    return
+                                piece_start = downloaded_so_far
+                                piece_end = downloaded_so_far + len(piece)
+                                downloaded_so_far += write_len
+
+                                # Yield logic if requested
+                                if slice_start < slice_end:
+                                    overlap_start = max(slice_start, piece_start)
+                                    overlap_end = min(slice_end, piece_start + write_len)
+                                    if overlap_start < overlap_end:
+                                        rel_start = overlap_start - piece_start
+                                        rel_end = overlap_end - piece_start
+                                        try:
+                                            yield piece[rel_start:rel_end]
+                                        except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+                                            log.info("Client disconnected during stream, aborting part %d chunk %d", part_id, chunk_index)
+                                            raise asyncio.CancelledError()
+                                if downloaded_so_far >= chunk_bytes:
+                                    break
+
+                    os.rename(temp_path, chunk_path)
+                    return  # Success
                 except telethon.errors.FloodError as e:
+                    file_mode = "ab"  # append on retry
                     wait_time = getattr(e, 'seconds', None)
                     if wait_time is None:
                         import re
                         match = re.search(r"WAIT_(\d+)", str(e))
                         wait_time = int(match.group(1)) if match else 5
-                    log.warning("Telegram flood wait: %ds (attempt %d bypass). Sleeping...", wait_time, attempt + 1)
+                    log.warning("Telegram flood wait: %ds (attempt %d). Sleeping...", wait_time, attempt + 1)
                     for _ in range(wait_time + 1):
                         if request and await request.is_disconnected():
                             raise asyncio.CancelledError()
                         await asyncio.sleep(1)
                 except Exception as e:
-                    log.error("Telegram download error on bypass chunk %d: %s", chunk_index, e)
+                    file_mode = "ab"
+                    log.error("Telegram download error on chunk %d: %s", chunk_index, e)
                     if attempt == 4:
                         raise
                     for _ in range(2):
                         if request and await request.is_disconnected():
                             raise asyncio.CancelledError()
                         await asyncio.sleep(1)
-            raise RuntimeError(f"Failed to stream chunk {chunk_index} after 5 attempts")
-
-        # Evict cache if needed
-        _evict_if_needed(CHUNK_SIZE)
-
-        byte_offset = chunk_index * CHUNK_SIZE
-        remaining_file = total_size - byte_offset
-        chunk_bytes = min(CHUNK_SIZE, remaining_file)
-
-        msg = await _get_tg_message(channel_msg_id)
-        if not msg or not msg.media:
-            raise ValueError(f"Message {channel_msg_id} has no media")
-
-        temp_path = chunk_path.with_suffix(".tmp")
-        downloaded_so_far = 0
-        file_mode = "wb"
-
-        for attempt in range(5):
-            try:
-                with open(temp_path, file_mode) as f:
-                    current_offset = byte_offset + downloaded_so_far
-                    current_remaining = chunk_bytes - downloaded_so_far
-                    if current_remaining <= 0:
-                        break
-
-                    # Align the limit up to the nearest multiple of 4096 for Telegram requirements.
-                    # Since byte_offset is a multiple of CHUNK_SIZE (multiple of 4096),
-                    # and downloaded_so_far is advanced in multiples of 512 KB,
-                    # current_offset is always a multiple of 4096.
-                    aligned_limit = ((current_remaining + 4095) // 4096) * 4096
-
-                    async with _tg_locks[channel_msg_id]:
-                        import time
-                        now = time.time()
-                        last_req = _tg_last_req_time.get(channel_msg_id, 0)
-                        sleep_time = 1.5 - (now - last_req)
-                        if sleep_time > 0:
-                            for _ in range(int(sleep_time * 10) + 1):
-                                if request and await request.is_disconnected():
-                                    raise asyncio.CancelledError()
-                                await asyncio.sleep(0.1)
-                        _tg_last_req_time[channel_msg_id] = time.time()
-
-                        stream_pos = downloaded_so_far
-                        async for piece in tg_client.iter_download(
-                            msg.media, offset=current_offset,
-                            request_size=DOWNLOAD_REQUEST_SIZE, limit=aligned_limit,
-                        ):
-                            # We only write up to chunk_bytes to the file
-                            write_len = min(len(piece), chunk_bytes - downloaded_so_far)
-                            if write_len > 0:
-                                f.write(piece[:write_len])
-
-                            piece_start = downloaded_so_far
-                            piece_end = downloaded_so_far + len(piece)
-                            downloaded_so_far += write_len
-
-                            # Yield logic if requested
-                            if slice_start < slice_end:
-                                overlap_start = max(slice_start, piece_start)
-                                overlap_end = min(slice_end, piece_start + write_len)
-                                if overlap_start < overlap_end:
-                                    rel_start = overlap_start - piece_start
-                                    rel_end = overlap_end - piece_start
-                                    yield piece[rel_start:rel_end]
-
-                os.rename(temp_path, chunk_path)
-                return  # Success
-            except telethon.errors.FloodError as e:
-                file_mode = "ab"  # append on retry
-                wait_time = getattr(e, 'seconds', None)
-                if wait_time is None:
-                    import re
-                    match = re.search(r"WAIT_(\d+)", str(e))
-                    wait_time = int(match.group(1)) if match else 5
-                log.warning("Telegram flood wait: %ds (attempt %d). Sleeping...", wait_time, attempt + 1)
-                for _ in range(wait_time + 1):
-                    if request and await request.is_disconnected():
-                        raise asyncio.CancelledError()
-                    await asyncio.sleep(1)
-            except Exception as e:
-                file_mode = "ab"
-                log.error("Telegram download error on chunk %d: %s", chunk_index, e)
-                if attempt == 4:
-                    raise
-                for _ in range(2):
-                    if request and await request.is_disconnected():
-                        raise asyncio.CancelledError()
-                    await asyncio.sleep(1)
+            raise RuntimeError(f"Failed to download chunk {chunk_index} after 5 attempts")
+    finally:
+        if request is not None:
+            _active_downloads[channel_msg_id] -= 1
         
-        raise RuntimeError(f"Failed to download chunk {chunk_index} after 5 attempts")
+        # If the chunk was fully downloaded but we got cancelled before renaming, rename it now!
+        if downloaded_so_far == chunk_bytes and slice_start == 0:
+            if temp_path.exists() and not chunk_path.exists():
+                try:
+                    os.rename(temp_path, chunk_path)
+                    log.info("Successfully promoted completed chunk %d of part %d to cache in finally block", chunk_index, part_id)
+                except Exception as e:
+                    log.error("Failed to rename temp file to cache in finally block: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +617,13 @@ async def _prefetch_worker(part_id: int, channel_msg_id: int,
     try:
         idx = start_chunk
         while idx < total_chunks:
+            # Check for inactivity/timeout if there are no active play requests
+            if _active_downloads.get(channel_msg_id, 0) == 0:
+                meta = _read_meta(part_id)
+                if meta and (time.time() - meta.get("last_accessed", 0)) > 15:
+                    log.info("Prefetch for part %d stopped — inactive for >15s", part_id)
+                    return
+
             # Check if play position has moved far away (seek detection)
             current_pos = _last_request_pos.get(part_id, start_chunk)
             if abs(idx - current_pos) > PREFETCH_CHUNKS:
@@ -519,8 +651,9 @@ async def _prefetch_worker(part_id: int, channel_msg_id: int,
                 continue
             
             try:
-                async for _ in _ensure_chunk_stream(part_id, channel_msg_id, idx, total_size, 0, 0):
-                    pass
+                async with aclosing(_ensure_chunk_stream(part_id, channel_msg_id, idx, total_size, 0, 0)) as stream:
+                    async for _ in stream:
+                        pass
             except Exception as e:
                 log.error("Prefetch error for part %d chunk %d: %s", part_id, idx, e)
             
@@ -532,6 +665,14 @@ async def _prefetch_worker(part_id: int, channel_msg_id: int,
         log.info("Prefetch for part %d cancelled", part_id)
     except Exception:
         log.exception("Prefetch error for part %d", part_id)
+
+def _cancel_other_prefetches(current_part_id: int) -> None:
+    """Cancel all active prefetch tasks for any other part_id."""
+    for pid, t in list(_prefetch_tasks.items()):
+        if pid != current_part_id and not t.done():
+            log.info("Cancelling active prefetch task for other part %d", pid)
+            t.cancel()
+            _prefetch_tasks.pop(pid, None)
 
 
 def _start_prefetch(part_id: int, channel_msg_id: int,
@@ -602,9 +743,38 @@ async def get_logs():
     return {"logs": list(mem_handler.buffer)}
 
 
+@app.get("/tasks")
+async def get_tasks():
+    import traceback
+    info = []
+    for t in asyncio.all_tasks():
+        stack = []
+        for frame in t.get_stack():
+            stack.append(f"{frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}")
+        info.append({
+            "name": t.get_name(),
+            "coro": str(t.get_coro()),
+            "stack": stack,
+            "cancelled": t.cancelled(),
+            "done": t.done()
+        })
+    return {"tasks": info}
+
+
 @app.get("/stream/{part_id}")
 async def stream(part_id: int, request: Request):
     """Serve video chunks with HTTP 206 Partial Content."""
+    _cancel_other_prefetches(part_id)
+
+    # Cancel any active prefetch task for the current part to avoid lock contention
+    existing = _prefetch_tasks.get(part_id)
+    if existing and not existing.done():
+        log.info("Cancelling active prefetch for part %d due to new stream request", part_id)
+        existing.cancel()
+        try:
+            await existing
+        except asyncio.CancelledError:
+            pass
 
     # --- 1. Check & Init Metadata ---
     meta = _read_meta(part_id)
@@ -661,39 +831,96 @@ async def stream(part_id: int, request: Request):
     start = max(0, start)
     end = min(end, total_size - 1)
 
-    # --- 3. Determine chunks needed ---
+    # --- 3. Local Bot API Mode (High-speed Direct Stream) ---
+    if TELEGRAM_API_URL:
+        # Resolve Bot API file_id from Telethon message
+        msg = await _get_tg_message(channel_msg_id)
+        if not msg or not msg.media:
+            return Response("Message has no media", status_code=404)
+
+        file_id = pack_bot_file_id(msg.media)
+        if not file_id:
+            return Response("Failed to pack file ID", status_code=500)
+
+        # Get local file path (download via Bot API server if needed)
+        async with _part_locks[(part_id, -1)]:
+            file_path = _local_file_paths.get(part_id)
+            if not file_path or not os.path.exists(file_path):
+                _evict_local_api_cache_if_needed(total_size)
+                try:
+                    file_path = await download_via_local_bot_api(file_id)
+                    _local_file_paths[part_id] = file_path
+                except Exception as e:
+                    log.error("Failed to download via local Bot API: %s", e)
+                    return Response(f"Failed to download file: {e}", status_code=500)
+
+        # Generate stream from local file
+        async def local_file_generator():
+            try:
+                if os.path.exists(file_path):
+                    os.utime(file_path, None)  # mark as accessed
+                
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    remaining = end - start + 1
+                    while remaining > 0:
+                        if await request.is_disconnected():
+                            break
+                        chunk = f.read(min(remaining, 1024 * 1024))
+                        if not chunk:
+                            break
+                        yield chunk
+                        remaining -= len(chunk)
+            except Exception as e:
+                log.error("Error streaming local file: %s", e)
+
+        content_length = end - start + 1
+        return StreamingResponse(
+            local_file_generator(),
+            status_code=206,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{total_size}",
+                "Content-Length": str(content_length),
+                "Accept-Ranges": "bytes",
+                "Content-Type": mime,
+                "Cache-Control": "no-cache",
+            },
+            media_type=mime,
+        )
+
+    # --- 4. Fallback Telethon Mode (Sparse Chunk Cache) ---
     first_chunk = start // CHUNK_SIZE
     last_chunk = end // CHUNK_SIZE
 
     # Update play position for prefetch
     _last_request_pos[part_id] = first_chunk
 
-    # --- 4. Return StreamingResponse to send headers immediately and yield bytes
+    # Return StreamingResponse to send headers immediately and yield bytes
     async def byte_generator():
-        for ci in range(first_chunk, last_chunk + 1):
-            try:
+        try:
+            for ci in range(first_chunk, last_chunk + 1):
                 chunk_start_byte = ci * CHUNK_SIZE
                 slice_start = max(start - chunk_start_byte, 0)
                 slice_end = min(end - chunk_start_byte + 1, CHUNK_SIZE)
                 
-                async for chunk_data in _ensure_chunk_stream(part_id, channel_msg_id, ci, total_size, slice_start, slice_end, request):
-                    yield chunk_data
-            except asyncio.CancelledError:
-                # Client disconnected, stop generating
-                raise
-            except Exception as e:
-                log.error("Error generating chunk %d: %s", ci, e)
-                break
+                async with aclosing(_ensure_chunk_stream(part_id, channel_msg_id, ci, total_size, slice_start, slice_end, request)) as stream:
+                    async for chunk_data in stream:
+                        yield chunk_data
+
+            # Start prefetch only after successfully yielding all requested chunks
+            prefetch_from = last_chunk + 1
+            if prefetch_from < total_chunks:
+                _start_prefetch(part_id, channel_msg_id,
+                                prefetch_from, total_chunks, total_size)
+        except asyncio.CancelledError:
+            # Client disconnected, stop generating
+            raise
+        except Exception as e:
+            log.error("Error generating chunk: %s", e)
 
     content_length = end - start + 1
 
-    # --- 5. Start prefetch from next chunk ---
-    prefetch_from = last_chunk + 1
-    if prefetch_from < total_chunks:
-        _start_prefetch(part_id, channel_msg_id,
-                        prefetch_from, total_chunks, total_size)
-
-    # --- 6. Build 206 response ---
+    # Build 206 response
     return StreamingResponse(
         byte_generator(),
         status_code=206,
@@ -706,6 +933,7 @@ async def stream(part_id: int, request: Request):
         },
         media_type=mime,
     )
+
 
 
 # ---------------------------------------------------------------------------

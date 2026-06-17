@@ -30,12 +30,16 @@ export async function GET(
   const upstream = `${STREAMER_URL}/stream/${partId}`;
 
   // Forward Range header if present (required for <video> seeking).
-  const headers: HeadersInit = {};
+  // Disable Keep-Alive (Connection: close) to ensure Uvicorn completes the request cycle
+  // and promotes completed chunks to cache without socket deadlocks.
+  const headers: HeadersInit = {
+    Connection: "close",
+  };
   const range = req.headers.get("Range");
   if (range) headers["Range"] = range;
 
   try {
-    const resp = await fetch(upstream, { headers });
+    const resp = await fetch(upstream, { headers, signal: req.signal });
 
     // Relay status + relevant headers back to the browser.
     const relay = new Headers();
@@ -54,16 +58,8 @@ export async function GET(
     if (!resp.body) {
       return new Response(null, { status: resp.status, headers: relay });
     }
-    
-    const { readable, writable } = new TransformStream();
-    resp.body.pipeTo(writable).catch((err) => {
-      // Ignore abort errors (very common when seeking video)
-      if (err.name !== "AbortError") {
-        console.error("[stream proxy] pipe error:", err);
-      }
-    });
 
-    return new Response(readable, { status: resp.status, headers: relay });
+    return new Response(resp.body, { status: resp.status, headers: relay });
   } catch (err) {
     console.error("[stream proxy] fetch error:", err);
     return NextResponse.json(

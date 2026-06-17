@@ -26,6 +26,7 @@ import re
 import unicodedata
 from datetime import time as dtime
 
+import httpx
 import libsql_client
 from dotenv import load_dotenv
 from telegram import Update
@@ -46,6 +47,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 STORAGE_CHANNEL_ID = int(os.environ["STORAGE_CHANNEL_ID"])
 OWNER_USER_ID = int(os.environ["OWNER_USER_ID"])
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
+TELEGRAM_API_URL = os.environ.get("TELEGRAM_API_URL")
 
 
 def _turso_http_url(url: str) -> str:
@@ -543,13 +545,34 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    app = (
+    if TELEGRAM_API_URL:
+        # Log out from the public Telegram API server if needed, so we can connect to the local server.
+        # This is a safe operation as it is a no-op if already logged out.
+        try:
+            log.info("Attempting to log out bot from public Telegram API server...")
+            resp = httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/logOut", timeout=10.0)
+            log.info("Public API logout status: %s", resp.text)
+        except Exception as e:
+            log.warning("Failed to log out from public API (normal if already logged out or offline): %s", e)
+
+    builder = (
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
-        .build()
     )
+
+    if TELEGRAM_API_URL:
+        log.info("Configuring bot to use local Telegram Bot API server at: %s", TELEGRAM_API_URL)
+        builder = (
+            builder.base_url(f"{TELEGRAM_API_URL}/bot")
+            .base_file_url(f"{TELEGRAM_API_URL}/file/bot")
+            .local_mode(True)
+            .http_version("1.1")
+            .get_updates_http_version("1.1")
+        )
+
+    app = builder.build()
 
     # /start (download, owner-only) — private chat.
     app.add_handler(CommandHandler("start", on_start))

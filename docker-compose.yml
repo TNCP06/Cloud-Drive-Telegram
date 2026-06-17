@@ -32,12 +32,26 @@ services:
       - staging:/staging
     restart: unless-stopped
 
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    environment:
+      TELEGRAM_API_ID: ${TG_API_ID}
+      TELEGRAM_API_HASH: ${TG_API_HASH}
+      TELEGRAM_LOCAL: "true"
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
   bot:
     build:
       context: .
       dockerfile: bot/Dockerfile
     command: ["python", "-u", "bot.py"]
     env_file: .env
+    environment:
+      TELEGRAM_API_URL: http://telegram-bot-api:8081
     restart: unless-stopped
 
   watcher:
@@ -67,11 +81,15 @@ services:
       INITIAL_CHUNKS: "4"               # fast start: download first 4 MB
       PREFETCH_TIMEOUT_S: "90"           # stop prefetch after 90s idle
       STREAMER_SESSION: streamer
+      TELEGRAM_API_URL: http://telegram-bot-api:8081
     volumes:
       - cache:/cache                     # expendable — can be pruned anytime
       - ./bot/streamer.session:/app/streamer.session
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
     restart: unless-stopped
 
 volumes:
   staging:
   cache:         # video streaming cache — expendable, data lives in Telegram
+  telegram-bot-api-data:
+

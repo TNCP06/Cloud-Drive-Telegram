@@ -141,21 +141,27 @@ downloading the whole file first.
 3. **Next.js** (`api/stream/[partId]/route.ts`): verifies auth cookie, proxies the request
    (incl. Range header) to `http://streamer:8080/stream/123`.
 4. **Streamer** (`streamer.py`):
-   a. First request → query Turso for `parts.channel_msg_id` + `file_size`, create `meta.json`.
-   b. Download the requested chunk(s) via Telethon `iter_download` on cache miss.
-   c. Serve the requested range as `HTTP 206 Partial Content` with `Content-Range`.
-   d. Start background **prefetch** — download chunks ahead up to the prefetch buffer limit.
-5. **Subsequent requests** (browser auto-requests next range): served from disk cache (instant).
-   Prefetch keeps downloading ahead; when user's play position catches up, prefetch resumes.
-6. **Seek**: browser sends `Range: bytes=<new-offset>-`. Streamer cancels old prefetch, downloads
-   the new chunk, starts a new prefetch from there. Previously cached chunks survive (seeking
-   back is instant).
-7. **Cache full** (>15 GB): before downloading a new chunk, LRU eviction deletes the entire
-   part directory (all chunks) of the least-recently-accessed video.
+   * **If Local Bot API Server is configured (`TELEGRAM_API_URL` set):**
+     a. Convert the target Telethon message media into a Bot API `file_id` using `pack_bot_file_id`.
+     b. Query the local Bot API `/getFile` endpoint, which downloads the whole file to the shared cache volume on the VPS disk.
+     c. Read and stream the requested byte range directly from the local file in 1MB blocks to serve the browser.
+     d. Evict oldest accessed files from the shared cache directory using a strict LRU cache policy once it reaches `CACHE_MAX_SIZE_GB`.
+     e. Skip sparse chunking and prefetching entirely since the whole file is locally available.
+   * **Fallback Mode (No Local Bot API Server):**
+     a. First request → query Turso for `parts.channel_msg_id` + `file_size`, create `meta.json`.
+     b. Download the requested chunk(s) via Telethon `iter_download` on cache miss.
+     c. Serve the requested range as `HTTP 206 Partial Content` with `Content-Range`.
+     d. Defer background **prefetch** — after successfully yielding the requested chunks, start the background prefetch worker to download chunks ahead up to the buffer limit.
+5. **Subsequent requests** (browser auto-requests next range):
+   * In Local Bot API mode: Served instantly from the local cached file (zero delay on seeks).
+   * In Fallback mode: Served from the sparse chunk cache on disk.
+6. **Seek**:
+   * In Local Bot API mode: Instantaneous (standard file seek to requested byte offset).
+   * In Fallback mode: Browser sends `Range: bytes=<new-offset>-`. Streamer immediately cancels any active prefetch task for the current part and awaits its complete cancellation before downloading the new chunk.
+7. **Limitations:**
+   * Local Bot API Mode: Only single-part media, cold start buffer delay of ~5-15s to download the file from Telegram to the VPS (at full network speed, e.g. 50MB/s), subsequent seeks and repeat views are instant.
+   * Fallback Mode: Strictly throttled to ~3Mbps by Telegram's remote MTProto interface.
 
-> **Limitations:** only single-part media, browser-playable formats only (no MKV/AVI),
-> latency ~200-500 ms on first cold request, ~3-5 concurrent viewers before Telegram flood limits.
-> Repeat views are 100% cache — zero Telegram egress.
 
 ---
 

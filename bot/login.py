@@ -22,7 +22,8 @@ from telethon import TelegramClient
 load_dotenv()
 API_ID = int(os.environ["TG_API_ID"])
 API_HASH = os.environ["TG_API_HASH"]
-SESSION = os.environ.get("WORKER_SESSION", "worker")
+import sys
+SESSION = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("WORKER_SESSION", "worker")
 
 
 async def main():

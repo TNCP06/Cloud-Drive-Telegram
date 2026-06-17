@@ -50,23 +50,23 @@ contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`,
 `run`, `main`.
 
 ### `streamer.py` — video streaming server (FastAPI + Telethon, **server/VPS**)
-HTTP 206 Partial Content server for single-part media items. Browser `<video>` hits
-`GET /stream/{part_id}` with a `Range` header → sparse chunk cache on disk → Telethon
-`iter_download` from the channel on miss. YouTube-style 1 MB chunks, 16 MB prefetch buffer,
-15 GB LRU cache (eviction unit = entire part directory).
+HTTP 206 Partial Content server for single-part media items. If `TELEGRAM_API_URL` is set,
+downloads files on-the-fly to a shared cache volume on the VPS disk using a local Telegram Bot API
+server in `--local` mode (bypassing the 3Mbps download throttle) and streams directly to the browser.
+Otherwise, falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetching.
 
-Key functions: `_turso_http_url` (libsql→https), `_ensure_chunk_stream` (disk-or-download with
-double-checked lock), `_init_part_meta` (Turso query → `meta.json` creation),
-`_prefetch_worker` (background asyncio task: download ahead, seek-aware, timeout-aware),
-`_start_prefetch` (cancel-and-restart on seek), `_evict_if_needed` (LRU by `meta.json` `last_accessed`),
-`_get_tg_message` (in-memory message cache), `stream` (main route: parse Range, serve chunks,
-trigger prefetch), `health` (liveness endpoint). Lifespan: Telethon connect/disconnect + Turso init/close.
-**Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `TURSO_*`, `STREAMER_SESSION`
-(default `streamer`), `CACHE_DIR`, `CACHE_MAX_SIZE_GB`, `PREFETCH_BUFFER_MB`, `CHUNK_SIZE_MB`,
-`PREFETCH_TIMEOUT_S`, `INITIAL_CHUNKS`, `STREAMER_PORT` (default 8080).
+Key functions: `_turso_http_url` (libsql→https), `download_via_local_bot_api` (requests file download
+from local Bot API server), `_evict_local_api_cache_if_needed` (scans shared volume and deletes oldest files
+using mtime LRU policy), `_ensure_chunk_stream` (fallback Telethon disk-or-download),
+`_init_part_meta` (Turso query → `meta.json` creation), `_prefetch_worker` (fallback background prefetch),
+`_get_tg_message` (in-memory message cache), `stream` (main route: parse Range, downloads via local Bot API
+and streams local file if active, else chunk-streams via Telethon).
+**Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `TURSO_*`, `BOT_TOKEN`, `TELEGRAM_API_URL`
+(enables local Bot API mode), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (used for cache limits).
+
 
 ### Supporting scripts
-- `login.py` — one-time Telethon login → creates `worker.session`.
+- `login.py` — one-time Telethon login → creates `worker.session` (or any custom session, e.g. `streamer.session` via CLI argument).
 - `schema.sql` — full Turso schema (run once). `migration-tags-color.sql` + `run-migration.py`
   — adds `tags.color`. `migration-bot-heartbeat.sql` — adds `bot_heartbeat` table.
   `migration-staged-uploads.sql` — adds `origin`/`cleanup_source`/`parts_done`/`total_bytes` to
