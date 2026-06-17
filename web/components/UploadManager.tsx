@@ -97,7 +97,7 @@ export function UploadManager({
             <label>Type</label>
             <div className="seg-radio">
               <button className={kind === "archive" ? "on" : ""} onClick={() => setKind("archive")}>
-                <Icon name="archive" size={15} /> File Besar (split)
+                <Icon name="archive" size={15} /> Archive (split)
               </button>
               <button className={kind === "media" ? "on" : ""} onClick={() => setKind("media")}>
                 <Icon name="video" size={15} /> Media (single file)

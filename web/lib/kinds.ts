@@ -24,12 +24,12 @@ export function tagColorKey(name: string): string {
 
 // Metadata per kind: ikon (nama path di Icon), tint, label.
 export const KINDS: Record<Kind, { icon: string; tint: string; label: string }> = {
-  archive: { icon: "archive", tint: "#8A8068", label: "File Besar" },
+  archive: { icon: "archive", tint: "#8A8068", label: "Archive" },
   media: { icon: "video", tint: "#A65656", label: "Media" },
 };
 
 // Grup storage meter (per kind).
 export const STORAGE_GROUPS: { key: Kind; label: string; color: string }[] = [
   { key: "media", label: "Media", color: "#A65656" },
-  { key: "archive", label: "File Besar", color: "#8A8068" },
+  { key: "archive", label: "Archive", color: "#8A8068" },
 ];
