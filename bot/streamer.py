@@ -97,7 +97,7 @@ STREAMER_PORT = int(os.environ.get("STREAMER_PORT", "8080"))
 
 # Derived constants
 PREFETCH_CHUNKS = PREFETCH_BUFFER // CHUNK_SIZE
-DOWNLOAD_REQUEST_SIZE = 524288  # 512 KB — Telethon iter_download piece size
+DOWNLOAD_REQUEST_SIZE = 5242880  # 5120 KB — Telethon iter_download piece size
 
 MIME_MAP = {
     ".mp4": "video/mp4", ".webm": "video/webm", ".m4v": "video/mp4",
