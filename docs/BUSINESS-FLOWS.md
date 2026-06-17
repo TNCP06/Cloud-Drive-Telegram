@@ -142,9 +142,9 @@ downloading the whole file first.
    (incl. Range header) to `http://streamer:8080/stream/123`.
 4. **Streamer** (`streamer.py`):
    a. First request → query Turso for `parts.channel_msg_id` + `file_size`, create `meta.json`.
-   b. Download initial 4 chunks (4 MB fast start) via Telethon `iter_download`.
-   c. Serve chunk 0 as `HTTP 206 Partial Content` with `Content-Range`.
-   d. Start background **prefetch** — download chunks 1, 2, 3… up to 16 MB ahead.
+   b. Download the requested chunk(s) via Telethon `iter_download` on cache miss.
+   c. Serve the requested range as `HTTP 206 Partial Content` with `Content-Range`.
+   d. Start background **prefetch** — download chunks ahead up to the prefetch buffer limit.
 5. **Subsequent requests** (browser auto-requests next range): served from disk cache (instant).
    Prefetch keeps downloading ahead; when user's play position catches up, prefetch resumes.
 6. **Seek**: browser sends `Range: bytes=<new-offset>-`. Streamer cancels old prefetch, downloads

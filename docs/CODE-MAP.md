@@ -55,13 +55,12 @@ HTTP 206 Partial Content server for single-part media items. Browser `<video>` h
 `iter_download` from the channel on miss. YouTube-style 1 MB chunks, 16 MB prefetch buffer,
 15 GB LRU cache (eviction unit = entire part directory).
 
-Key functions: `_turso_http_url` (libsql→https), `_ensure_chunk` (disk-or-download with
+Key functions: `_turso_http_url` (libsql→https), `_ensure_chunk_stream` (disk-or-download with
 double-checked lock), `_init_part_meta` (Turso query → `meta.json` creation),
-`_download_initial_chunks` (fast start: first 4 chunks), `_prefetch_worker` (background
-asyncio task: download ahead, seek-aware, timeout-aware), `_start_prefetch` (cancel-and-restart
-on seek), `_evict_if_needed` (LRU by `meta.json` `last_accessed`), `_get_tg_message`
-(in-memory message cache), `stream` (main route: parse Range, serve chunks, trigger prefetch),
-`health` (liveness endpoint). Lifespan: Telethon connect/disconnect + Turso init/close.
+`_prefetch_worker` (background asyncio task: download ahead, seek-aware, timeout-aware),
+`_start_prefetch` (cancel-and-restart on seek), `_evict_if_needed` (LRU by `meta.json` `last_accessed`),
+`_get_tg_message` (in-memory message cache), `stream` (main route: parse Range, serve chunks,
+trigger prefetch), `health` (liveness endpoint). Lifespan: Telethon connect/disconnect + Turso init/close.
 **Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `TURSO_*`, `STREAMER_SESSION`
 (default `streamer`), `CACHE_DIR`, `CACHE_MAX_SIZE_GB`, `PREFETCH_BUFFER_MB`, `CHUNK_SIZE_MB`,
 `PREFETCH_TIMEOUT_S`, `INITIAL_CHUNKS`, `STREAMER_PORT` (default 8080).

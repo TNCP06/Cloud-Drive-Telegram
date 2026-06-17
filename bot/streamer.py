@@ -290,9 +290,17 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
             downloaded_so_far = 0
             for attempt in range(5):
                 try:
-                    current_offset = byte_offset + downloaded_so_far
-                    current_remaining = chunk_bytes - downloaded_so_far
-                    
+                    target_offset = byte_offset + downloaded_so_far
+                    target_len = chunk_bytes - downloaded_so_far
+
+                    if target_len <= 0:
+                        return
+
+                    # Telegram API requires offset and limit to be multiples of 4096 (4 KB) for large files.
+                    aligned_offset = (target_offset // 4096) * 4096
+                    skipped_bytes = target_offset - aligned_offset
+                    aligned_limit = ((target_len + skipped_bytes + 4095) // 4096) * 4096
+
                     async with _tg_locks[channel_msg_id]:
                         import time
                         now = time.time()
@@ -305,12 +313,24 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                                 await asyncio.sleep(0.1)
                         _tg_last_req_time[channel_msg_id] = time.time()
 
+                        stream_pos = 0
                         async for piece in tg_client.iter_download(
-                            msg.media, offset=current_offset,
-                            request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
+                            msg.media, offset=aligned_offset,
+                            request_size=DOWNLOAD_REQUEST_SIZE, limit=aligned_limit,
                         ):
-                            yield piece
-                            downloaded_so_far += len(piece)
+                            piece_len = len(piece)
+                            piece_start = stream_pos
+                            piece_end = stream_pos + piece_len
+                            stream_pos += piece_len
+
+                            # We want the bytes in stream range [skipped_bytes, skipped_bytes + target_len]
+                            overlap_start = max(skipped_bytes, piece_start)
+                            overlap_end = min(skipped_bytes + target_len, piece_end)
+                            if overlap_start < overlap_end:
+                                rel_start = overlap_start - piece_start
+                                rel_end = overlap_end - piece_start
+                                yield piece[rel_start:rel_end]
+                                downloaded_so_far += (overlap_end - overlap_start)
                     return
                 except telethon.errors.FloodError as e:
                     wait_time = getattr(e, 'seconds', None)
@@ -353,6 +373,14 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                 with open(temp_path, file_mode) as f:
                     current_offset = byte_offset + downloaded_so_far
                     current_remaining = chunk_bytes - downloaded_so_far
+                    if current_remaining <= 0:
+                        break
+
+                    # Align the limit up to the nearest multiple of 4096 for Telegram requirements.
+                    # Since byte_offset is a multiple of CHUNK_SIZE (multiple of 4096),
+                    # and downloaded_so_far is advanced in multiples of 512 KB,
+                    # current_offset is always a multiple of 4096.
+                    aligned_limit = ((current_remaining + 4095) // 4096) * 4096
 
                     async with _tg_locks[channel_msg_id]:
                         import time
@@ -366,20 +394,24 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                                 await asyncio.sleep(0.1)
                         _tg_last_req_time[channel_msg_id] = time.time()
 
+                        stream_pos = downloaded_so_far
                         async for piece in tg_client.iter_download(
                             msg.media, offset=current_offset,
-                            request_size=DOWNLOAD_REQUEST_SIZE, limit=current_remaining,
+                            request_size=DOWNLOAD_REQUEST_SIZE, limit=aligned_limit,
                         ):
-                            f.write(piece)
+                            # We only write up to chunk_bytes to the file
+                            write_len = min(len(piece), chunk_bytes - downloaded_so_far)
+                            if write_len > 0:
+                                f.write(piece[:write_len])
 
                             piece_start = downloaded_so_far
                             piece_end = downloaded_so_far + len(piece)
-                            downloaded_so_far += len(piece)
+                            downloaded_so_far += write_len
 
                             # Yield logic if requested
                             if slice_start < slice_end:
                                 overlap_start = max(slice_start, piece_start)
-                                overlap_end = min(slice_end, piece_end)
+                                overlap_end = min(slice_end, piece_start + write_len)
                                 if overlap_start < overlap_end:
                                     rel_start = overlap_start - piece_start
                                     rel_end = overlap_end - piece_start
