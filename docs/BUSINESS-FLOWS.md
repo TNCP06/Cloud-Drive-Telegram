@@ -56,6 +56,8 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
    token lets it **resume**: on a dropped connection it asks `GET /api/upload` for the bytes the
    server already has and continues from that offset (server returns `409` + real offset if a
    chunk arrives out of order). The file lands in the shared staging dir (`staging.ts`).
+   The upload can be **paused** at any time. If the page is **refreshed**, the upload state is
+   persisted in `localStorage`, prompting the user to re-select the file to resume.
 2. When the whole file is staged, `POST /api/upload/complete` verifies the size and inserts an
    `upload_jobs` row: `origin='upload'`, `cleanup_source=1`, `status='queued'`.
 3. User clicks Start → `status='pending'` (same as Flow A).

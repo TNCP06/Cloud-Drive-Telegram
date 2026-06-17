@@ -155,7 +155,8 @@ and streams local file if active, else chunk-streams via Telethon).
 - `UploadManager.tsx` — upload queue UI + watcher/bot start/stop; **Source toggle**: "Upload
   from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).
   `FileUploader.tsx` — **resumable browser uploader** (16 MB chunks, auto-resume on drop via
-  server offset, progress/speed, Retry). Fallback token strips both `-` and `.` to satisfy
+  server offset, progress/speed, Retry, Pause/Resume, and persistent state across page reload via
+  localStorage). Fallback token strips both `-` and `.` to satisfy
   `TOKEN_RE` in `staging.ts`. `TagManager.tsx` / `TagPicker.tsx` — category library +
   chip picker. `AppSkeleton.tsx` — loading skeleton.
 

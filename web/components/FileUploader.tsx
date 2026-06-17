@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@/lib/icons";
 import { fmtSize } from "@/lib/format";
 import type { Kind } from "@/lib/types";
@@ -14,7 +14,17 @@ import type { Kind } from "@/lib/types";
 const CHUNK = 16 * 1024 * 1024; // 16 MB per request
 const MAX_RETRY = 6;
 
-type Phase = "idle" | "uploading" | "retrying" | "finalizing" | "done" | "error";
+type Phase = "idle" | "uploading" | "retrying" | "finalizing" | "done" | "error" | "paused";
+
+interface ActiveUploadInfo {
+  token: string;
+  name: string;
+  size: number;
+  kind: Kind;
+  title: string;
+  tags: string;
+  partSize: number;
+}
 
 function fileSig(f: File) {
   return `${f.name}:${f.size}:${f.lastModified}`;
@@ -30,6 +40,7 @@ function tokenFor(f: File) {
   }
   return t;
 }
+
 function clearToken(f: File) {
   localStorage.removeItem("tcd_up_" + fileSig(f));
 }
@@ -56,6 +67,29 @@ export function FileUploader({
   const [err, setErr] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const cancelRef = useRef(false);
+  const pausedRef = useRef(false);
+  const [activeUpload, setActiveUpload] = useState<ActiveUploadInfo | null>(null);
+
+  // Restore active upload from localStorage on mount (persistence across refresh)
+  useEffect(() => {
+    const saved = localStorage.getItem("tcd_active_upload");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as ActiveUploadInfo;
+        setActiveUpload(parsed);
+        setPhase("paused");
+        // Get last known sent bytes from server
+        fetch(`/api/upload?token=${parsed.token}&name=${encodeURIComponent(parsed.name)}`)
+          .then((r) => r.json())
+          .then((j) => {
+            setSent(j.received ?? 0);
+          })
+          .catch(() => {});
+      } catch {
+        localStorage.removeItem("tcd_active_upload");
+      }
+    }
+  }, []);
 
   const reset = () => {
     setPhase("idle");
@@ -65,27 +99,65 @@ export function FileUploader({
     setErr(null);
     abortRef.current = null;
     cancelRef.current = false;
+    pausedRef.current = false;
   };
 
   const cancel = () => {
     cancelRef.current = true;
     abortRef.current?.abort();
+    localStorage.removeItem("tcd_active_upload");
+    setActiveUpload(null);
+    reset();
+  };
+
+  const pause = () => {
+    pausedRef.current = true;
+    setPhase("paused");
+    abortRef.current?.abort();
+  };
+
+  const resume = () => {
+    if (file) {
+      pausedRef.current = false;
+      upload(file, true, activeUpload || undefined);
+    }
   };
 
   const upload = useCallback(
-    async (f: File) => {
+    async (f: File, isResuming = false, savedInfo?: ActiveUploadInfo) => {
       setErr(null);
       setFile(f);
       setSent(0);
       setPhase("uploading");
       cancelRef.current = false;
-      const token = tokenFor(f);
+      pausedRef.current = false;
+
+      // Extract config from savedState if resuming after reload, else use props/file
+      const uploadKind = savedInfo ? savedInfo.kind : kind;
+      const uploadTitle = savedInfo ? savedInfo.title : title;
+      const uploadTags = savedInfo ? savedInfo.tags : tags;
+      const uploadPartSize = savedInfo ? savedInfo.partSize : partSize;
+      const uploadToken = savedInfo ? savedInfo.token : tokenFor(f);
       const name = f.name;
+
+      const info: ActiveUploadInfo = {
+        token: uploadToken,
+        name,
+        size: f.size,
+        kind: uploadKind,
+        title: uploadTitle,
+        tags: uploadTags,
+        partSize: uploadPartSize,
+      };
+
+      // Persist in localStorage
+      localStorage.setItem("tcd_active_upload", JSON.stringify(info));
+      setActiveUpload(info);
 
       // Where does the server already have us? (resume across reloads / earlier tries)
       let offset = 0;
       try {
-        const r = await fetch(`/api/upload?token=${token}&name=${encodeURIComponent(name)}`);
+        const r = await fetch(`/api/upload?token=${uploadToken}&name=${encodeURIComponent(name)}`);
         if (r.ok) offset = (await r.json()).received ?? 0;
       } catch {
         /* start from 0 */
@@ -95,18 +167,18 @@ export function FileUploader({
 
       let speedAnchor = { t: Date.now(), bytes: offset };
 
-      while (offset < f.size && !cancelRef.current) {
+      while (offset < f.size && !cancelRef.current && !pausedRef.current) {
         const end = Math.min(offset + CHUNK, f.size);
         const blob = f.slice(offset, end);
         const ac = new AbortController();
         abortRef.current = ac;
 
         let ok = false;
-        for (let attempt = 0; attempt <= MAX_RETRY && !cancelRef.current; attempt++) {
+        for (let attempt = 0; attempt <= MAX_RETRY && !cancelRef.current && !pausedRef.current; attempt++) {
           try {
             if (attempt > 0) setPhase("retrying");
             const res = await fetch(
-              `/api/upload?token=${token}&name=${encodeURIComponent(name)}&offset=${offset}`,
+              `/api/upload?token=${uploadToken}&name=${encodeURIComponent(name)}&offset=${offset}`,
               { method: "POST", body: blob, signal: ac.signal }
             );
             if (res.status === 409) {
@@ -132,10 +204,10 @@ export function FileUploader({
             }
             break;
           } catch {
-            if (cancelRef.current) break;
+            if (cancelRef.current || pausedRef.current) break;
             if (attempt === MAX_RETRY) {
               setErr(
-                "Connection lost. Your progress is saved on the server — click Retry to continue."
+                "Connection lost. Your progress is saved on the server — click Resume to continue."
               );
               setPhase("error");
               return;
@@ -146,7 +218,7 @@ export function FileUploader({
         if (!ok) return; // canceled mid-chunk
       }
 
-      if (cancelRef.current) return;
+      if (cancelRef.current || pausedRef.current) return;
 
       // Whole file is on the server → enqueue the job.
       setPhase("finalizing");
@@ -154,11 +226,21 @@ export function FileUploader({
         const res = await fetch("/api/upload/complete", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, name, size: f.size, kind, title, tags, partSize }),
+          body: JSON.stringify({
+            token: uploadToken,
+            name,
+            size: f.size,
+            kind: uploadKind,
+            title: uploadTitle,
+            tags: uploadTags,
+            partSize: uploadPartSize,
+          }),
         });
         const j = await res.json();
         if (!res.ok) throw new Error(j.error || "Failed to queue upload.");
         clearToken(f);
+        localStorage.removeItem("tcd_active_upload");
+        setActiveUpload(null);
         setPhase("done");
         onQueued();
       } catch (e) {
@@ -171,18 +253,26 @@ export function FileUploader({
 
   const onPick = (f: File | undefined) => {
     if (!f) return;
-    if (kind === "archive" && f.size > 1.9 * 1024 ** 3) {
-      // fine — the server will split it. No action needed; informational only.
-    }
     upload(f);
   };
 
-  const pct = file && file.size ? Math.floor((sent / file.size) * 100) : 0;
+  const onPickResumed = (f: File | undefined) => {
+    if (!f || !activeUpload) return;
+    if (f.name !== activeUpload.name || f.size !== activeUpload.size) {
+      setErr(`File mismatch. Please select the correct file: "${activeUpload.name}" (${fmtSize(activeUpload.size)})`);
+      return;
+    }
+    setErr(null);
+    upload(f, true, activeUpload);
+  };
+
+  const totalSize = file ? file.size : activeUpload ? activeUpload.size : 0;
+  const pct = totalSize ? Math.floor((sent / totalSize) * 100) : 0;
   const busy = phase === "uploading" || phase === "retrying" || phase === "finalizing";
 
   return (
     <div className="fu">
-      {phase === "idle" || phase === "done" ? (
+      {(!activeUpload && phase === "idle") || phase === "done" ? (
         <label className="fu-drop">
           <input
             type="file"
@@ -203,9 +293,11 @@ export function FileUploader({
       ) : (
         <div className="fu-active">
           <div className="fu-row1">
-            <span className="fu-name" title={file?.name}>{file?.name}</span>
+            <span className="fu-name" title={file?.name || activeUpload?.name}>
+              {file?.name || activeUpload?.name}
+            </span>
             <span className="fu-meta">
-              {fmtSize(sent)} / {file ? fmtSize(file.size) : "0"}
+              {fmtSize(sent)} / {fmtSize(totalSize)}
               {speed > 0 && busy ? ` · ${fmtSize(speed)}/s` : ""}
             </span>
           </div>
@@ -216,21 +308,51 @@ export function FileUploader({
             <span className="fu-phase">
               {phase === "retrying" && <><span className="spinner sm" /> Reconnecting…</>}
               {phase === "uploading" && <>{pct}% uploaded</>}
+              {phase === "paused" && <>Paused</>}
               {phase === "finalizing" && <><span className="spinner sm" /> Queuing…</>}
               {phase === "error" && <span className="fu-err">{err}</span>}
             </span>
             <span style={{ display: "flex", gap: 6 }}>
-              {phase === "error" && file && (
-                <button className="btn primary sm" onClick={() => upload(file)}>Retry</button>
+              {/* Need to re-select file after refresh */}
+              {!file && activeUpload && (
+                <label className="btn primary sm" style={{ cursor: "pointer", margin: 0 }}>
+                  <input
+                    type="file"
+                    hidden
+                    onChange={(e) => onPickResumed(e.target.files?.[0])}
+                  />
+                  Select File to Resume
+                </label>
               )}
-              <button className="btn subtle sm" onClick={() => { cancel(); reset(); }}>
+
+              {/* Pause/Resume buttons when file is selected */}
+              {file && (
+                <>
+                  {phase === "uploading" && (
+                    <button className="btn primary sm" onClick={pause}>Pause</button>
+                  )}
+                  {phase === "paused" && (
+                    <button className="btn primary sm" onClick={resume}>Resume</button>
+                  )}
+                </>
+              )}
+
+              {phase === "error" && file && (
+                <button className="btn primary sm" onClick={() => upload(file, true, activeUpload || undefined)}>Retry</button>
+              )}
+              <button className="btn subtle sm" onClick={cancel}>
                 {phase === "error" ? "Dismiss" : "Cancel"}
               </button>
             </span>
           </div>
         </div>
       )}
-      {err && phase !== "error" && <div className="up-err">{err}</div>}
+      {!file && activeUpload && (
+        <div className="up-err" style={{ marginTop: 8, background: "rgba(59, 130, 246, 0.1)", border: "1px solid rgba(59, 130, 246, 0.2)", color: "#93c5fd" }}>
+          Upload was paused by page refresh. Please re-select the file <b>{activeUpload.name}</b> to resume.
+        </div>
+      )}
+      {err && file && <div className="up-err">{err}</div>}
     </div>
   );
 }
