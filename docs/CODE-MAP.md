@@ -18,12 +18,14 @@ Handlers: `on_channel_post` (index, Flow C), `harvest_thumbnail` (if the post ha
 yet — common for video, which Telegram generates asynchronously — it schedules
 `_deferred_harvest` instead of giving up), `_deferred_harvest` (background task: wait 60 s, then
 `forward_message` to owner chat to re-fetch the now-generated thumbnail, store it, delete the
-forward), `on_start` (download via `copy_message`, owner-only), `on_private_file` (Bot Drop
-intake), `purge_job` (daily trash purge), `bot_heartbeat_job` (writes to `bot_heartbeat` every
-10 s — web UI liveness check).
-Lifecycle: `post_init`/`post_shutdown` (Turso client), `main` (handler registration +
+forward), `on_start` (download via `copy_message` for authorized users), `on_auth` / `on_approve` / 
+`on_revoke` / `on_list_users` (user authorization and management), `on_help` (command list menu),
+`on_cancel` (cancel active file upload), `on_private_file` (interactive PM upload & Bot Drop intake),
+`on_private_text` / `on_callback_query` (interactive questionnaire), `purge_job` (daily trash purge),
+`bot_heartbeat_job` (writes to `bot_heartbeat` every 10 s — web UI liveness check).
+Lifecycle: `post_init`/`post_shutdown` (Turso client, auto-migration for `authorized_users` table, and commands menu registration), `main` (handler registration +
 `run_daily` + `run_repeating` heartbeat). **Env:** `BOT_TOKEN`, `STORAGE_CHANNEL_ID`,
-`OWNER_USER_ID`, `TURSO_*`.
+`OWNER_USER_ID`, `TURSO_*`, `AUTH_PASSWORD`/`APP_PASSWORD`.
 
 ### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
 Handles two job origins (`upload_jobs.origin`):

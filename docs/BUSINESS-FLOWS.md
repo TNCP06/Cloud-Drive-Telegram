@@ -101,28 +101,43 @@ Triggered by any new `channel_post` in `STORAGE_CHANNEL_ID` ([`bot/bot.py`](../b
 
 ---
 
-## D. Bot Drop — upload via the bot's PM, finished on the web (no laptop)
+## D. Bot Drop & Telegram Interactive Upload — upload via the bot's PM
 
 Bypasses Vercel's request-size limit: the **bot** holds the bytes, the **web** only sends a
-small API call.
+small API call. Alternatively, the user can complete the upload entirely within Telegram.
 
-1. User DMs a file to the bot. `on_private_file` (owner-only) replies with a link:
-   `/<web>/upload-bot?msg_id=<id>&chat_id=<id>`.
-2. Web page (`web/app/upload-bot/`) shows a title/tags form.
-3. `processBotDrop()` (server action) calls Telegram `copyMessage` (HTTP Bot API) to copy the
-   PM'd message into the storage channel **with the contract caption** `Title | 1/1 | tags`.
-4. The new channel post is indexed by Flow C like any other upload.
+1. **Intake**: User DMs a file (Photo, Video, or Document) to the bot.
+   - If not authorized, access is denied (see authorization below).
+   - If authorized, the bot initiates the interactive questionnaire (waiting for Title, then Tags).
+   - The bot also sends a web link: `/<web>/upload-bot?msg_id=<id>&chat_id=<id>` as an alternative.
+2. **Finishing via Web**:
+   - User opens the web link, completes Title & Tags, and clicks Save.
+   - `processBotDrop()` (server action) calls Telegram `copyMessage` to copy the file into the storage channel with the contract caption `Title | 1/1 | tags`.
+3. **Finishing via Telegram**:
+   - The user replies to the bot's message with a custom Title, or clicks/types `/skip` to use the auto-caption Title (derived from filename or media date).
+   - The bot then asks for Tags. The user replies with comma-separated tags, or clicks/types `/skip` to skip/use auto-tags.
+   - The bot compiles the caption `Title | 1/1 | tags` and executes `copyMessage` to copy the file into the storage channel.
+4. **Indexing**: The new channel post is indexed by Flow C like any other upload.
 
 ---
 
 ## E. Download (no laptop)
 
 1. **Web**: item ⋮ → Download → opens deep link `https://t.me/<bot>?start=<slug>`.
-2. **Bot** `on_start` (owner-only): decode slug → look up all `parts.channel_msg_id` for the
+2. **Bot** `on_start` (authorized users only): decode slug → look up all `parts.channel_msg_id` for the
    item (active only, `deleted_at IS NULL`).
 3. For each part, `copy_message(chat_id=user, from_chat_id=channel, message_id=...)` with a
    0.3 s gap (flood limits). File lands in the user's Telegram chat → full-speed download from
    Telegram's servers, any device.
+
+---
+
+## E3. Bot Authorization (Access Control)
+
+Users can be authorized to use download & upload flows:
+1. **Password Auth**: User types `/auth <password>` (where password is `AUTH_PASSWORD` or `APP_PASSWORD` in `.env`). Upon matching, their user ID is saved in the `authorized_users` database table.
+2. **Owner Approval**: When an unauthorized user attempts to use the bot, the owner (`OWNER_USER_ID`) is notified. The owner can type `/approve <user_id>` to authorize them or `/revoke <user_id>` to revoke access.
+3. **Authorized List**: The owner can run `/list_users` to see all authorized accounts.
 
 > `copy_message` is a reference op → bypasses the 50/20 MB Bot API limits **and** hides the
 > source channel (unlike `forward_message`).

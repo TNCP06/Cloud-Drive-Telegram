@@ -29,13 +29,14 @@ from datetime import time as dtime
 import httpx
 import libsql_client
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
+    CallbackQueryHandler,
 )
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,17 @@ def pick_thumb_file_id(message) -> str | None:
     if message.document and message.document.thumbnail:
         return message.document.thumbnail.file_id
     return None
+
+
+async def is_user_authorized(db, user_id: int) -> bool:
+    if user_id == OWNER_USER_ID:
+        return True
+    try:
+        rs = await db.execute("SELECT 1 FROM authorized_users WHERE user_id = ?", [user_id])
+        return len(rs.rows) > 0
+    except Exception:
+        # If the table doesn't exist yet, fallback to owner-only
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +416,7 @@ async def harvest_thumbnail(context, db, part_id, message):
 
 
 # ---------------------------------------------------------------------------
-# /start handler — download via copy_message (owner-only)
+# /start handler — download via copy_message
 # ---------------------------------------------------------------------------
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -412,9 +424,19 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message is None:
         return
 
-    # Security: only the owner may trigger downloads.
-    if user is None or user.id != OWNER_USER_ID:
-        await message.reply_text("⛔ Access denied. This bot is private.")
+    db = context.bot_data["db"]
+    # Security: only authorized users may trigger downloads.
+    if user is None or not await is_user_authorized(db, user.id):
+        await message.reply_text(
+            f"⛔ Access denied. This bot is private.\nYour Telegram ID: `{user.id}`\n"
+            "Use `/auth <password>` to authorize or ask the owner."
+        )
+        await warn_owner(
+            context,
+            f"⚠️ Unauthorized download attempt:\nUser: {user.first_name if user else 'Unknown'} "
+            f"(@{user.username if user else 'none'}, ID: `{user.id if user else 'unknown'}`)\n"
+            f"To approve: `/approve {user.id}`"
+        )
         return
 
     # Deep link "?start=<slug>" → PTB fills context.args.
@@ -533,8 +555,34 @@ async def post_init(app: Application):
         await db.execute("ALTER TABLE parts ADD COLUMN file_id TEXT")
         log.info("Migration: Added file_id column to parts table successfully")
     except Exception as e:
-        # Ignore errors if the column already exists
         pass
+
+    # Auto-migration: create authorized_users table
+    try:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS authorized_users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                added_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        log.info("Migration: Created authorized_users table successfully")
+    except Exception as e:
+        log.warning("Migration failed for authorized_users: %s", e)
+
+    # Register commands menu with Telegram
+    try:
+        commands = [
+            BotCommand("start", "Trigger file download / Greet"),
+            BotCommand("help", "Show available commands & guide"),
+            BotCommand("auth", "Authorize yourself using password"),
+            BotCommand("cancel", "Cancel current file upload flow"),
+        ]
+        await app.bot.set_my_commands(commands)
+        log.info("Bot commands menu registered successfully")
+    except Exception as e:
+        log.warning("Failed to set bot commands: %s", e)
 
 
 
@@ -546,12 +594,239 @@ async def post_shutdown(app: Application):
 
 
 # ---------------------------------------------------------------------------
-# Private chat handler (Bot Drop)
+# Authorization commands
+# ---------------------------------------------------------------------------
+async def on_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not message or not user:
+        return
+
+    db = context.bot_data["db"]
+
+    # If already authorized
+    if await is_user_authorized(db, user.id):
+        await message.reply_text("✅ You are already authorized to use this bot.")
+        return
+
+    if not context.args:
+        await message.reply_text(
+            "Usage: `/auth <password>`\n\n"
+            "If you don't know the password, please contact the bot owner.",
+            parse_mode="Markdown"
+        )
+        return
+
+    password = context.args[0]
+    auth_password = os.environ.get("AUTH_PASSWORD") or os.environ.get("APP_PASSWORD")
+
+    if not auth_password:
+        await message.reply_text("⚠️ No authentication password is configured on the server. Please contact the owner.")
+        return
+
+    if password == auth_password:
+        try:
+            await db.execute(
+                "INSERT OR IGNORE INTO authorized_users (user_id, username, first_name) VALUES (?, ?, ?)",
+                [user.id, user.username, user.first_name]
+            )
+            await message.reply_text("🎉 Authorization successful! You can now use the bot.")
+            await warn_owner(
+                context,
+                f"🔑 User {user.first_name} (@{user.username or 'none'}, ID: `{user.id}`) has successfully authorized using the password."
+            )
+        except Exception as e:
+            log.exception("Failed to authorize user in DB")
+            await message.reply_text("❌ Database error during authorization. Please try again later.")
+    else:
+        await message.reply_text("❌ Incorrect password. Access denied.")
+
+
+async def on_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not message or not user:
+        return
+
+    if user.id != OWNER_USER_ID:
+        await message.reply_text("⛔ Only the owner can approve users.")
+        return
+
+    if not context.args:
+        await message.reply_text("Usage: `/approve <user_id>`", parse_mode="Markdown")
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await message.reply_text("❌ Invalid user ID. Must be an integer.")
+        return
+
+    db = context.bot_data["db"]
+    try:
+        await db.execute(
+            "INSERT OR IGNORE INTO authorized_users (user_id, username, first_name) VALUES (?, ?, ?)",
+            [target_id, "Approved by Owner", "User"]
+        )
+        await message.reply_text(f"✅ User {target_id} has been authorized.")
+        
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="🎉 You have been authorized by the owner to use this bot!"
+            )
+        except Exception:
+            pass  # User might not have started a chat with the bot
+    except Exception as e:
+        log.exception("Failed to approve user")
+        await message.reply_text(f"❌ Error approving user: {e}")
+
+
+async def on_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not message or not user:
+        return
+
+    if user.id != OWNER_USER_ID:
+        await message.reply_text("⛔ Only the owner can revoke users.")
+        return
+
+    if not context.args:
+        await message.reply_text("Usage: `/revoke <user_id>`", parse_mode="Markdown")
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await message.reply_text("❌ Invalid user ID. Must be an integer.")
+        return
+
+    db = context.bot_data["db"]
+    try:
+        await db.execute("DELETE FROM authorized_users WHERE user_id = ?", [target_id])
+        await message.reply_text(f"✅ User {target_id} authorization has been revoked.")
+        
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="🚫 Your authorization to use this bot has been revoked by the owner."
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        log.exception("Failed to revoke user")
+        await message.reply_text(f"❌ Error revoking user: {e}")
+
+
+async def on_list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not message or not user:
+        return
+
+    if user.id != OWNER_USER_ID:
+        await message.reply_text("⛔ Only the owner can list authorized users.")
+        return
+
+    db = context.bot_data["db"]
+    try:
+        rs = await db.execute("SELECT user_id, username, first_name, added_at FROM authorized_users")
+        if not rs.rows:
+            await message.reply_text("No other users authorized yet.")
+            return
+
+        text = "👤 **Authorized Users:**\n"
+        for r in rs.rows:
+            text += f"- {r[2]} (@{r[1] or 'none'}, ID: `{r[0]}`), added on {r[3]}\n"
+        await message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        log.exception("Failed to list users")
+        await message.reply_text(f"❌ Error reading users: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Menu / Help Command
+# ---------------------------------------------------------------------------
+async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not message or not user:
+        return
+
+    db = context.bot_data["db"]
+    is_auth = await is_user_authorized(db, user.id)
+    is_owner = (user.id == OWNER_USER_ID)
+
+    text = "🤖 **Telegram Cloud Drive Bot Menu**\n\n"
+
+    if not is_auth:
+        text += "🔒 You are currently **NOT authorized** to use this bot.\n"
+        text += "To authorize, please type:\n"
+        text += "`/auth <password>`\n\n"
+        text += "Or contact the bot owner to approve your request."
+        await message.reply_text(text, parse_mode="Markdown")
+        return
+
+    text += "✨ **Available Commands:**\n"
+    text += "• `/start` - Greet or trigger file download from website\n"
+    text += "• `/help` or `/menu` - Show this list of commands\n"
+    text += "• `/cancel` - Cancel the current file upload flow\n\n"
+
+    text += "📥 **How to upload files:**\n"
+    text += "Simply send any file (video, photo, or document) directly to this chat. "
+    text += "The bot will guide you to set a title and tags, then copy/index it into the cloud drive!\n\n"
+
+    if is_owner:
+        text += "👑 **Owner Admin Commands:**\n"
+        text += "• `/approve <user_id>` - Authorize a user to use the bot\n"
+        text += "• `/revoke <user_id>` - Revoke user authorization\n"
+        text += "• `/list_users` - List all authorized users\n"
+
+    await message.reply_text(text, parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# Cancel upload flow
+# ---------------------------------------------------------------------------
+async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not message or not user:
+        return
+
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        return
+
+    if "upload_file" in context.user_data or "upload_state" in context.user_data:
+        context.user_data.pop("upload_file", None)
+        context.user_data.pop("upload_state", None)
+        await message.reply_text("❌ Upload flow cancelled.")
+    else:
+        await message.reply_text("There is no active upload flow to cancel.")
+
+
+# ---------------------------------------------------------------------------
+# Private chat handler (Bot Drop & File Upload Flow)
 # ---------------------------------------------------------------------------
 async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
-    if not message or not user or user.id != OWNER_USER_ID:
+    if not message or not user:
+        return
+
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        await message.reply_text(
+            f"⛔ Access denied. You are not authorized.\nYour Telegram ID: `{user.id}`\n"
+            "Use `/auth <password>` to authorize or ask the owner."
+        )
+        await warn_owner(
+            context,
+            f"⚠️ Unauthorized upload attempt:\nUser: {user.first_name} (@{user.username or 'none'}, ID: `{user.id}`)\n"
+            f"To approve: `/approve {user.id}`"
+        )
         return
 
     kind = detect_kind(message)
@@ -559,17 +834,192 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Not a media/document message
         return
 
+    if "upload_file" in context.user_data:
+        await message.reply_text(
+            "⚠️ You already have an active upload flow. Please complete it or cancel it with `/cancel`."
+        )
+        return
+
     msg_id = message.message_id
     chat_id = message.chat_id
     web_url = os.environ.get("NEXT_PUBLIC_WEB_URL", "http://localhost:3000").rstrip("/")
 
+    file_name, file_size = get_file_meta(message)
+    auto_meta, _ = derive_media_meta(message)
+    auto_title = auto_meta["title"]
+    auto_tags = auto_meta["tags"]
+
+    context.user_data["upload_file"] = {
+        "message_id": msg_id,
+        "chat_id": chat_id,
+        "kind": kind,
+        "file_name": file_name,
+        "file_size": file_size,
+        "auto_title": auto_title,
+        "auto_tags": auto_tags,
+    }
+    context.user_data["upload_state"] = "WAITING_TITLE"
+
     link = f"{web_url}/upload-bot?msg_id={msg_id}&chat_id={chat_id}"
 
+    # Inline Keyboard for Title selection
+    keyboard = [
+        [InlineKeyboardButton(f"✨ Use Auto Title: {auto_title}", callback_data="upload:skip_title")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     await message.reply_text(
-        f"✅ File received!\n\nClick the link below to complete the file details (Title & Tags) via the web. "
-        f"The bot will automatically forward it to the Channel once saved.\n\n👉 {link}",
+        f"📥 **File Received!**\n"
+        f"• File Name: `{file_name or 'Photo/Media'}`\n"
+        f"• File Size: `{file_size / 1024 / 1024:.2f} MB`\n\n"
+        f"Please reply with a **Title** for this file.\n"
+        f"Or click the button below to use the Auto Title.\n\n"
+        f"🔗 Alternatively, you can complete the details via the web:\n{link}",
+        reply_markup=reply_markup,
+        parse_mode="Markdown",
         disable_web_page_preview=True
     )
+
+
+async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["upload_state"] = "WAITING_TAGS"
+    auto_tags = context.user_data["upload_file"]["auto_tags"]
+    auto_tags_str = ", ".join(auto_tags) if auto_tags else "none"
+
+    keyboard = [
+        [InlineKeyboardButton(f"✨ Use Auto Tags: {auto_tags_str}", callback_data="upload:skip_tags")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    message = update.message or update.callback_query.message
+    await context.bot.send_message(
+        chat_id=message.chat_id,
+        text="🏷️ **Title set!**\n\nWhat are the **Tags** for this file? (Separate with commas, e.g. `holiday, video`)\n"
+             "Or click the button below to use the Auto Tags.",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+
+async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    upload_file = context.user_data.get("upload_file")
+    if not upload_file:
+        return
+
+    title = upload_file.get("title") or upload_file.get("auto_title")
+    tags = upload_file.get("tags") or upload_file.get("auto_tags") or []
+    tags_str = ", ".join(tags)
+
+    # Caption contract: Title | part/total | tags
+    caption = f"{title} | 1/1 | {tags_str}"
+
+    chat_id = upload_file["chat_id"]
+    message_id = upload_file["message_id"]
+
+    # Send status message
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text="📤 Copying file to storage channel..."
+    )
+
+    try:
+        # Copy message to STORAGE_CHANNEL_ID with the generated caption contract
+        copied_msg = await context.bot.copy_message(
+            chat_id=STORAGE_CHANNEL_ID,
+            from_chat_id=chat_id,
+            message_id=message_id,
+            caption=caption
+        )
+
+        await status_msg.edit_text(
+            f"🎉 **Success!**\n\n"
+            f"File has been successfully uploaded and indexed.\n"
+            f"• **Title**: `{title}`\n"
+            f"• **Tags**: `{tags_str if tags_str else 'none'}`\n\n"
+            f"It is now being indexed and will appear on the website shortly!",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        log.exception("Failed to copy user file to channel")
+        await status_msg.edit_text(
+            f"❌ **Error copying file:** {str(e)}\n"
+            "Please check bot configuration and try again."
+        )
+    finally:
+        # Clear state
+        context.user_data.pop("upload_file", None)
+        context.user_data.pop("upload_state", None)
+
+
+async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    user = update.effective_user
+    if not message or not user:
+        return
+
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        return
+
+    state = context.user_data.get("upload_state")
+    if not state:
+        if message.text and not message.text.startswith("/"):
+            await message.reply_text(
+                "Send a file (Photo, Video, or Document) to upload it to the cloud drive!"
+            )
+        return
+
+    text = message.text.strip()
+    if text.startswith("/"):
+        # Let CommandHandlers handle commands
+        return
+
+    if state == "WAITING_TITLE":
+        context.user_data["upload_file"]["title"] = text
+        await prompt_for_tags(update, context)
+
+    elif state == "WAITING_TAGS":
+        tags = [t.strip() for t in text.split(",") if t.strip()]
+        context.user_data["upload_file"]["tags"] = tags
+        await finish_upload(update, context)
+
+
+async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    user = update.effective_user
+    if not data or not user:
+        return
+
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        await query.message.reply_text("⛔ Access denied.")
+        return
+
+    if data == "upload:cancel":
+        context.user_data.pop("upload_file", None)
+        context.user_data.pop("upload_state", None)
+        await query.message.edit_text("❌ Upload flow cancelled.")
+
+    elif data == "upload:skip_title":
+        upload_file = context.user_data.get("upload_file")
+        if not upload_file:
+            await query.message.edit_text("No active upload flow found.")
+            return
+        upload_file["title"] = upload_file["auto_title"]
+        await prompt_for_tags(update, context)
+
+    elif data == "upload:skip_tags":
+        upload_file = context.user_data.get("upload_file")
+        if not upload_file:
+            await query.message.edit_text("No active upload flow found.")
+            return
+        upload_file["tags"] = upload_file["auto_tags"]
+        await finish_upload(update, context)
 
 
 def main():
@@ -602,10 +1052,28 @@ def main():
 
     app = builder.build()
 
-    # /start (download, owner-only) — private chat.
+    # Command handlers
     app.add_handler(CommandHandler("start", on_start))
+    app.add_handler(CommandHandler("auth", on_auth))
+    app.add_handler(CommandHandler("approve", on_approve))
+    app.add_handler(CommandHandler("revoke", on_revoke))
+    app.add_handler(CommandHandler("list_users", on_list_users))
+    app.add_handler(CommandHandler("cancel", on_cancel))
+    app.add_handler(CommandHandler("help", on_help))
+    app.add_handler(CommandHandler("menu", on_help))
 
-    # Bot Drop handler (receives files in the bot's private chat)
+    # Callback Query handler for inline buttons
+    app.add_handler(CallbackQueryHandler(on_callback_query))
+
+    # Private text handler for upload details (Title / Tags input)
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+            on_private_text,
+        )
+    )
+
+    # Bot Drop / File Upload handler (receives files in the bot's private chat)
     app.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & (filters.Document.ALL | filters.VIDEO | filters.PHOTO | filters.ANIMATION),
