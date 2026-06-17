@@ -37,7 +37,7 @@ function Star({ on, onClick, cls = "star" }: { on: boolean; onClick: () => void;
 
 /* ---- Thumbnail tile (kind icon) ---- */
 function TypeTile({ kind, size = 40 }: { kind: DriveFile["kind"]; size?: number }) {
-  const meta = KINDS[kind];
+  const meta = KINDS[kind] || { icon: "archive", tint: "#8A8068", label: kind || "Archive" };
   return (
     <div
       style={{
@@ -143,7 +143,7 @@ export function FileCard({ item, tags, onStar, onMenu, onOpen, versionCount, onP
 
 /* ============================================================ List row */
 export function FileRow({ item, tags, onStar, onMenu, onOpen, versionCount, onPickFamily }: ItemProps) {
-  const meta = KINDS[item.kind];
+  const meta = KINDS[item.kind] || { icon: "archive", tint: "#8A8068", label: item.kind || "Archive" };
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
     <div className="row" onClick={() => onOpen(item)}>

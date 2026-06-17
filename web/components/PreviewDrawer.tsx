@@ -98,7 +98,7 @@ export function PreviewDrawer({
   onSave: (item: DriveFile, input: { title: string; kind: Kind; tags: string }) => void;
 }) {
   const router = useRouter();
-  const meta = KINDS[item.kind];
+  const meta = KINDS[item.kind] || { icon: "archive", tint: "#8A8068", label: item.kind || "Archive" };
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
 
   const [editing, setEditing] = useState(false);
