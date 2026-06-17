@@ -75,11 +75,13 @@ load_dotenv()
 API_ID = int(os.environ["TG_API_ID"])
 API_HASH = os.environ["TG_API_HASH"]
 STORAGE_CHANNEL_ID = int(os.environ["STORAGE_CHANNEL_ID"])
+OWNER_USER_ID = int(os.environ["OWNER_USER_ID"])
 SESSION = os.environ.get("STREAMER_SESSION", "streamer")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 TELEGRAM_API_URL = os.environ.get("TELEGRAM_API_URL")
 
 TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
+
 
 
 def _turso_http_url(url: str) -> str:
@@ -287,6 +289,8 @@ async def download_via_local_bot_api(file_id: str) -> str:
 
     async with httpx.AsyncClient(timeout=600.0) as client:
         resp = await client.post(url, json={"file_id": file_id})
+        if resp.status_code != 200:
+            log.error("Telegram Bot API error response body: %s", resp.text)
         resp.raise_for_status()
         res = resp.json()
         if not res.get("ok"):
@@ -295,6 +299,76 @@ async def download_via_local_bot_api(file_id: str) -> str:
         file_path = res["result"]["file_path"]
         log.info("Local Bot API server download complete: %s", file_path)
         return file_path
+
+
+async def resolve_file_id_via_forwarding(channel_msg_id: int, part_id: int) -> str:
+    """
+    Resolve a valid Bot API file_id by forwarding the channel message to the owner's chat,
+    extracting the file_id, updating it in the database, and deleting the forwarded message.
+    """
+    if not TELEGRAM_API_URL or not BOT_TOKEN or not OWNER_USER_ID:
+        raise ValueError("TELEGRAM_API_URL, BOT_TOKEN, and OWNER_USER_ID must be set")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # 1. Forward the message to the owner
+        fwd_url = f"{TELEGRAM_API_URL}/bot{BOT_TOKEN}/forwardMessage"
+        log.info(f"Forwarding channel_msg_id {channel_msg_id} to owner {OWNER_USER_ID} to resolve file_id...")
+        fwd_resp = await client.post(fwd_url, json={
+            "chat_id": OWNER_USER_ID,
+            "from_chat_id": STORAGE_CHANNEL_ID,
+            "message_id": channel_msg_id,
+            "disable_notification": True
+        })
+        
+        if fwd_resp.status_code != 200:
+            log.error("Failed to forward message: %s", fwd_resp.text)
+            fwd_resp.raise_for_status()
+            
+        fwd_data = fwd_resp.json()
+        if not fwd_data.get("ok"):
+            raise ValueError(f"Telegram Bot API forwardMessage error: {fwd_data}")
+            
+        fwd_msg = fwd_data["result"]
+        fwd_msg_id = fwd_msg["message_id"]
+        
+        # 2. Extract file_id
+        file_id = None
+        if "document" in fwd_msg:
+            file_id = fwd_msg["document"]["file_id"]
+        elif "video" in fwd_msg:
+            file_id = fwd_msg["video"]["file_id"]
+        elif "animation" in fwd_msg:
+            file_id = fwd_msg["animation"]["file_id"]
+        elif "photo" in fwd_msg:
+            file_id = fwd_msg["photo"][-1]["file_id"]
+            
+        if not file_id:
+            # Delete message and raise
+            try:
+                del_url = f"{TELEGRAM_API_URL}/bot{BOT_TOKEN}/deleteMessage"
+                await client.post(del_url, json={"chat_id": OWNER_USER_ID, "message_id": fwd_msg_id})
+            except Exception:
+                pass
+            raise ValueError("Forwarded message does not contain a valid file (document, video, animation, or photo)")
+            
+        # 3. Update the database parts table
+        log.info(f"Successfully resolved file_id. Updating parts table for part_id {part_id}...")
+        try:
+            await db.execute("UPDATE parts SET file_id = ? WHERE id = ?", [file_id, part_id])
+        except Exception as e:
+            log.error(f"Failed to update parts.file_id in database: {e}")
+            
+        # 4. Delete the forwarded message immediately (to clean up the user's chat)
+        try:
+            del_url = f"{TELEGRAM_API_URL}/bot{BOT_TOKEN}/deleteMessage"
+            await client.post(del_url, json={"chat_id": OWNER_USER_ID, "message_id": fwd_msg_id})
+            log.info("Deleted the temporary forwarded message from owner's chat")
+        except Exception as e:
+            log.warning(f"Failed to delete temporary forwarded message: {e}")
+            
+        return file_id
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +651,7 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
 async def _init_part_meta(part_id: int) -> dict:
     """Query Turso for part info and create meta.json. Returns meta dict."""
     rs = await db.execute(
-        "SELECT p.id, p.channel_msg_id, p.file_size, p.file_name "
+        "SELECT p.id, p.channel_msg_id, p.file_size, p.file_name, p.file_id "
         "FROM parts p "
         "JOIN items i ON i.id = p.item_id "
         "WHERE p.id = ? AND i.kind = 'media' AND i.total_parts = 1 "
@@ -600,11 +674,13 @@ async def _init_part_meta(part_id: int) -> dict:
         "chunk_size": CHUNK_SIZE,
         "total_chunks": total_chunks,
         "last_accessed": time.time(),
+        "file_id": row[4] if row[4] else None,
     }
     _write_meta(meta)
     log.info("Initialised meta for part %d: %d bytes, %d chunks, %s",
              part_id, total_size, total_chunks, meta["mime"])
     return meta
+
 
 
 # ---------------------------------------------------------------------------
@@ -833,14 +909,22 @@ async def stream(part_id: int, request: Request):
 
     # --- 3. Local Bot API Mode (High-speed Direct Stream) ---
     if TELEGRAM_API_URL:
-        # Resolve Bot API file_id from Telethon message
-        msg = await _get_tg_message(channel_msg_id)
-        if not msg or not msg.media:
-            return Response("Message has no media", status_code=404)
-
-        file_id = pack_bot_file_id(msg.media)
+        # Try to use the file_id from the metadata (retrieved from parts.file_id in database)
+        file_id = meta.get("file_id")
         if not file_id:
-            return Response("Failed to pack file ID", status_code=500)
+            try:
+                # Not in DB yet (old file) -> resolve dynamically via forwarding
+                file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
+                meta["file_id"] = file_id  # update in memory meta
+            except Exception as e:
+                log.warning("Failed to resolve file_id via forwarding: %s. Falling back to Telethon pack_bot_file_id...", e)
+                # Fallback to Telethon's pack_bot_file_id
+                msg = await _get_tg_message(channel_msg_id)
+                if not msg or not msg.media:
+                    return Response("Message has no media", status_code=404)
+                file_id = pack_bot_file_id(msg.media)
+                if not file_id:
+                    return Response("Failed to pack file ID", status_code=500)
 
         # Get local file path (download via Bot API server if needed)
         async with _part_locks[(part_id, -1)]:
@@ -851,8 +935,16 @@ async def stream(part_id: int, request: Request):
                     file_path = await download_via_local_bot_api(file_id)
                     _local_file_paths[part_id] = file_path
                 except Exception as e:
-                    log.error("Failed to download via local Bot API: %s", e)
-                    return Response(f"Failed to download file: {e}", status_code=500)
+                    # In case the file_id was invalid/expired, try a fresh resolution via forwarding
+                    log.warning("Local Bot API download failed: %s. Retrying with fresh resolved file_id...", e)
+                    try:
+                        file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
+                        meta["file_id"] = file_id
+                        file_path = await download_via_local_bot_api(file_id)
+                        _local_file_paths[part_id] = file_path
+                    except Exception as retry_err:
+                        log.error("Failed to download even after dynamic re-resolution: %s", retry_err)
+                        return Response(f"Failed to download file: {retry_err}", status_code=500)
 
         # Generate stream from local file
         async def local_file_generator():

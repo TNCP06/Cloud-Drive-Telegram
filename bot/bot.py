@@ -125,6 +125,20 @@ def get_file_meta(message):
     return None, 0
 
 
+def get_file_id(message) -> str | None:
+    """Return the main file_id for this message's media."""
+    if message.document:
+        return message.document.file_id
+    if message.video:
+        return message.video.file_id
+    if message.animation:
+        return message.animation.file_id
+    if message.photo:
+        return message.photo[-1].file_id
+    return None
+
+
+
 def derive_media_meta(message):
     """Fallback metadata for MEDIA whose caption doesn't match the contract.
 
@@ -194,23 +208,25 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
     return rs.rows[0][0]
 
 
-async def upsert_part(db, item_id, part_number, channel_msg_id, file_name, file_size) -> int:
+async def upsert_part(db, item_id, part_number, channel_msg_id, file_name, file_size, file_id=None) -> int:
     """Upsert part by channel_msg_id (idempotency key & copy_message target). Return part_id."""
     await db.execute(
         """
         INSERT INTO parts (item_id, part_number, channel_msg_id,
-                           file_name, file_size, uploaded_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'))
+                           file_name, file_size, file_id, uploaded_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(channel_msg_id) DO UPDATE SET
             item_id     = excluded.item_id,
             part_number = excluded.part_number,
             file_name   = excluded.file_name,
-            file_size   = excluded.file_size
+            file_size   = excluded.file_size,
+            file_id     = COALESCE(excluded.file_id, parts.file_id)
         """,
-        [item_id, part_number, channel_msg_id, file_name, file_size],
+        [item_id, part_number, channel_msg_id, file_name, file_size, file_id],
     )
     rs = await db.execute("SELECT id FROM parts WHERE channel_msg_id = ?", [channel_msg_id])
     return rs.rows[0][0]
+
 
 
 async def recompute_totals(db, item_id):
@@ -309,10 +325,12 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         part_number = parsed["part"]
 
     file_name, file_size = get_file_meta(message)
+    file_id = get_file_id(message)
 
     try:
         item_id = await upsert_item(db, slug, title, kind, parsed["total"], set_title=has_caption)
-        part_id = await upsert_part(db, item_id, part_number, msg_id, file_name, file_size)
+        part_id = await upsert_part(db, item_id, part_number, msg_id, file_name, file_size, file_id)
+
         await recompute_totals(db, item_id)
         await sync_tags(db, item_id, parsed["tags"])
 
@@ -504,10 +522,20 @@ async def purge_job(context: ContextTypes.DEFAULT_TYPE):
 # Turso lifecycle
 # ---------------------------------------------------------------------------
 async def post_init(app: Application):
-    app.bot_data["db"] = libsql_client.create_client(
+    db = libsql_client.create_client(
         url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN
     )
+    app.bot_data["db"] = db
     log.info("Turso connection ready")
+
+    # Auto-migration: ensure parts table has file_id column
+    try:
+        await db.execute("ALTER TABLE parts ADD COLUMN file_id TEXT")
+        log.info("Migration: Added file_id column to parts table successfully")
+    except Exception as e:
+        # Ignore errors if the column already exists
+        pass
+
 
 
 async def post_shutdown(app: Application):
