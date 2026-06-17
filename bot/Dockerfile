@@ -1,5 +1,5 @@
 # Shared image for bot.py and watcher.py (compose picks the command per service).
-# ffmpeg → media thumbnails; p7zip-full → the legacy 'local' game split (the new
+# ffmpeg → media thumbnails; p7zip-full → the legacy 'local' archive split (the new
 # browser-upload path needs neither, it raw-splits in pure Python).
 FROM python:3.11-slim
 

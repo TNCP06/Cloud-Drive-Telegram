@@ -6,7 +6,7 @@ Team-style reference for **Telegram Cloud Drive**. These docs describe the syste
 | Doc | Read it when you need… |
 |---|---|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | The mental model: components, data flow, the caption contract, identity/idempotency invariants, auth, tech stack. |
-| [BUSINESS-FLOWS.md](./BUSINESS-FLOWS.md) | Step-by-step for every operation (upload game/media, Bot Drop, download, delete/restore/purge, tags, watcher), with "needs laptop?" and the code path. |
+| [BUSINESS-FLOWS.md](./BUSINESS-FLOWS.md) | Step-by-step for every operation (upload archive/media, Bot Drop, download, delete/restore/purge, tags, watcher), with "needs laptop?" and the code path. |
 | [CODE-MAP.md](./CODE-MAP.md) | Where a function lives and what it does — file-by-file across `bot/` and `web/`. |
 
 Related (older / non-authoritative):

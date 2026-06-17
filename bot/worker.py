@@ -2,7 +2,7 @@
 Telegram Cloud Drive — upload worker (Telethon / MTProto).
 
 Milestone 3: run from the laptop to upload large files.
-- game : split folder/archive with 7-Zip (~1.5 GB/part, store mode) then send each
+- archive : split folder/archive with 7-Zip (~1.5 GB/part, store mode) then send each
          part to the channel as a document, with the caption contract
          "Title | part/total | tag1, tag2".
 - media: send 1 file whole as media (not a document) so Telegram generates a
@@ -12,9 +12,9 @@ Why Telethon (user session) instead of the bot: Bot API is limited to 50 MB uplo
 MTProto (user) supports ~2 GB/file. The bot still indexes via the channel_post handler.
 
 Examples (PowerShell):
-  python worker.py game "D:\\Games\\Eternum" --title "Eternum" --tags "rpg, fantasy"
-  python worker.py game "D:\\Games\\Eternum.7z.001" --title "Eternum" --tags "rpg" --skip-split
-  python worker.py media "D:\\Videos\\trailer.mp4" --title "Trailer Eternum" --tags "video, promo"
+  python worker.py archive "D:\Games\Eternum" --title "Eternum" --tags "rpg, fantasy"
+  python worker.py archive "D:\Games\Eternum.7z.001" --title "Eternum" --tags "rpg" --skip-split
+  python worker.py media "D:\Videos\trailer.mp4" --title "Trailer Eternum" --tags "video, promo"
 
 First login will prompt for phone number + code (interactive in the terminal).
 Session is saved as worker.session (DO NOT commit — already in .gitignore).
@@ -138,7 +138,7 @@ async def run(args):
             sys.exit(f"ERROR: media file not found: {args.input}")
         paths = [args.input]
         as_document = False
-    else:  # game
+    else:  # archive
         if args.skip_split:
             paths = collect_parts(args.input)
             if not paths:
@@ -174,8 +174,8 @@ def main():
     p = argparse.ArgumentParser(description="Telegram Cloud Drive — upload worker (Telethon).")
     sub = p.add_subparsers(dest="command", required=True)
 
-    g = sub.add_parser("game", help="Split (7-Zip) + upload multi-part game archive.")
-    g.add_argument("input", help="Game folder/archive, or path to .001 part if using --skip-split.")
+    g = sub.add_parser("archive", help="Split (7-Zip) + upload multi-part archive.")
+    g.add_argument("input", help="Archive folder/file, or path to .001 part if using --skip-split.")
     g.add_argument("--title", required=True, help="Item title.")
     g.add_argument("--tags", default="", help='Comma-separated tags, e.g. "rpg, fantasy".')
     g.add_argument("--part-size", type=int, default=1500, help="Size of each part (MB). Default 1500.")

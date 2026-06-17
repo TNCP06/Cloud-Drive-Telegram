@@ -7,13 +7,13 @@ uploads to the channel with the caption contract "Title | i/total | tags". There
 two origins:
 
   - origin='local'  : file already on this machine (source_path = a path).
-        game  → 7-Zip split (folder/archive) → upload each part as a document.
+        archive  → 7-Zip split (folder/archive) → upload each part as a document.
         media → upload the file whole as media (Telegram makes the thumbnail).
         The source is never deleted.
 
   - origin='upload' : file was pushed via the web's resumable endpoint into a shared
         staging dir (source_path = that dir, cleanup_source=1). NO 7-Zip:
-        game  → if ≤ part_size, one part; else RAW STREAMING SPLIT — read one
+        archive  → if ≤ part_size, one part; else RAW STREAMING SPLIT — read one
                 <2 GB window at a time, upload it, delete it (caps disk at ~1 part).
         media → upload the staged file whole as media.
         After success the whole staging dir is deleted. Reassembly on download is a
@@ -27,7 +27,7 @@ Start and keep running:
 
 Requires: worker.session (Telethon login, see login.py), bot MUST be admin in the channel,
 env vars TG_API_ID/HASH, STORAGE_CHANNEL_ID, TURSO_*, (optional) SEVENZIP_PATH (local
-games only), WORKER_OUT_DIR (temp split parts).
+archives only), WORKER_OUT_DIR (temp split parts).
 """
 
 import asyncio
@@ -159,7 +159,7 @@ async def set_status(db, jid, status, message, pct=None):
 # ---------------------------------------------------------------------------
 # Split (raises, unlike worker.split_with_7zip which calls sys.exit)
 # ---------------------------------------------------------------------------
-def split_game(path, title, part_mb):
+def split_archive(path, title, part_mb):
     os.makedirs(OUT_DIR, exist_ok=True)
     archive = os.path.join(OUT_DIR, f"{safe_name(title)}.7z")
     cmd = [SEVENZIP, "a", f"-v{part_mb}m", "-mx=0", "-y", archive, path]
@@ -261,10 +261,10 @@ async def process(client, db, channel, job):
                     stream_src = staged
                     plan = ("stream", staged, True)
         else:  # local
-            if kind == "game":
+            if kind == "archive":
                 if not os.path.exists(path):
                     raise RuntimeError(f"Path not found: {path}")
-                temp_parts = split_game(path, title, part_mb)
+                temp_parts = split_archive(path, title, part_mb)
                 plan = ("list", temp_parts, True)
             else:
                 if not os.path.isfile(path):

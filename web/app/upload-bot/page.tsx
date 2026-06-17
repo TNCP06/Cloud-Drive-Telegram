@@ -102,7 +102,7 @@ export default function UploadBotPage() {
               className="w-full bg-black/50 border border-zinc-700 rounded-lg px-4 py-2.5 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition appearance-none"
             >
               <option value="media">Media (Video / Single Photo)</option>
-              <option value="game">Archive / Single Document</option>
+              <option value="archive">Archive / Single Document</option>
             </select>
           </div>
 

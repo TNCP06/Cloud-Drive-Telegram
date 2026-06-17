@@ -9,7 +9,7 @@ A personal, unlimited cloud storage and media catalog system built on top of Tel
 - **Bot Drop (Web Upload)**: Upload large media or documents directly to the bot via PM. The Bot securely holds the file while you fill out metadata on the Web Dashboard, completely bypassing Vercel's upload limits.
 - **Multi-device Dashboard**: A Next.js front-end deployed on Vercel allows you to browse, search, edit metadata, and delete files from your phone or PC without opening the Telegram app.
 - **Zero-Laptop Downloading**: Clicking "Download" on the web dashboard triggers the bot to seamlessly copy the file to your personal Telegram chat via the `copyMessage` API, offering full download speeds without hitting server bottlenecks.
-- **Large Game & Multi-part Support**: Dedicated worker scripts for PC to split and upload multi-GB games/archives using MTProto (Telethon), auto-assembled on the web UI.
+- **Large File & Multi-part Support**: Dedicated worker scripts for PC to split and upload multi-GB archives/files using MTProto (Telethon), auto-assembled on the web UI.
 
 ## 🏗️ Architecture
 

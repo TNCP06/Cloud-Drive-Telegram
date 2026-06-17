@@ -10,7 +10,7 @@ approximate and will drift — treat function names as the stable anchor.
 
 ### `bot.py` — indexer + download server + purge (long-running, `python-telegram-bot`)
 Pure helpers (no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
-(`media` vs `game`), `get_file_meta`, `derive_media_meta` (media caption fallback),
+(`media` vs `archive`), `get_file_meta`, `derive_media_meta` (media caption fallback),
 `pick_thumb_file_id`, `process_next_in_queue` (helper to process the next queued file).
 Turso ops (idempotent): `upsert_item` (`set_title` guard for albums), `upsert_part` (keyed on
 `channel_msg_id`), `recompute_totals`, `sync_tags`, `upsert_thumbnail`.
@@ -29,26 +29,26 @@ Lifecycle: `post_init`/`post_shutdown` (Turso client, auto-migration for `author
 
 ### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
 Handles two job origins (`upload_jobs.origin`):
-- **`local`** — file already on this machine. game → `split_game` (7-Zip); media → whole file.
+- **`local`** — file already on this machine. archive → `split_archive` (7-Zip); media → whole file.
 - **`upload`** — file pushed via the web resumable endpoint into the shared staging dir.
-  game > part_size → **raw streaming split, no 7-Zip** (`write_window` copies one <2 GB byte
+  archive > part_size → **raw streaming split, no 7-Zip** (`write_window` copies one <2 GB byte
   window → upload → delete it → next); media/small → whole file. On success the staging dir is
   removed (`cleanup_source`).
 
 `claim_next` (oldest `pending` → `running`; **preserves `parts_done`** so retries resume),
-`set_progress`/`set_status`, `set_parts_done` (per-part checkpoint), `split_game` (local 7-Zip),
+`set_progress`/`set_status`, `set_parts_done` (per-part checkpoint), `split_archive` (local 7-Zip),
 `resolve_staged_file` (the single file inside an upload's staging dir), `write_window` (raw byte
 window copy, 8 MB buffer), `make_video_thumbnail` (ffmpeg frame at 1 s → temp JPEG),
 `_store_thumbnails` (background: poll `parts` ~70 s, `INSERT OR IGNORE` thumbnail),
 `process` (build plan `list`/`stream` → upload each part, checkpoint after each, cleanup temp
 parts + staging dir on success), `resolve_channel`, `heartbeat` (10 s), `main` (poll loop, 5 s).
-Writes `watcher.pid`. **`ffmpeg`** for media thumbnails; **7-Zip only for `local` games**.
+Writes `watcher.pid`. **`ffmpeg`** for media thumbnails; **7-Zip only for `local` archives**.
 Imports `normalize_tags, build_caption, safe_name, collect_parts` from `worker.py`.
 
 ### `worker.py` — standalone upload CLI (Telethon, **laptop**)
-Same upload logic as the watcher but argparse-driven (`game` / `media` subcommands).
+Same upload logic as the watcher but argparse-driven (`archive` / `media` subcommands).
 `normalize_tags`, `build_caption`, `safe_name`, `split_with_7zip` (calls `sys.exit` on error —
-contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`, `upload_parts`,
+contrast watcher's `split_archive` which raises), `collect_parts`, `make_progress`, `upload_parts`,
 `run`, `main`.
 
 ### `index_history.py` — manual/automatic history back-indexer (Telethon, **laptop or server**)
@@ -93,10 +93,10 @@ and streams local file if active, else chunk-streams via Telethon).
   with strict token/path-traversal guards. Used by the upload API + the watcher reads the same dir.
 - `items.ts` — `getDriveData()`: the main read. One batched query set → shapes `DriveFile[]` +
   `Tag[]`. Computes each item's **cover** thumbnail (first part by `channel_msg_id`), fetches
-  `firstPartId`/`fileName` for media items (for video streaming), and for games, splits title
+  `firstPartId`/`fileName` for media items (for video streaming), and for archives, splits title
   into `family`/`version` via `parseTitle`.
-- `version.ts` — `parseTitle()`: split a game title into `family` + `version` (e.g.
-  `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Games only.
+- `version.ts` — `parseTitle()`: split an archive title into `family` + `version` (e.g.
+  `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Archives only.
 - `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and kind metadata.
 - `format.ts` — `sqliteToMs()` (SQLite datetime→epoch ms), byte/size formatting.
 - `uploads.ts` — `getUploadJobs()` — read helper for the `/upload` page.

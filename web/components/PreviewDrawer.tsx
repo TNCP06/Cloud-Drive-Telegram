@@ -203,7 +203,7 @@ export function PreviewDrawer({
       : [];
   const activePart = partsList[Math.min(activeIdx, partsList.length - 1)] as GalleryPart | undefined;
 
-  // Items without images (games/archives/etc.) still display full-screen with a large
+  // Items without images (archives/etc.) still display full-screen with a large
   // icon + title + kebab; details appear when the kebab is pressed, same as for photos.
   const multi = partsList.length > 1;
   const last = partsList.length - 1;
@@ -534,10 +534,10 @@ export function PreviewDrawer({
                       placeholder="e.g. rpg, fantasy"
                     />
                   </div>
-                  {kind === "game" && (
+                  {kind === "archive" && (
                     <p className="dv-hint">
-                      For games, the title also groups versions (e.g. &quot;Eternum 0.6&quot; →
-                      family &quot;Eternum&quot;). Download links remain unchanged.
+                      For archives, the title also groups versions (e.g. &quot;Archive 1.0.0&quot; →
+                      family &quot;Archive&quot;). Download links remain unchanged.
                     </p>
                   )}
                 </div>

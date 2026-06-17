@@ -1,6 +1,6 @@
 // Data model used by the UI (shaped from Turso → mirrors the design model).
 
-export type Kind = "game" | "media";
+export type Kind = "archive" | "media";
 
 export interface GalleryPart {
   partId: number;
@@ -33,7 +33,7 @@ export interface DriveFile {
   fileName: string | null;     // parts.file_name (for video vs image detection)
   family: string;          // base name (title without version) for grouping
   familyKey: string;       // grouping key (lowercase)
-  version: string | null;  // version label, e.g. "v0.6.0" (games only)
+  version: string | null;  // version label, e.g. "v0.6.0" (archives only)
 }
 
 export type UploadStatus = "queued" | "pending" | "running" | "done" | "error" | "canceled";
@@ -46,7 +46,7 @@ export interface UploadJob {
   title: string;
   tags: string;
   sourcePath: string;   // laptop path (local) or staging dir (upload)
-  partSize: number;     // MB (games only)
+  partSize: number;     // MB (archives only)
   origin: UploadOrigin; // 'local' = laptop path, 'upload' = staged browser upload
   partsDone: number;    // checkpoint: parts already pushed to Telegram (resume point)
   totalBytes: number;   // file size in bytes (staged uploads)

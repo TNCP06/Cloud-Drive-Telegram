@@ -71,9 +71,9 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
     const name = String(r.title);
     const kind = String(r.kind) as Kind;
     const deletedAt = r.deleted_at ? sqliteToMs(String(r.deleted_at)) : null;
-    // Version grouping is only relevant for games (media has no version).
+    // Version grouping is only relevant for archives (media has no version).
     const tp =
-      kind === "game"
+      kind === "archive"
         ? parseTitle(name)
         : { family: name, familyKey: String(r.slug), version: null };
     const stream = streamByItem.get(id);

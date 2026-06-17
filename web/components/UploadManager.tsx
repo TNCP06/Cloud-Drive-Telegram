@@ -47,7 +47,7 @@ export function UploadManager({
   const queuedCount = jobs.filter((j) => j.status === "queued").length;
   const activeCount = jobs.filter((j) => j.status === "pending" || j.status === "running").length;
 
-  const [kind, setKind] = useState<Kind>("game");
+  const [kind, setKind] = useState<Kind>("media");
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
   const [sourcePath, setSourcePath] = useState("");
@@ -86,18 +86,7 @@ export function UploadManager({
             <Icon name="back" size={16} />
             Back
           </Link>
-          <h1>Upload via laptop</h1>
-        </div>
-
-        {/* WARNING */}
-        <div className="up-warn">
-          <Icon name="warn" size={20} />
-          <div>
-            <strong>The watcher must be running.</strong> Files you choose here upload to the
-            server first (resumable — a dropped connection resumes, it won&apos;t restart). The
-            watcher then splits anything over 2 GB into parts and pushes them to Telegram, deleting
-            the staged file when done. Keep this tab open until the upload shows <b>Queued</b>.
-          </div>
+          <h1>Upload files</h1>
         </div>
 
 
@@ -107,8 +96,8 @@ export function UploadManager({
           <div className="field">
             <label>Type</label>
             <div className="seg-radio">
-              <button className={kind === "game" ? "on" : ""} onClick={() => setKind("game")}>
-                <Icon name="archive" size={15} /> Game (split)
+              <button className={kind === "archive" ? "on" : ""} onClick={() => setKind("archive")}>
+                <Icon name="archive" size={15} /> File Besar (split)
               </button>
               <button className={kind === "media" ? "on" : ""} onClick={() => setKind("media")}>
                 <Icon name="video" size={15} /> Media (single file)
@@ -119,8 +108,8 @@ export function UploadManager({
           <div className="field">
             <label>
               Title{" "}
-              {kind === "game" ? (
-                <span className="hint">— include version, e.g. &quot;ReRudy 0.6.0&quot;</span>
+              {kind === "archive" ? (
+                <span className="hint">— include version, e.g. &quot;Archive 1.0.0&quot;</span>
               ) : (
                 <span className="hint">— optional, auto-filled from filename if left blank</span>
               )}
@@ -129,7 +118,7 @@ export function UploadManager({
               className="input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder={kind === "game" ? "ReRudy 0.6.0" : "(optional) auto-filled from filename"}
+              placeholder={kind === "archive" ? "Archive 1.0.0" : "(optional) auto-filled from filename"}
             />
           </div>
 
@@ -138,7 +127,7 @@ export function UploadManager({
               <label>Categories</label>
               <TagPicker value={tags} onChange={setTags} suggestions={allTags} placeholder="rpg, fantasy" />
             </div>
-            {kind === "game" && (
+            {kind === "archive" && (
               <div className="field" style={{ width: 150 }}>
                 <label>Part size (MB)</label>
                 <input
@@ -178,10 +167,10 @@ export function UploadManager({
           ) : (
             <>
               <div className="field">
-                <label>{kind === "game" ? "Game folder/archive" : "Media file"} path on the host</label>
+                <label>{kind === "archive" ? "Archive folder/file" : "Media file"} path on the host</label>
                 <div className="pick-row">
                   <button type="button" className="btn" onClick={() => setBrowse(true)}>
-                    <Icon name={kind === "game" ? "folder" : "upload"} size={16} />
+                    <Icon name={kind === "archive" ? "folder" : "upload"} size={16} />
                     Browse…
                   </button>
                   <input
@@ -245,7 +234,7 @@ export function UploadManager({
 
       {browse && (
         <FsBrowser
-          mode={kind === "game" ? "dir" : "file"}
+          mode={kind === "archive" ? "dir" : "file"}
           onClose={() => setBrowse(false)}
           onPick={(p) => {
             setSourcePath(p);

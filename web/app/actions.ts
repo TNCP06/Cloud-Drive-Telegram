@@ -97,7 +97,7 @@ export async function purgeNow(id: number): Promise<{ ok: boolean; error?: strin
 // Edit metadata (title / kind / tags). Pure Turso operation — does NOT touch
 // Telegram, the watcher, or worker.session → safe to run while an upload is in
 // progress and without restarting the bot. Important: slug is intentionally NOT
-// changed. The slug is the grouping key for multi-part games (ON CONFLICT during
+// changed. The slug is the grouping key for multi-part archives (ON CONFLICT during
 // indexing) and the deep-link target for downloads; changing it risks conflicts
 // and breaks existing links. family/version are re-derived from title on read,
 // so a rename still appears in the UI.
@@ -107,7 +107,7 @@ export async function updateMetadata(
 ) {
   const title = input.title.trim();
   if (!title) throw new Error("Title cannot be empty.");
-  if (input.kind !== "game" && input.kind !== "media") {
+  if (input.kind !== "archive" && input.kind !== "media") {
     throw new Error("Invalid kind.");
   }
 
@@ -245,14 +245,14 @@ export async function enqueueUpload(input: {
   const sourcePath = input.sourcePath.trim();
   if (!sourcePath) throw new Error("File path on the laptop is required.");
   // Media (images/small files) may have no title → derive from filename.
-  // Games always require a title because it's the grouping key across parts.
+  // Archives always require a title because it's the grouping key across parts.
   let title = input.title.trim();
   if (!title) {
     if (input.kind === "media") {
       const base = sourcePath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
       title = base.replace(/\.[^.]+$/, "").trim() || "media";
     } else {
-      throw new Error("Title is required for games.");
+      throw new Error("Title is required for archives.");
     }
   }
   await db.execute({

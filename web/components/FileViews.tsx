@@ -59,7 +59,7 @@ interface ItemProps {
   onStar: (item: DriveFile) => void;
   onMenu: (item: DriveFile, anchor: HTMLElement) => void;
   onOpen: (item: DriveFile) => void;
-  /** >1 when multiple game versions are grouped into one card. */
+  /** >1 when multiple archive versions are grouped into one card. */
   versionCount?: number;
   /** Clicking the "N versions" badge → show all versions in this family. */
   onPickFamily?: (family: string) => void;

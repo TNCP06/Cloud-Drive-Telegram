@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
 
   const token = String(body.token ?? "");
   const name = String(body.name ?? "");
-  const kind: Kind = body.kind === "media" ? "media" : "game";
+  const kind: Kind = body.kind === "media" ? "media" : "archive";
   const size = Number(body.size ?? 0);
   const partSize = Number(body.partSize ?? 1500) || 1500;
 
@@ -57,13 +57,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Title: games require one (grouping key); media derives from the filename.
+  // Title: archives require one (grouping key); media derives from the filename.
   let title = String(body.title ?? "").trim();
   if (!title) {
     if (kind === "media") {
       title = name.replace(/\.[^.]+$/, "").trim() || "media";
     } else {
-      return NextResponse.json({ error: "Title is required for games." }, { status: 400 });
+      return NextResponse.json({ error: "Title is required for archives." }, { status: 400 });
     }
   }
   const tags = String(body.tags ?? "").trim();

@@ -228,14 +228,14 @@ export function DriveApp({
   const openPreview = (item: DriveFile) => setPreviewId(item.id);
   const previewItem = previewId != null ? files.find((f) => f.id === previewId) ?? null : null;
 
-  // Group games by family → representative = version with the most recent upload (date_added).
+  // Group archives by family → representative = version with the most recent upload (date_added).
   const collapseVersions = (list: DriveFile[]) => {
     const counts = new Map<string, number>();
     if (!groupVersions || query || view === "trash") return { list, counts };
     const repIdx = new Map<string, number>();
     const out: DriveFile[] = [];
     for (const f of list) {
-      if (f.kind !== "game") {
+      if (f.kind !== "archive") {
         out.push(f);
         continue;
       }
@@ -409,7 +409,7 @@ export function DriveApp({
           <button
             className={"sortbtn toggle" + (groupVersions ? " on" : "")}
             onClick={() => setGroupVersions((v) => !v)}
-            title="Group multiple game versions into one card"
+            title="Group multiple archive versions into one card"
           >
             <Icon name={groupVersions ? "check" : "all"} size={15} />
             Group versions

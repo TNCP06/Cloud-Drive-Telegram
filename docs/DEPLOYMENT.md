@@ -16,7 +16,7 @@ yang memecah (<2 GB/part) dan mengirim ke Telegram.
 | Dulu (laptop) | Sekarang (server) |
 |---|---|
 | Upload = pilih **path lokal**; watcher baca dari disk laptop | Upload = **kirim file lewat browser** (resumable) ke server; watcher baca dari folder staging bersama |
-| Game di-split 7-Zip di laptop sebelum upload | **Server** yang split otomatis (raw streaming, <2 GB/part) — Anda tidak split manual |
+| File Besar di-split 7-Zip di laptop sebelum upload | **Server** yang split otomatis (raw streaming, <2 GB/part) — Anda tidak split manual |
 | Watcher & bot hanya jalan di Windows | Jalan di Linux juga; dikelola **Docker Compose** |
 | Reassembly download = `7z x` | Reassembly = gabung biasa: `copy /b a+b out` / `cat a b > out` |
 
@@ -65,11 +65,11 @@ Sumber: [AWS Free Tier docs](https://docs.aws.amazon.com/awsaccountbilling/lates
   c7i-flex.large, m7i-flex.large**. Jadi Anda boleh pilih spek lebih besar dari yang
   termurah — selama kredit/6 bulan belum habis.
 - **Akun lama (< 15 Juli 2025):** 750 jam/bulan t2/t3.micro (1 GB RAM), 12 bulan.
-- **Disk EBS gratis hanya 30 GB** di kedua skema. Ini **leher botol** untuk game besar.
+- **Disk EBS gratis hanya 30 GB** di kedua skema. Ini **leher botol** untuk file besar.
 - **Egress ~100 GB/bulan** gratis. Upload server→Telegram dihitung egress; download pakai
   `copy_message` (sisi Telegram) = **0 egress**.
 
-### Hitungan disk untuk game ~20 GB
+### Hitungan disk untuk file besar ~20 GB
 
 Streaming split menjaga disk: file ter-stage + **1 part** saja (part lama langsung dihapus).
 
@@ -79,7 +79,7 @@ file ter-stage 20 GB  +  1 part (~1.5 GB)  ≈ 21.5 GB puncak  →  MUAT di 30 G
 
 **Rekomendasi:** **t3.small (2 GB RAM) + EBS 45–50 GB** (ditanggung kredit $200 di akun
 baru). RAM 1 GB pada `t3.micro` sesak untuk web+bot+watcher → minimal tambah swap 2 GB.
-EBS 30 GB murni cukup untuk game **≤ ~25 GB satu per satu**, tanpa margin aman.
+EBS 30 GB murni cukup untuk file besar **≤ ~25 GB satu per satu**, tanpa margin aman.
 
 > Karena Free Tier ada masa berlakunya, seluruh stack dibungkus Docker → migrasi ke VPS
 > lain tinggal pindah folder (lihat §6).
@@ -162,19 +162,19 @@ Arahkan ulang domain → IP baru. Selesai.
 - ✅ **Download gratis egress** (sisi Telegram).
 
 ### Kelemahan / hal yang perlu disadari
-- ⚠️ **Disk Free Tier 30 GB ketat** untuk game ~20 GB (puncak ~21.5 GB). Disarankan EBS
-  45–50 GB. Game **> ~28 GB** butuh disk lebih besar.
+- ⚠️ **Disk Free Tier 30 GB ketat** untuk file besar ~20 GB (puncak ~21.5 GB). Disarankan EBS
+  45–50 GB. File Besar **> ~28 GB** butuh disk lebih besar.
 - ⚠️ **Egress 100 GB/bulan**: total ukuran semua upload per bulan tidak boleh lewat itu
   (download tidak dihitung).
 - ⚠️ **RAM 1 GB (t3.micro) sesak** untuk web+bot+watcher → pakai t3.small atau swap.
-- ⚠️ **Free Tier ada masanya** (6 bulan/12 bulan) → harus migrasi lagi (sudah dimudahkan).
+- ⚠️ **Free Tier ada masanya** (6 bulan/12 month) → harus migrasi lagi (sudah dimudahkan).
 - ⚠️ **Reassembly download berubah** untuk upload baru: gabung biasa, bukan `7z x`
-  (game lama yang sudah 7-Zip tetap `7z x`).
+  (archive lama yang sudah 7-Zip tetap `7z x`).
 - ⚠️ **Upload tetap lewat server** (2 hop: device→server→Telegram). Hop pertama bergantung
   koneksi upload Anda; resumable yang menjaganya, bukan menghilangkannya.
 - ⚠️ **`worker.session` itu kredensial akun Telegram Anda** — jaga, jangan commit (sudah
   di `.gitignore` & `.dockerignore`).
-- ⚠️ **Game berupa folder** harus dibungkus jadi 1 file dulu (zip biasa) sebelum upload;
+- ⚠️ **Folder** harus dibungkus jadi 1 file dulu (zip biasa) sebelum upload;
   server hanya men-split file tunggal.
 
 ---

@@ -10,8 +10,8 @@ for components and [`CODE-MAP.md`](./CODE-MAP.md) for function-level detail.
 
 | Operation | Needs laptop? | Why |
 |---|---|---|
-| Upload large game (server mode) | No | Browser → resumable upload → server splits + MTProto. Needs the watcher running on a server (Flow A2) |
-| Upload large game (laptop mode) | **Yes** | Files are on the laptop; watcher reads the path locally (Flow A) |
+| Upload large archive (server mode) | No | Browser → resumable upload → server splits + MTProto. Needs the watcher running on a server (Flow A2) |
+| Upload large archive (host path mode) | **Yes** | Files are on the host; watcher reads the path locally (Flow A) |
 | Upload small media from phone | No | Post directly to channel; bot indexes |
 | Bot Drop (web upload via PM) | No | Bot holds the file; web triggers `copyMessage` |
 | Browse / search / edit title / edit tags | No | Pure Turso writes |
@@ -20,19 +20,19 @@ for components and [`CODE-MAP.md`](./CODE-MAP.md) for function-level detail.
 
 ---
 
-## A. Upload a game (queue-driven, the normal path)
+## A. Upload an archive (queue-driven, the normal path)
 
-The web enqueues; the laptop watcher executes. Web and watcher communicate **only** through
+The web enqueues; the watcher executes. Web and watcher communicate **only** through
 the `upload_jobs` table.
 
-1. **Web** (`/upload`): user picks a folder/file via the laptop file browser
+1. **Web** (`/upload`): user picks a folder/file via the host file browser
    (`fs-actions.listDir`), sets title/tags/part size → `enqueueUpload()` inserts a row into
    `upload_jobs` with `status='queued'`.
 2. User clicks Start → `startUpload()` (or `startAllUploads()`) flips the row to
    `status='pending'`.
 3. **Watcher** (`watcher.py`, polling every 5 s) `claim_next()` grabs the oldest `pending`
    row → `status='running'`.
-4. `split_game()` runs 7-Zip (`-v<size>m -mx=0`, store mode) → part files; progress is written
+4. `split_archive()` runs 7-Zip (`-v<size>m -mx=0`, store mode) → part files; progress is written
    back to `upload_jobs.progress` by a background `updater()` task.
 5. Each part is sent with `client.send_file(..., force_document=True)` and caption
    `Title | i/total | tags`.
@@ -41,8 +41,8 @@ the `upload_jobs` table.
 7. **Bot** independently sees each new `channel_post` → indexes it into `items`/`parts`
    (Flow C). The watcher and bot never talk directly.
 
-> Manual alternative (no web/queue): run `worker.py game <path> --title ... --tags ...`
-> directly on the laptop. Same upload logic, argparse CLI.
+> Manual alternative (no web/queue): run `worker.py archive <path> --title ... --tags ...`
+> directly. Same upload logic, argparse CLI.
 
 ---
 
@@ -59,7 +59,7 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
 2. When the whole file is staged, `POST /api/upload/complete` verifies the size and inserts an
    `upload_jobs` row: `origin='upload'`, `cleanup_source=1`, `status='queued'`.
 3. User clicks Start → `status='pending'` (same as Flow A).
-4. **Watcher** `claim_next()` → `process()`: `resolve_staged_file()` finds the file. game over
+4. **Watcher** `claim_next()` → `process()`: `resolve_staged_file()` finds the file. archive size >
    part size → **raw streaming split** (`write_window` copies one <2 GB window → `send_file`
    force_document → delete the part → `set_parts_done(i)`), capping disk at ~1 part; media/small
    → whole file. Caption `Title | i/total | tags` unchanged.
@@ -71,7 +71,7 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
 
 ---
 
-## B. Upload media directly (from phone, no laptop)
+## B. Upload media directly (from phone, no watcher host path)
 
 1. Post the photo/video/document to the channel **as media** (not an archive), optionally with
    a contract caption.
@@ -92,7 +92,7 @@ Triggered by any new `channel_post` in `STORAGE_CHANNEL_ID` ([`bot/bot.py`](../b
 2. `parse_caption()` against the contract.
    - Match → index.
    - No match **and** `media` → `derive_media_meta()`, index anyway.
-   - No match **and** `game` → `warn_owner()` DM, **do not index**.
+   - No match **and** `archive` → `warn_owner()` DM, **do not index**.
 3. Compute `slug` + `part_number` (see kind table in ARCHITECTURE §5).
 4. `upsert_item` → `upsert_part` (keyed on `channel_msg_id`) → `recompute_totals` →
    `sync_tags` → (media) `harvest_thumbnail`. All idempotent.

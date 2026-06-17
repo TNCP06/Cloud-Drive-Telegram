@@ -171,7 +171,7 @@ export function FileUploader({
 
   const onPick = (f: File | undefined) => {
     if (!f) return;
-    if (kind === "game" && f.size > 1.9 * 1024 ** 3) {
+    if (kind === "archive" && f.size > 1.9 * 1024 ** 3) {
       // fine — the server will split it. No action needed; informational only.
     }
     upload(f);
@@ -193,7 +193,7 @@ export function FileUploader({
           <div className="fu-drop-main">
             <strong>Choose a file to upload</strong>
             <span className="hint">
-              {kind === "game"
+              {kind === "archive"
                 ? "One file (archive). Bigger than 2 GB? The server splits it automatically."
                 : "One media file (video/image)."}
             </span>

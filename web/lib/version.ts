@@ -1,5 +1,5 @@
-// Split a game title into "family" (base name) + version label.
-// Used to group multiple versions of the same game in the UI.
+// Split an archive title into "family" (base name) + version label.
+// Used to group multiple versions of the same archive in the UI.
 // Example: "ReRudy 0.6.0" -> { family: "ReRudy", version: "v0.6.0" }
 //          "Mayfly v0.2 (Reset)" -> { family: "Mayfly (Reset)"-ish, version: "v0.2" }
 //          "MythofSlayer Ch.9" -> { family: "MythofSlayer", version: "Ch.9" }

@@ -26,7 +26,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 |---|---|---|---|
 | **Storage channel** | Telegram | — | Holds the actual file bytes (one message per part). Bot is admin. |
 | **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Turso; serve downloads via `copy_message`; daily trash purge; Bot Drop intake. |
-| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for games); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes; heartbeat. |
+| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes; heartbeat. |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
 | **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Turso; runs automatically on watcher container startup. |
 | **Streamer** | Server/VPS (Docker) | `bot/streamer.py` | Video streaming: if local Bot API server is configured, downloads files on-the-fly to a shared disk cache and streams directly; else falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetch. |
@@ -91,8 +91,8 @@ Regex ([`bot/bot.py`](../bot/bot.py) `CAPTION_RE`):
 ^(?P<title>.+?)\s*\|\s*(?P<part>\d+)\s*/\s*(?P<total>\d+)\s*\|\s*(?P<tags>.*)$
 ```
 
-- **Games** REQUIRE a valid caption — `title` is the grouping key across parts, `part/total`
-  is the assembly order. Invalid caption on a game → bot DMs the owner (file is **not** lost,
+- **Archives** REQUIRE a valid caption — `title` is the grouping key across parts, `part/total`
+  is the assembly order. Invalid caption on an archive → bot DMs the owner (file is **not** lost,
   just not indexed).
 - **Media** caption is OPTIONAL — `derive_media_meta()` falls back to caption first line →
   filename → date, so media is never lost.
@@ -103,11 +103,11 @@ Regex ([`bot/bot.py`](../bot/bot.py) `CAPTION_RE`):
 
 | Kind | Example | Storage shape | Thumbnail | Slug strategy |
 |---|---|---|---|---|
-| `game` | Ren'Py archive | `.7z` split into ~1.5 GB parts → many messages, one item | none | `slugify(title)` — stable, groups parts |
+| `archive` | Ren'Py archive | `.7z` split into ~1.5 GB parts → many messages, one item | none | `slugify(title)` — stable, groups parts |
 | `media` | single video/image | one whole file (Telegram makes a thumbnail) | yes (harvested per-part) | single: `slug-<msgid>`; album: `album-<media_group_id>` |
 
 `detect_kind()` decides: photo/video/animation or `image/*`/`video/*` document → `media`;
-any other document (`.7z`, `.zip`, split parts) → `game`.
+any other document (`.7z`, `.zip`, split parts) → `archive`.
 
 **Albums** (Telegram media groups) collapse into ONE multi-part `media` item keyed by
 `media_group_id`; each photo/video becomes a part with its own thumbnail (the web gallery).

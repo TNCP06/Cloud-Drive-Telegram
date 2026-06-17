@@ -7,7 +7,7 @@ import { listDir } from "@/app/fs-actions";
 import type { FsListing } from "@/lib/types";
 
 // Laptop file browser modal. Returns the ABSOLUTE PATH to the caller.
-// mode "dir"  → select a folder (for games)
+// mode "dir"  → select a folder (for archives)
 // mode "file" → select a single file (for media)
 export function FsBrowser({
   mode,

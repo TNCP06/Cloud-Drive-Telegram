@@ -78,7 +78,7 @@ export function Sidebar({
           ))}
           <a className="nav-item link" href="/upload">
             <Icon name="upload" size={18} className="ico" />
-            <span>Upload via laptop</span>
+            <span>Upload files</span>
           </a>
         </div>
 

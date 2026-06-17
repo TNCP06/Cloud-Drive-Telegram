@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS items (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     slug         TEXT UNIQUE NOT NULL,
     title        TEXT NOT NULL,
-    kind         TEXT NOT NULL CHECK (kind IN ('game','media')),
+    kind         TEXT NOT NULL CHECK (kind IN ('archive','media')),
     total_parts  INTEGER NOT NULL DEFAULT 0,
     total_size   INTEGER NOT NULL DEFAULT 0,
     is_favorite  INTEGER NOT NULL DEFAULT 0,
@@ -64,11 +64,11 @@ CREATE TABLE IF NOT EXISTS jobs (
 --              → watcher menghapus file staging setelah sukses.
 CREATE TABLE IF NOT EXISTS upload_jobs (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind           TEXT NOT NULL CHECK (kind IN ('game','media')),
+    kind           TEXT NOT NULL CHECK (kind IN ('archive','media')),
     title          TEXT NOT NULL,
     tags           TEXT NOT NULL DEFAULT '',
     source_path    TEXT NOT NULL,                  -- path lokal (local) / file staging (upload)
-    part_size      INTEGER NOT NULL DEFAULT 1500,  -- MB (khusus game)
+    part_size      INTEGER NOT NULL DEFAULT 1500,  -- MB (khusus archive)
     origin         TEXT NOT NULL DEFAULT 'local'   -- 'local' | 'upload'
                      CHECK (origin IN ('local','upload')),
     cleanup_source INTEGER NOT NULL DEFAULT 0,     -- 1 = hapus source_path setelah sukses

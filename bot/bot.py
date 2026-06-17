@@ -4,7 +4,7 @@ Telegram Cloud Drive — bot indexer.
 Milestone 2 (+ album & media-fallback): channel_post handler.
 Flow: every new file posted to STORAGE_CHANNEL_ID → parse caption
 (contract: "Title | part/total | tag1, tag2") → upsert into Turso (items + parts + tags).
-- GAME : caption REQUIRED (title = grouping key, part/total = assembly order). Invalid →
+- ARCHIVE : caption REQUIRED (title = grouping key, part/total = assembly order). Invalid →
   warn owner so no file silently goes missing.
 - MEDIA: caption OPTIONAL. Without a valid caption, metadata is derived from the free-form
   caption / filename / date (see derive_media_meta) → media is never lost.
@@ -102,7 +102,7 @@ def parse_caption(caption: str | None):
 
 
 def detect_kind(message) -> str | None:
-    """Return 'media' (has thumbnail) or 'game' (archive). None if not a file."""
+    """Return 'media' (has thumbnail) or 'archive' (archive). None if not a file."""
     if message.photo or message.video or message.animation:
         return "media"
     doc = message.document
@@ -110,7 +110,7 @@ def detect_kind(message) -> str | None:
         mime = doc.mime_type or ""
         if mime.startswith("image/") or mime.startswith("video/"):
             return "media"
-        return "game"  # .7z / .zip / split parts etc.
+        return "archive"  # .7z / .zip / split parts etc.
     return None
 
 
@@ -308,8 +308,8 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Media doesn't need a structured caption — derive metadata and index anyway.
         parsed, has_caption = derive_media_meta(message)
     else:
-        # Multi-part games REQUIRE a caption (title = grouping key, part/total = assembly order).
-        log.warning("Invalid caption on msg %s (game)", msg_id)
+        # Multi-part archives REQUIRE a caption (title = grouping key, part/total = assembly order).
+        log.warning("Invalid caption on msg %s (archive)", msg_id)
         await warn_owner(
             context,
             "⚠️ Caption does not match the required format — file NOT indexed.\n"
@@ -333,7 +333,7 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         slug = f"{slugify(title)}-{msg_id}"
         part_number = parsed["part"]
     else:
-        # Game: slug purely from title so parts 1..N are grouped into one item.
+        # Archive: slug purely from title so parts 1..N are grouped into one item.
         slug = slugify(title)
         part_number = parsed["part"]
 

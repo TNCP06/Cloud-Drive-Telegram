@@ -90,7 +90,7 @@ async def index_message(db, msg):
         if kind == "media":
             parsed, has_caption = derive_media_meta(msg)
         else:
-            print(f"Skipping Message {msg.message_id}: game without valid caption contract")
+            print(f"Skipping Message {msg.message_id}: archive without valid caption contract")
             return False
             
     title = parsed["title"]
