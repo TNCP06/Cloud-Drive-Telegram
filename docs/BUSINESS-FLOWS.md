@@ -159,7 +159,7 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
    * In Local Bot API mode: Instantaneous (standard file seek to requested byte offset).
    * In Fallback mode: Browser sends `Range: bytes=<new-offset>-`. Streamer immediately cancels any active prefetch task for the current part and awaits its complete cancellation before downloading the new chunk.
 7. **Limitations:**
-   * Local Bot API Mode: Only single-part media, cold start buffer delay of ~5-15s to download the file from Telegram to the VPS (at full network speed, e.g. 50MB/s), subsequent seeks and repeat views are instant.
+   * Local Bot API Mode: Supports single-part and multi-part media, cold start buffer delay of ~5-15s to download the file from Telegram to the VPS (at full network speed, e.g. 50MB/s), subsequent seeks and repeat views are instant.
    * Fallback Mode: Strictly throttled to ~3Mbps by Telegram's remote MTProto interface.
 
 

@@ -654,7 +654,7 @@ async def _init_part_meta(part_id: int) -> dict:
         "SELECT p.id, p.channel_msg_id, p.file_size, p.file_name, p.file_id "
         "FROM parts p "
         "JOIN items i ON i.id = p.item_id "
-        "WHERE p.id = ? AND i.kind = 'media' AND i.total_parts = 1 "
+        "WHERE p.id = ? AND i.kind = 'media' "
         "AND i.deleted_at IS NULL",
         [part_id],
     )

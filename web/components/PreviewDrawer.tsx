@@ -265,6 +265,28 @@ export function PreviewDrawer({
     }
   }, [activePart, item.kind, gallery]);
 
+  // Listen to keyboard shortcuts directly on the video element (using native event to override browser default shortcuts)
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handleNativeKey = (e: KeyboardEvent) => {
+      if (["ArrowLeft", "ArrowRight", " ", "f", "F", "m", "M"].includes(e.key)) {
+        if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.shiftKey) {
+          return; // Let Shift + Arrow slide navigation bubble up
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        handleVideoKey(e.key);
+      }
+    };
+
+    video.addEventListener("keydown", handleNativeKey);
+    return () => {
+      video.removeEventListener("keydown", handleNativeKey);
+    };
+  }, [activePart, item.kind, gallery, handleVideoKey]);
+
   // Keyboard: Esc closes (detail panel first if open); ←/→ navigates photos/files.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -274,6 +296,16 @@ export function PreviewDrawer({
         return;
       }
       if (editing || showDetails) return;
+
+      // Ignore global video shortcuts if the user is typing in any input/textarea/editable
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (activeEl && (
+        activeEl.tagName === "INPUT" ||
+        activeEl.tagName === "TEXTAREA" ||
+        activeEl.isContentEditable
+      )) {
+        return;
+      }
 
       if (isPartStreamableVideo(activePart, item.kind)) {
         if (["ArrowLeft", "ArrowRight", " ", "f", "F", "m", "M"].includes(e.key)) {
@@ -330,16 +362,6 @@ export function PreviewDrawer({
               preload="metadata"
               tabIndex={0}
               onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                if (["ArrowLeft", "ArrowRight", " ", "f", "F", "m", "M"].includes(e.key)) {
-                  if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.shiftKey) {
-                    return; // Let Shift + Arrow slide navigation bubble up
-                  }
-                  e.preventDefault();
-                  e.stopPropagation();
-                  handleVideoKey(e.key);
-                }
-              }}
               onVolumeChange={(e) => {
                 const video = e.currentTarget;
                 try {

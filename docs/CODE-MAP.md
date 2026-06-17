@@ -50,7 +50,7 @@ contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`,
 `run`, `main`.
 
 ### `streamer.py` — video streaming server (FastAPI + Telethon, **server/VPS**)
-HTTP 206 Partial Content server for single-part media items. If `TELEGRAM_API_URL` is set,
+HTTP 206 Partial Content server for single-part and multi-part media items. If `TELEGRAM_API_URL` is set,
 downloads files on-the-fly to a shared cache volume on the VPS disk using a local Telegram Bot API
 server in `--local` mode (bypassing the 3Mbps download throttle) and streams directly to the browser.
 Otherwise, falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetching.
