@@ -131,12 +131,12 @@ small API call.
 
 ## E2. Video streaming (no laptop, no download — YouTube-style)
 
-In-browser playback of single-part media videos (`.mp4`, `.webm`, `.m4v`, `.mov`) without
-downloading the whole file first.
+In-browser playback of media videos (`.mp4`, `.webm`, `.m4v`, `.mov`) without downloading the whole
+file first. This supports both single-part and multi-part media (e.g. photos/videos in an album).
 
-1. **Web** (PreviewDrawer): `isStreamableVideo(item)` detects a single-part media item with a
-   browser-playable extension → renders `<video src="/api/stream/{firstPartId}">` instead of
-   a static thumbnail.
+1. **Web** (PreviewDrawer): `isPartStreamableVideo(activePart, item.kind)` detects if the active media
+   part has a browser-playable extension → renders `<video src="/api/stream/{partId}">` instead of
+   a static thumbnail image.
 2. **Browser** `<video>` sends: `GET /api/stream/123` with `Range: bytes=0-`.
 3. **Next.js** (`api/stream/[partId]/route.ts`): verifies auth cookie, proxies the request
    (incl. Range header) to `http://streamer:8080/stream/123`.

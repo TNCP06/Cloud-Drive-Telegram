@@ -2,6 +2,12 @@
 
 export type Kind = "game" | "media";
 
+export interface GalleryPart {
+  partId: number;
+  fileName: string | null;
+  thumb: string | null;
+}
+
 export interface Tag {
   id: number;
   name: string;

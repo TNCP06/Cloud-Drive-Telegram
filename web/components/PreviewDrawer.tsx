@@ -9,7 +9,7 @@ import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import { getCachedGallery, loadGallery } from "@/lib/gallery-cache";
 import { TagPicker } from "./TagPicker";
 import { reharvestThumbnail, uploadThumbnail } from "@/app/actions";
-import type { DriveFile, Kind, Tag } from "@/lib/types";
+import type { DriveFile, GalleryPart, Kind, Tag } from "@/lib/types";
 
 const THUMB_MAX_DIM = 320;
 const THUMB_QUALITY = 0.85;
@@ -17,11 +17,11 @@ const THUMB_QUALITY = 0.85;
 // Browser-playable video formats (MKV/AVI need transcoding — excluded).
 const STREAMABLE_EXTS = new Set([".mp4", ".webm", ".m4v", ".mov"]);
 
-function isStreamableVideo(item: DriveFile): boolean {
-  if (item.kind !== "media" || item.parts !== 1 || !item.firstPartId || !item.fileName) return false;
-  const dot = item.fileName.lastIndexOf(".");
+function isPartStreamableVideo(part: GalleryPart | undefined, itemKind: Kind): boolean {
+  if (!part || itemKind !== "media" || !part.partId || !part.fileName) return false;
+  const dot = part.fileName.lastIndexOf(".");
   if (dot < 0) return false;
-  return STREAMABLE_EXTS.has(item.fileName.substring(dot).toLowerCase());
+  return STREAMABLE_EXTS.has(part.fileName.substring(dot).toLowerCase());
 }
 
 async function resizeToJpeg(file: File): Promise<string> {
@@ -111,7 +111,7 @@ export function PreviewDrawer({
   const videoRef = useRef<HTMLVideoElement>(null);
   // Initialise from cache — if the gallery was already loaded (or pre-fetched),
   // all photos appear instantly on first render without a cover flash.
-  const [gallery, setGallery] = useState<string[] | null>(() =>
+  const [gallery, setGallery] = useState<GalleryPart[] | null>(() =>
     item.kind === "media" && item.parts > 1 ? getCachedGallery(item.id) ?? null : null
   );
   const [activeIdx, setActiveIdx] = useState(0);
@@ -196,13 +196,17 @@ export function PreviewDrawer({
     setGallery(null);
   }, [item.id, item.kind, item.parts]);
 
-  const images = gallery && gallery.length > 0 ? gallery : item.thumb ? [item.thumb] : [];
-  const active = images[Math.min(activeIdx, images.length - 1)];
+  const partsList: GalleryPart[] = gallery && gallery.length > 0
+    ? gallery
+    : item.thumb
+      ? [{ partId: item.firstPartId ?? 0, fileName: item.fileName, thumb: item.thumb }]
+      : [];
+  const activePart = partsList[Math.min(activeIdx, partsList.length - 1)] as GalleryPart | undefined;
 
   // Items without images (games/archives/etc.) still display full-screen with a large
   // icon + title + kebab; details appear when the kebab is pressed, same as for photos.
-  const multi = images.length > 1;
-  const last = images.length - 1;
+  const multi = partsList.length > 1;
+  const last = partsList.length - 1;
   // Navigation past a part boundary → jump to the neighbouring file in the list.
   const canPrev = activeIdx > 0 || hasPrevFile;
   const canNext = activeIdx < last || hasNextFile;
@@ -228,7 +232,7 @@ export function PreviewDrawer({
       }
       if (editing || showDetails) return;
 
-      if (isStreamableVideo(item)) {
+      if (isPartStreamableVideo(activePart, item.kind)) {
         if (e.key === "ArrowLeft") {
           if (e.shiftKey) {
             go(-1);
@@ -272,7 +276,7 @@ export function PreviewDrawer({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, showDetails, editing, go, item]);
+  }, [onClose, showDetails, editing, go, item.kind, activePart]);
 
   const save = () => {
     if (!title.trim()) return;
@@ -297,20 +301,20 @@ export function PreviewDrawer({
       <div className="viewer-scrim" onClick={onClose}></div>
       <div className={"viewer" + (multi ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
         <div className="viewer-stage" onClick={onClose}>
-          {isStreamableVideo(item) ? (
+          {isPartStreamableVideo(activePart, item.kind) ? (
             <video
               ref={videoRef}
-              key={item.id}
-              src={`/api/stream/${item.firstPartId}`}
-              poster={active || undefined}
+              key={activePart!.partId}
+              src={`/api/stream/${activePart!.partId}`}
+              poster={activePart!.thumb || undefined}
               controls
               autoPlay
               preload="metadata"
               onClick={(e) => e.stopPropagation()}
               style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
             />
-          ) : active ? (
-            <Image src={active} alt={item.name} fill unoptimized onClick={(e) => e.stopPropagation()} style={{ objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
+          ) : activePart?.thumb ? (
+            <Image src={activePart.thumb} alt={item.name} fill unoptimized onClick={(e) => e.stopPropagation()} style={{ objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
           ) : (
             <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />
           )}
@@ -401,14 +405,20 @@ export function PreviewDrawer({
 
         {multi && (
           <div className="viewer-strip">
-            {images.map((src, i) => (
+            {partsList.map((part, i) => (
               <button
                 key={i}
                 className={"viewer-thumb" + (i === activeIdx ? " on" : "")}
                 onClick={() => setActiveIdx(i)}
                 title={`Part ${i + 1}`}
               >
-                <Image src={src} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+                {part.thumb ? (
+                  <Image src={part.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+                ) : (
+                  <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
+                    <Icon name={isPartStreamableVideo(part, item.kind) ? "video" : "file"} size={16} />
+                  </div>
+                )}
               </button>
             ))}
           </div>

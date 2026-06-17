@@ -23,11 +23,15 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
        )
        SELECT item_id, mime, data FROM cover WHERE rn = 1`
     ),
-    // First part info for streamable videos (single-part media items).
+    // First part info for streamable videos / media items (single or multi-part).
     db.execute(
-      `SELECT p.item_id, p.id AS part_id, p.file_name
-       FROM parts p JOIN items i ON i.id = p.item_id
-       WHERE i.kind = 'media' AND i.total_parts = 1 AND p.part_number = 1`
+      `WITH first_part AS (
+         SELECT p.item_id, p.id AS part_id, p.file_name,
+                ROW_NUMBER() OVER (PARTITION BY p.item_id ORDER BY p.channel_msg_id) AS rn
+         FROM parts p JOIN items i ON i.id = p.item_id
+         WHERE i.kind = 'media'
+       )
+       SELECT item_id, part_id, file_name FROM first_part WHERE rn = 1`
     ),
   ]);
 

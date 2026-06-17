@@ -2,7 +2,7 @@
 
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
-import type { Kind, Tag } from "@/lib/types";
+import type { GalleryPart, Kind, Tag } from "@/lib/types";
 import { tagColorKey } from "@/lib/kinds";
 import { spawn } from "node:child_process";
 import { openSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
@@ -255,12 +255,21 @@ export async function deleteTag(id: number) {
 // Gallery: thumbnails for ALL parts of an item, ordered by album position (channel_msg_id).
 // Used by PreviewDrawer to show all photos/videos in an album. Loaded on-demand
 // when the drawer opens → the main grid stays light (only one cover per item).
-export async function getGallery(itemId: number): Promise<string[]> {
+export async function getGallery(itemId: number): Promise<GalleryPart[]> {
   const rs = await db.execute({
-    sql: "SELECT t.mime AS mime, t.data AS data FROM thumbnails t JOIN parts p ON p.id = t.part_id WHERE p.item_id = ? ORDER BY p.channel_msg_id",
+    sql: `SELECT p.id AS part_id, p.file_name, t.mime, t.data 
+          FROM parts p 
+          LEFT JOIN thumbnails t ON p.id = t.part_id 
+          WHERE p.item_id = ? 
+          ORDER BY p.channel_msg_id`,
     args: [itemId],
   });
-  return rs.rows.map((r) => `data:${String(r.mime)};base64,${String(r.data)}`);
+
+  return rs.rows.map((r) => ({
+    partId: Number(r.part_id),
+    fileName: r.file_name ? String(r.file_name) : null,
+    thumb: r.data ? `data:${String(r.mime)};base64,${String(r.data)}` : null,
+  }));
 }
 
 // --- Upload queue (executed by watcher.py on the laptop) ---

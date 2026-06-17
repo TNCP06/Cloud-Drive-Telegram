@@ -83,14 +83,14 @@ and streams local file if active, else chunk-streams via Telethon).
 ### `web/lib/` — server-side data & helpers
 - `db.ts` — `@libsql/client` singleton (`server-only`; auth token never reaches the browser).
 - `types.ts` — `Kind`, `Tag`, `DriveFile` (UI shape; incl. `firstPartId` + `fileName` for
-  streaming), `UploadJob` (now incl. `origin`, `partsDone`, `totalBytes`), `UploadOrigin`,
-  `UploadStatus`, `WatcherStatus`, `FsEntry`/`FsListing`/`FsShortcut`.
+  streaming), `GalleryPart` (part ID, file name, and thumbnail data URL), `UploadJob` (now incl. `origin`,
+  `partsDone`, `totalBytes`), `UploadOrigin`, `UploadStatus`, `WatcherStatus`, `FsEntry`/`FsListing`/`FsShortcut`.
 - `staging.ts` — shared resumable-upload staging paths. `STAGING_ROOT`
   (`UPLOAD_STAGING_DIR`, `/staging` in Docker), `jobDir(token)`, `stagedFilePath(token,name)`
   with strict token/path-traversal guards. Used by the upload API + the watcher reads the same dir.
 - `items.ts` — `getDriveData()`: the main read. One batched query set → shapes `DriveFile[]` +
   `Tag[]`. Computes each item's **cover** thumbnail (first part by `channel_msg_id`), fetches
-  `firstPartId`/`fileName` for single-part media (video streaming), and for games, splits title
+  `firstPartId`/`fileName` for media items (for video streaming), and for games, splits title
   into `family`/`version` via `parseTitle`.
 - `version.ts` — `parseTitle()`: split a game title into `family` + `version` (e.g.
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Games only.
@@ -98,7 +98,7 @@ and streams local file if active, else chunk-streams via Telethon).
 - `format.ts` — `sqliteToMs()` (SQLite datetime→epoch ms), byte/size formatting.
 - `uploads.ts` — `getUploadJobs()`, `getWatcherStatus()`, `getBotStatus()` — read helpers
   for the `/upload` page (watcher + bot liveness via their heartbeat tables).
-- `gallery-cache.ts` — in-memory cache for `getGallery` results. `icons.tsx` — SVG icons.
+- `gallery-cache.ts` — in-memory cache for `getGallery` results (`GalleryPart[]`). `icons.tsx` — SVG icons.
 
 ### `web/app/` — routes & server actions
 - `actions.ts` — **the metadata + control API** (all `"use server"`). Item: `toggleFavorite`,
@@ -142,11 +142,11 @@ and streams local file if active, else chunk-streams via Telethon).
 ### `web/components/` — UI (client)
 - `DriveApp.tsx` — top-level app shell/state (largest component). `Sidebar.tsx` — nav/filters.
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s. `PreviewDrawer.tsx` — item detail +
-  on-demand gallery (`getGallery`) + **video streaming**: `isStreamableVideo()` detects single-
-  part media with browser-playable extensions (.mp4/.webm/.m4v/.mov) and renders a `<video>`
-  element sourced from `/api/stream/{firstPartId}` with the thumbnail as poster (styled to fit
+  on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the
+  active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders a `<video>`
+  element sourced from `/api/stream/{partId}` with the thumbnail as poster (styled to fit
   the player area immediately). Supports keyboard shortcuts for video streaming controls (ArrowLeft/Right
-  to seek 10s backward/forward, Spacebar to play/pause, and Shift + ArrowLeft/Right to switch files).
+  to seek 5s backward/forward, Spacebar to play/pause, and Shift + ArrowLeft/Right to switch files).
   `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
 - `UploadManager.tsx` — upload queue UI + watcher/bot start/stop; **Source toggle**: "Upload
   from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).
