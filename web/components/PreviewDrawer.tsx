@@ -269,6 +269,17 @@ export function PreviewDrawer({
           }
           return;
         }
+        if (e.key === "f" || e.key === "F") {
+          e.preventDefault();
+          if (videoRef.current) {
+            if (document.fullscreenElement === videoRef.current) {
+              document.exitFullscreen().catch(() => {});
+            } else {
+              videoRef.current.requestFullscreen().catch(() => {});
+            }
+          }
+          return;
+        }
       } else {
         if (e.key === "ArrowLeft") go(-1);
         else if (e.key === "ArrowRight") go(1);
@@ -311,6 +322,11 @@ export function PreviewDrawer({
               autoPlay
               preload="metadata"
               onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (["ArrowLeft", "ArrowRight", " ", "f", "F"].includes(e.key)) {
+                  e.preventDefault();
+                }
+              }}
               style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
             />
           ) : activePart?.thumb ? (
