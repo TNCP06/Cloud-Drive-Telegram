@@ -97,7 +97,7 @@ STREAMER_PORT = int(os.environ.get("STREAMER_PORT", "8080"))
 
 # Derived constants
 PREFETCH_CHUNKS = PREFETCH_BUFFER // CHUNK_SIZE
-DOWNLOAD_REQUEST_SIZE = 5242880  # 5120 KB — Telethon iter_download piece size
+DOWNLOAD_REQUEST_SIZE = 524288  # 512 KB — Telethon iter_download piece size
 
 MIME_MAP = {
     ".mp4": "video/mp4", ".webm": "video/webm", ".m4v": "video/mp4",
@@ -296,8 +296,10 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                     if target_len <= 0:
                         return
 
-                    # Telegram API requires offset and limit to be multiples of 4096 (4 KB) for large files.
-                    aligned_offset = (target_offset // 4096) * 4096
+                    # Telegram API requires offset and limit to be multiples of 4096 (4 KB) for large files,
+                    # and requests must not cross 1 MB boundaries. To satisfy both, we align offset
+                    # to DOWNLOAD_REQUEST_SIZE (512 KB), which is a multiple of 4096 and divides 1 MB.
+                    aligned_offset = (target_offset // DOWNLOAD_REQUEST_SIZE) * DOWNLOAD_REQUEST_SIZE
                     skipped_bytes = target_offset - aligned_offset
                     aligned_limit = ((target_len + skipped_bytes + 4095) // 4096) * 4096
 
