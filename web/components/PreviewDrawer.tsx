@@ -222,6 +222,49 @@ export function PreviewDrawer({
     }
   }, [activeIdx, last, hasNextFile, hasPrevFile, onNavigateFile]);
 
+  const handleVideoKey = useCallback((key: string) => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (key === "ArrowLeft") {
+      video.currentTime = Math.max(0, video.currentTime - 5);
+    } else if (key === "ArrowRight") {
+      const duration = video.duration;
+      const targetTime = video.currentTime + 5;
+      video.currentTime = isNaN(duration) ? targetTime : Math.min(duration, targetTime);
+    } else if (key === " ") {
+      if (video.paused) {
+        video.play().catch(() => {});
+      } else {
+        video.pause();
+      }
+    } else if (key === "f" || key === "F") {
+      if (document.fullscreenElement === video) {
+        document.exitFullscreen().catch(() => {});
+      } else {
+        video.requestFullscreen().catch(() => {});
+      }
+    } else if (key === "m" || key === "M") {
+      video.muted = !video.muted;
+    }
+  }, []);
+
+  // Auto-focus the video element when it mounts/changes so shortcuts work instantly.
+  useEffect(() => {
+    if (isPartStreamableVideo(activePart, item.kind) && videoRef.current) {
+      videoRef.current.focus();
+      try {
+        const savedVolume = localStorage.getItem("video-volume");
+        if (savedVolume !== null) {
+          videoRef.current.volume = Number(savedVolume);
+        }
+        const savedMuted = localStorage.getItem("video-muted");
+        if (savedMuted !== null) {
+          videoRef.current.muted = savedMuted === "true";
+        }
+      } catch {}
+    }
+  }, [activePart, item.kind, gallery]);
+
   // Keyboard: Esc closes (detail panel first if open); ←/→ navigates photos/files.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -233,50 +276,14 @@ export function PreviewDrawer({
       if (editing || showDetails) return;
 
       if (isPartStreamableVideo(activePart, item.kind)) {
-        if (e.key === "ArrowLeft") {
-          if (e.shiftKey) {
+        if (["ArrowLeft", "ArrowRight", " ", "f", "F", "m", "M"].includes(e.key)) {
+          if (e.key === "ArrowLeft" && e.shiftKey) {
             go(-1);
-          } else {
-            e.preventDefault();
-            if (videoRef.current) {
-              videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 5);
-            }
-          }
-          return;
-        }
-        if (e.key === "ArrowRight") {
-          if (e.shiftKey) {
+          } else if (e.key === "ArrowRight" && e.shiftKey) {
             go(1);
           } else {
             e.preventDefault();
-            if (videoRef.current) {
-              const video = videoRef.current;
-              const duration = video.duration;
-              const targetTime = video.currentTime + 5;
-              video.currentTime = isNaN(duration) ? targetTime : Math.min(duration, targetTime);
-            }
-          }
-          return;
-        }
-        if (e.key === " ") {
-          e.preventDefault();
-          if (videoRef.current) {
-            if (videoRef.current.paused) {
-              videoRef.current.play().catch(() => {});
-            } else {
-              videoRef.current.pause();
-            }
-          }
-          return;
-        }
-        if (e.key === "f" || e.key === "F") {
-          e.preventDefault();
-          if (videoRef.current) {
-            if (document.fullscreenElement === videoRef.current) {
-              document.exitFullscreen().catch(() => {});
-            } else {
-              videoRef.current.requestFullscreen().catch(() => {});
-            }
+            handleVideoKey(e.key);
           }
           return;
         }
@@ -287,7 +294,7 @@ export function PreviewDrawer({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, showDetails, editing, go, item.kind, activePart]);
+  }, [onClose, showDetails, editing, go, item.kind, activePart, handleVideoKey]);
 
   const save = () => {
     if (!title.trim()) return;
@@ -321,11 +328,24 @@ export function PreviewDrawer({
               controls
               autoPlay
               preload="metadata"
+              tabIndex={0}
               onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
-                if (["ArrowLeft", "ArrowRight", " ", "f", "F"].includes(e.key)) {
+                if (["ArrowLeft", "ArrowRight", " ", "f", "F", "m", "M"].includes(e.key)) {
+                  if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.shiftKey) {
+                    return; // Let Shift + Arrow slide navigation bubble up
+                  }
                   e.preventDefault();
+                  e.stopPropagation();
+                  handleVideoKey(e.key);
                 }
+              }}
+              onVolumeChange={(e) => {
+                const video = e.currentTarget;
+                try {
+                  localStorage.setItem("video-volume", String(video.volume));
+                  localStorage.setItem("video-muted", String(video.muted));
+                } catch {}
               }}
               style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
             />
