@@ -108,6 +108,7 @@ export function PreviewDrawer({
   const [thumbBusy, setThumbBusy] = useState(false);
   const [thumbMsg, setThumbMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   // Initialise from cache — if the gallery was already loaded (or pre-fetched),
   // all photos appear instantly on first render without a cover flash.
   const [gallery, setGallery] = useState<string[] | null>(() =>
@@ -226,12 +227,52 @@ export function PreviewDrawer({
         return;
       }
       if (editing || showDetails) return;
-      if (e.key === "ArrowLeft") go(-1);
-      else if (e.key === "ArrowRight") go(1);
+
+      if (isStreamableVideo(item)) {
+        if (e.key === "ArrowLeft") {
+          if (e.shiftKey) {
+            go(-1);
+          } else {
+            e.preventDefault();
+            if (videoRef.current) {
+              videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 5);
+            }
+          }
+          return;
+        }
+        if (e.key === "ArrowRight") {
+          if (e.shiftKey) {
+            go(1);
+          } else {
+            e.preventDefault();
+            if (videoRef.current) {
+              const video = videoRef.current;
+              const duration = video.duration;
+              const targetTime = video.currentTime + 5;
+              video.currentTime = isNaN(duration) ? targetTime : Math.min(duration, targetTime);
+            }
+          }
+          return;
+        }
+        if (e.key === " ") {
+          e.preventDefault();
+          if (videoRef.current) {
+            if (videoRef.current.paused) {
+              videoRef.current.play().catch(() => {});
+            } else {
+              videoRef.current.pause();
+            }
+          }
+          return;
+        }
+      } else {
+        if (e.key === "ArrowLeft") go(-1);
+        else if (e.key === "ArrowRight") go(1);
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, showDetails, editing, go]);
+  }, [onClose, showDetails, editing, go, item]);
 
   const save = () => {
     if (!title.trim()) return;
@@ -258,6 +299,7 @@ export function PreviewDrawer({
         <div className="viewer-stage" onClick={onClose}>
           {isStreamableVideo(item) ? (
             <video
+              ref={videoRef}
               key={item.id}
               src={`/api/stream/${item.firstPartId}`}
               poster={active || undefined}
@@ -265,7 +307,7 @@ export function PreviewDrawer({
               autoPlay
               preload="metadata"
               onClick={(e) => e.stopPropagation()}
-              style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
+              style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
             />
           ) : active ? (
             <Image src={active} alt={item.name} fill unoptimized onClick={(e) => e.stopPropagation()} style={{ objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />

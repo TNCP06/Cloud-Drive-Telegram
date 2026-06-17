@@ -144,7 +144,9 @@ and streams local file if active, else chunk-streams via Telethon).
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s. `PreviewDrawer.tsx` — item detail +
   on-demand gallery (`getGallery`) + **video streaming**: `isStreamableVideo()` detects single-
   part media with browser-playable extensions (.mp4/.webm/.m4v/.mov) and renders a `<video>`
-  element sourced from `/api/stream/{firstPartId}` with the thumbnail as poster.
+  element sourced from `/api/stream/{firstPartId}` with the thumbnail as poster (styled to fit
+  the player area immediately). Supports keyboard shortcuts for video streaming controls (ArrowLeft/Right
+  to seek 10s backward/forward, Spacebar to play/pause, and Shift + ArrowLeft/Right to switch files).
   `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
 - `UploadManager.tsx` — upload queue UI + watcher/bot start/stop; **Source toggle**: "Upload
   from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).
