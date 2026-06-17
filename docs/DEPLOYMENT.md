@@ -88,10 +88,9 @@ EBS 30 GB murni cukup untuk game **≤ ~25 GB satu per satu**, tanpa margin aman
 
 ## 4. Persiapan (sekali saja)
 
-1. **Turso**: jalankan skema + migrasi kolom upload baru:
+1. **Turso**: jalankan skema:
    ```bash
-   turso db shell <db-anda> < bot/schema.sql                  # kalau DB masih kosong
-   turso db shell <db-anda> < bot/migration-staged-uploads.sql # kalau DB sudah ada
+   turso db shell <db-anda> < bot/schema.sql
    ```
 2. **Telethon session**: login sekali untuk membuat `bot/worker.session` (di mesin mana
    pun yang punya nomor Telegram Anda), lalu salin file `worker.session` ke server di

@@ -78,7 +78,7 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
 2. **Bot** `on_channel_post` → `detect_kind()` = `media` → if caption invalid, `derive_media_meta()`
    fabricates a title (caption line → filename → date). Media is never rejected.
 3. Bot harvests Telegram's built-in thumbnail (`harvest_thumbnail()` → `get_file` → base64 →
-   `thumbnails`).
+   `thumbnails`). If a local Telegram Bot API server is configured, the bot reads the local file directly from the shared volume (`telegram-bot-api-data`) instead of downloading it over HTTP.
 4. Albums (multiple files sent together) merge into one multi-part item via `media_group_id`.
 
 ---
@@ -225,6 +225,7 @@ All in [`web/app/actions.ts`](../web/app/actions.ts), no Telegram involved:
 
 - **Heartbeat**: Watcher writes `watcher_heartbeat` every 10 s. Same for the bot (`bot_heartbeat`). While these tables are still updated by the scripts, the frontend UI no longer displays these status indicators or heartbeats.
 - **Process control**: The web UI start/stop buttons for the bot and watcher have been completely removed. The processes are started manually (laptop mode) or managed as always-on compose services (Docker mode). The actions `startWatcher`, `stopWatcher`, `startBot`, and `stopBot` are no longer active in the web page.
+- **Startup Back-Indexing**: In Docker/server mode, the watcher service container automatically runs `index_history.py` before starting `watcher.py` on startup. This uses Telethon to back-index any channel messages/updates that occurred while the services were offline, keeping Turso synchronized.
 
 ---
 

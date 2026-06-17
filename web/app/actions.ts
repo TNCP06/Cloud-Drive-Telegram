@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import type { GalleryPart, Kind, Tag } from "@/lib/types";
 import { tagColorKey } from "@/lib/kinds";
+import { readFileSync } from "node:fs";
 
 
 // Server actions for Turso metadata (instant, without touching Telegram).
@@ -64,7 +65,8 @@ export async function purgeNow(id: number): Promise<{ ok: boolean; error?: strin
     return { ok: false, error: "Item is not in Trash." };
   }
 
-  const apiBase = `https://api.telegram.org/bot${BOT_TOKEN}`;
+  const telegramApiUrl = process.env.TELEGRAM_API_URL || "https://api.telegram.org";
+  const apiBase = `${telegramApiUrl.replace(/\/+$/, "")}/bot${BOT_TOKEN}`;
   const parts = await db.execute({
     sql: "SELECT channel_msg_id FROM parts WHERE item_id = ?",
     args: [id],
@@ -327,7 +329,9 @@ export async function reharvestThumbnail(
   });
   if (!rs.rows.length) return { ok: true, harvested: 0 };
 
-  const apiBase = `https://api.telegram.org/bot${BOT_TOKEN}`;
+  const telegramApiUrl = process.env.TELEGRAM_API_URL || "https://api.telegram.org";
+  const apiBase = `${telegramApiUrl.replace(/\/+$/, "")}/bot${BOT_TOKEN}`;
+  const fileApiBase = `${telegramApiUrl.replace(/\/+$/, "")}/file/bot${BOT_TOKEN}`;
   let harvested = 0;
   const errors: string[] = [];
 
@@ -381,15 +385,24 @@ export async function reharvestThumbnail(
         continue;
       }
 
-      const dlRes = await fetch(
-        `https://api.telegram.org/file/bot${BOT_TOKEN}/${gfJson.result.file_path}`
-      );
-      if (!dlRes.ok) {
-        errors.push(`Download failed for msg ${channelMsgId}`);
-        continue;
+      let data_b64: string;
+      if (telegramApiUrl && gfJson.result.file_path.startsWith("/")) {
+        try {
+          data_b64 = readFileSync(gfJson.result.file_path).toString("base64");
+        } catch (err) {
+          errors.push(`Read local file failed for msg ${channelMsgId}: ${err instanceof Error ? err.message : err}`);
+          continue;
+        }
+      } else {
+        const dlRes = await fetch(
+          `${fileApiBase}/${gfJson.result.file_path}`
+        );
+        if (!dlRes.ok) {
+          errors.push(`Download failed for msg ${channelMsgId}`);
+          continue;
+        }
+        data_b64 = Buffer.from(await dlRes.arrayBuffer()).toString("base64");
       }
-
-      const data_b64 = Buffer.from(await dlRes.arrayBuffer()).toString("base64");
       await db.execute({
         sql: `INSERT INTO thumbnails (part_id, mime, data) VALUES (?, ?, ?)
          ON CONFLICT(part_id) DO UPDATE SET mime = excluded.mime, data = excluded.data`,

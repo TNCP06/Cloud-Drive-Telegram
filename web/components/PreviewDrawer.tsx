@@ -231,12 +231,6 @@ export function PreviewDrawer({
       const duration = video.duration;
       const targetTime = video.currentTime + 5;
       video.currentTime = isNaN(duration) ? targetTime : Math.min(duration, targetTime);
-    } else if (key === " ") {
-      if (video.paused) {
-        video.play().catch(() => {});
-      } else {
-        video.pause();
-      }
     } else if (key === "f" || key === "F") {
       if (document.fullscreenElement === video) {
         document.exitFullscreen().catch(() => {});
@@ -265,25 +259,29 @@ export function PreviewDrawer({
     }
   }, [activePart, item.kind, gallery]);
 
-  // Listen to keyboard shortcuts directly on the video element (using native event to override browser default shortcuts)
+  // Listen to keyboard shortcuts directly on the video element (intercepting and blocking both keydown/keyup events to prevent browser's native controls from double-triggering or seeking slowly)
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const handleNativeKey = (e: KeyboardEvent) => {
-      if (["ArrowLeft", "ArrowRight", " ", "f", "F", "m", "M"].includes(e.key)) {
+      if (["ArrowLeft", "ArrowRight", "f", "F", "m", "M"].includes(e.key)) {
         if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.shiftKey) {
           return; // Let Shift + Arrow slide navigation bubble up
         }
         e.preventDefault();
         e.stopPropagation();
-        handleVideoKey(e.key);
+        if (e.type === "keydown") {
+          handleVideoKey(e.key);
+        }
       }
     };
 
     video.addEventListener("keydown", handleNativeKey);
+    video.addEventListener("keyup", handleNativeKey);
     return () => {
       video.removeEventListener("keydown", handleNativeKey);
+      video.removeEventListener("keyup", handleNativeKey);
     };
   }, [activePart, item.kind, gallery, handleVideoKey]);
 
@@ -297,7 +295,7 @@ export function PreviewDrawer({
       }
       if (editing || showDetails) return;
 
-      // Ignore global video shortcuts if the user is typing in any input/textarea/editable
+      // Ignore global shortcuts if the user is typing in any input/textarea/editable
       const activeEl = document.activeElement as HTMLElement | null;
       if (activeEl && (
         activeEl.tagName === "INPUT" ||
@@ -308,7 +306,7 @@ export function PreviewDrawer({
       }
 
       if (isPartStreamableVideo(activePart, item.kind)) {
-        if (["ArrowLeft", "ArrowRight", " ", "f", "F", "m", "M"].includes(e.key)) {
+        if (["ArrowLeft", "ArrowRight", "f", "F", "m", "M"].includes(e.key)) {
           if (e.key === "ArrowLeft" && e.shiftKey) {
             go(-1);
           } else if (e.key === "ArrowRight" && e.shiftKey) {

@@ -30,6 +30,7 @@ services:
       - "3000:3000"
     volumes:
       - staging:/staging
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
     restart: unless-stopped
 
   telegram-bot-api:
@@ -52,13 +53,15 @@ services:
     env_file: .env
     environment:
       TELEGRAM_API_URL: http://telegram-bot-api:8081
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
     restart: unless-stopped
 
   watcher:
     build:
       context: .
       dockerfile: bot/Dockerfile
-    command: ["python", "-u", "watcher.py"]
+    command: ["sh", "-c", "python -u index_history.py && python -u watcher.py"]
     env_file: .env
     environment:
       WORKER_OUT_DIR: /staging/_parts

@@ -30,7 +30,7 @@ async def main():
     async with TelegramClient(SESSION, API_ID, API_HASH) as client:
         me = await client.get_me()
         print(f"\n✓ Login successful: {me.first_name} (@{me.username}) id={me.id}")
-        print(f"✓ Session saved: {SESSION}.session — worker.py is ready to use.")
+        print(f"✓ Session saved: {SESSION} — worker.py is ready to use.")
 
 
 if __name__ == "__main__":

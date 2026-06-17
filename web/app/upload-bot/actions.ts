@@ -21,8 +21,11 @@ export async function processBotDrop(formData: FormData) {
   const tags = tagsStr.split(",").map((t) => t.trim()).filter((t) => t.length > 0).join(", ");
   const caption = `${title} | 1/1 | ${tags}`;
 
+  const telegramApiUrl = process.env.TELEGRAM_API_URL || "https://api.telegram.org";
+  const apiBase = `${telegramApiUrl.replace(/\/+$/, "")}/bot${BOT_TOKEN}`;
+
   try {
-    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/copyMessage`, {
+    const res = await fetch(`${apiBase}/copyMessage`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

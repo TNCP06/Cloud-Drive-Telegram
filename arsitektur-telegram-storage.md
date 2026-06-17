@@ -20,9 +20,11 @@ Sistem katalog pribadi yang memakai Telegram sebagai storage, Turso sebagai meta
 |---|---|---|
 | Channel privat | Telegram | Menyimpan file (arsip `.7z` game / file media). Bot jadi admin. |
 | Bot | Webhook (serverless OK) | Index caption ke Turso, validasi format, `copyMessage` untuk download, hapus pesan. |
-| Turso (libSQL) | Cloud, free tier | Metadata: items, parts, tags, thumbnails, jobs. |
+| Turso (libSQL) | Cloud, free tier | Metadata: items, parts, tags, thumbnails, jobs, upload_jobs, heartbeats. |
 | Dashboard | Next.js di Vercel | UI multi-device. Baca/tulis Turso. Trigger download & hapus. |
+| Streamer | VPS (FastAPI) | Streaming video parsial (sparse caching) dari Telegram ke dashboard. |
 | Worker upload | Laptop (Telethon) | Split file besar, upload ke channel via MTProto. Opsional: full re-index. |
+| History Indexer | Laptop / Server (Watcher container) | Sinkronisasi riwayat pesan channel ke Turso menggunakan Telethon (worker.session) pada saat startup atau secara manual. |
 
 ---
 
@@ -33,7 +35,7 @@ Sistem katalog pribadi yang memakai Telegram sebagai storage, Turso sebagai meta
 | `game` | Ren'Py VN | Arsip `.7z` di-split jadi part ~1–1.9 GB | Tidak perlu (dikenali dari judul) |
 | `media` | Video / gambar | File utuh (bukan arsip), 1 part | Perlu — di-harvest dari thumbnail bawaan Telegram oleh bot |
 
-Pemisahan ini penting: hanya `media` yang punya thumbnail, dan thumbnail-nya diambil dari Telegram (yang otomatis membuat thumbnail untuk video/gambar), bukan diekstrak manual.
+Pemikiran pemisahan jenis ini tetap sama, namun thumbnail kini disimpan secara per-part untuk mendukung album media.
 
 ---
 
@@ -69,6 +71,7 @@ CREATE TABLE items (
     kind         TEXT NOT NULL CHECK (kind IN ('game','media')),
     total_parts  INTEGER NOT NULL DEFAULT 0,
     total_size   INTEGER NOT NULL DEFAULT 0,   -- bytes, dijumlah dari parts
+    is_favorite  INTEGER NOT NULL DEFAULT 0,
     date_added   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
     deleted_at   TEXT                           -- soft delete; NULL = aktif
@@ -88,8 +91,9 @@ CREATE TABLE parts (
 
 -- tag many-to-many
 CREATE TABLE tags (
-    id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE NOT NULL
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name  TEXT UNIQUE NOT NULL,
+    color TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE item_tags (
     item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
@@ -97,14 +101,15 @@ CREATE TABLE item_tags (
     PRIMARY KEY (item_id, tag_id)
 );
 
--- thumbnail terpisah supaya listing grid tetap ringan (lazy-load per kartu)
+-- Thumbnail per-PART: album (media group) = 1 item multi-part, tiap foto/video
+-- punya thumbnail sendiri. Cover item = thumbnail part pertama (channel_msg_id terkecil).
 CREATE TABLE thumbnails (
-    item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-    mime    TEXT NOT NULL DEFAULT 'image/webp',
-    data    TEXT NOT NULL                         -- base64; kecil (~KB)
+    part_id INTEGER PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
+    mime    TEXT NOT NULL DEFAULT 'image/jpeg',
+    data    TEXT NOT NULL                          -- base64
 );
 
--- antrian perintah dari web ke bot/worker (untuk hapus & tugas async)
+-- antrian perintah dari web ke bot (untuk tugas async)
 CREATE TABLE jobs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     type       TEXT NOT NULL CHECK (type IN ('delete','reindex')),
@@ -116,33 +121,58 @@ CREATE TABLE jobs (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- antrian upload dari web ke watcher
+CREATE TABLE upload_jobs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind           TEXT NOT NULL CHECK (kind IN ('game','media')),
+    title          TEXT NOT NULL,
+    tags           TEXT NOT NULL DEFAULT '',
+    source_path    TEXT NOT NULL,
+    part_size      INTEGER NOT NULL DEFAULT 1500,
+    origin         TEXT NOT NULL DEFAULT 'local' CHECK (origin IN ('local','upload')),
+    cleanup_source INTEGER NOT NULL DEFAULT 0,
+    parts_done     INTEGER NOT NULL DEFAULT 0,
+    total_bytes    INTEGER NOT NULL DEFAULT 0,
+    status         TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','pending','running','done','error','canceled')),
+    progress       INTEGER NOT NULL DEFAULT 0,
+    message        TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- status liveness watcher
+CREATE TABLE watcher_heartbeat (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    last_seen TEXT NOT NULL,
+    status    TEXT
+);
+
 -- index untuk kolom yang sering difilter (hemat row-reads di Turso)
 CREATE INDEX idx_parts_item ON parts(item_id);
+CREATE INDEX idx_thumbnails_part ON thumbnails(part_id);
 CREATE INDEX idx_items_kind ON items(kind);
 CREATE INDEX idx_items_deleted ON items(deleted_at);
+CREATE INDEX idx_items_favorite ON items(is_favorite) WHERE is_favorite = 1;
+CREATE INDEX idx_upload_jobs_status ON upload_jobs(status);
 ```
 
 Catatan desain:
 - `channel_msg_id UNIQUE` → bot/indexer idempotent, dan jadi target langsung `copyMessage` saat download.
-- `deleted_at` → hapus terasa instan di web (soft delete), pesan asli dibersihkan bot setelahnya.
-- `thumbnails` dipisah → query grid (`SELECT id,title,kind,... FROM items`) tidak menyeret bytes gambar.
+- `deleted_at` → hapus terasa instan di web (soft delete), pesan asli dibersihkan bot setelahnya atau manual via dashboard.
+- `thumbnails` per-part → disimpan per-part agar album (media group) bisa memiliki thumbnail berbeda per item di dalamnya. Cover item utama diambil dari part pertama.
 
 ---
 
 ## 6. Alur per operasi
 
-### A. Upload game (file besar) — butuh laptop
-1. Laptop: split folder dengan 7-Zip, mode store untuk asset yang sudah padat.
-   `7z a -v1500m -mx=0 game.7z "D:\Games\NamaGame"` → `game.7z.001`, `.002`, ...
-2. (Opsional) ekstrak/siapkan cover lokal — untuk game Ren'Py dilewati (tanpa thumbnail).
-3. Worker (Telethon) upload tiap part ke channel dengan caption sesuai kontrak.
-4. Bot melihat tiap `channel_post` baru → parse caption → tulis `items` + `parts` ke Turso.
+### A. Upload game (file besar)
+1. **Mode browser (Upload dari device ini)**: User mengunggah file lewat browser. File dikirim per potongan 16 MB secara resumable ke folder staging di server. Setelah selesai, row `upload_jobs` dibuat dengan origin `upload`. Watcher secara otomatis melakukan streaming split (menulis potongan byte <2 GB, mengirimnya ke Telegram via MTProto, lalu menghapusnya). Staging asli dibersihkan setelah selesai.
+2. **Mode lokal (Host path)**: File berada di laptop. Watcher membagi file menggunakan 7-Zip secara lokal menjadi bagian-bagian `game.7z.001`, `.002`, ... lalu mengunggahnya.
+3. Bot mendeteksi kiriman channel_post baru secara real-time dan mengindeksnya ke Turso.
 
-> Upload >50 MB wajib via session user (MTProto), karena Bot API dibatasi 50 MB.
-
-### B. Upload media (video/gambar) — bisa dari HP
-1. Kirim file ke channel (sebagai dokumen/media, **bukan** arsip) dengan caption.
-2. Bot melihat post → parse caption → ambil `thumbnail` bawaan Telegram (`getFile`, kecil, di bawah limit 20 MB) → simpan ke tabel `thumbnails` + tulis metadata.
+### B. Upload media (video/gambar)
+1. Kirim file ke channel (sebagai dokumen/media) dengan caption.
+2. Bot melihat post → parse caption → ambil thumbnail bawaan Telegram. Jika server Telegram Bot API lokal dikonfigurasi, bot membaca file thumbnail langsung dari shared volume (`telegram-bot-api-data`) daripada melakukan unduhan HTTP.
 
 ### C. Index & validasi (bot, real-time)
 - `channel_post` masuk → parse caption.
@@ -156,30 +186,34 @@ Catatan desain:
 
 > `copyMessage` = operasi referensi, jadi tidak kena limit 50/20 MB. Pakai `copyMessage` (bukan `forwardMessage`) agar channel storage tetap tersembunyi.
 
-### E. Hapus — tanpa laptop
-1. Web: set `items.deleted_at` (hilang dari UI seketika) + insert `jobs(type='delete')`.
-2. Bot proses job: `deleteMessage` tiap part di channel → hapus baris `parts`/`items` (hard delete). Karena bot admin channel, ini berjalan tanpa laptop.
+### E. Hapus & Pembersihan Permanen
+1. **Soft Delete (Web)**: User mengklik hapus → set `items.deleted_at = waktu_sekarang`. Item langsung tersembunyi dari grid utama.
+2. **Hard Delete (Purge)**:
+   - **Manual (Web)**: User membuka halaman Trash dan mengklik "Delete permanently" → memanggil server action `purgeNow` yang langsung memanggil Telegram Bot API `deleteMessage` untuk setiap part di channel, lalu menghapus seluruh baris metadata di database secara permanen.
+   - **Otomatis (Bot)**: Bot secara berkala (harian) mendeteksi item di Trash dengan `deleted_at` yang berusia lebih dari 7 hari, menghapus pesan dari channel Telegram, dan membersihkan baris data dari Turso.
 
 ---
 
 ## 7. Butuh laptop vs tidak
 
-| Operasi | Butuh laptop? |
-|---|---|
-| Upload game besar | Ya (file ada di laptop + butuh MTProto) |
-| Upload media kecil (dari HP) | Tidak |
-| Browse / edit judul / edit tag | Tidak |
-| Download | Tidak (lewat bot) |
-| Hapus | Tidak (lewat bot) |
+| Operasi | Butuh laptop? | Catatan |
+|---|---|---|
+| Upload game besar (lokal) | Ya | File ada di laptop + butuh MTProto laptop |
+| Upload game/media (browser) | Tidak | Diproses oleh watcher di server VPS |
+| Upload media kecil (dari HP) | Tidak | Post langsung ke channel |
+| Browse / edit judul / edit tag | Tidak | Menulis langsung ke Turso |
+| Download | Tidak | Lewat deep link bot |
+| Hapus / Trash Purge | Tidak | Lewat bot / Server actions web |
 
 ---
 
-## 8. Catatan teknis & keamanan
+## 8. Catatan teknis, Keamanan & Optimasi
 
-- **Split lebih kecil (1 GB) untuk internet lemot** → kalau upload gagal, hanya 1 chunk yang diulang; juga lebih aman dari kegagalan forward di file mendekati 2 GB.
+- **Bypass Throttling Telegram (Local Bot API & Streamer)**: Streaming video menggunakan server FastAPI (`streamer.py`) didukung dengan Local Telegram Bot API server (`--local`). File video diunduh secara lokal oleh API server ke volume bersama (`telegram-bot-api-data`), lalu streamer menyajikannya sebagai `HTTP 206 Partial Content` secara instan (bypass batas 3Mbps).
+- **Service Worker & IndexedDB Caching**: Web menggunakan service worker client-side (`sw.js`) untuk membagi video range requests menjadi potongan 2 MB dan menyimpannya di IndexedDB (`video-cache-db`) lokal hingga 4 GB untuk mengurangi beban bandwidth VPS dan pemutaran instan.
 - **Session Telethon & token bot jangan di-commit.** Masukkan ke `.gitignore` dan/atau environment variables. Session = akses penuh ke akun.
 - **Turso row-reads** dihitung per baris yang di-scan → pastikan filter (`kind`, tag, `deleted_at`) memakai index di atas. Untuk katalog ratusan item, free tier sangat cukup.
-- **Thumbnail kecil** (~256px, WebP) cukup untuk grid. Disimpan base64 di tabel `thumbnails`, di-render inline (`data:image/webp;base64,...`).
+- **Thumbnail per-part**: Disimpan base64 di tabel `thumbnails` dan diasosiasikan per-part agar mendukung thumbnail berbeda dalam album media group.
 - **Dashboard baca Turso** via `@libsql/client` di route handler Next.js. CRUD metadata (judul/tag/hapus) cukup operasi Turso — instan dari device mana saja.
 
 ---

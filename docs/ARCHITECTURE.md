@@ -28,6 +28,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 | **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Turso; serve downloads via `copy_message`; daily trash purge; Bot Drop intake. |
 | **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for games); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes; heartbeat. |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
+| **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Turso; runs automatically on watcher container startup. |
 | **Streamer** | Server/VPS (Docker) | `bot/streamer.py` | Video streaming: if local Bot API server is configured, downloads files on-the-fly to a shared disk cache and streams directly; else falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetch. |
 | **Web dashboard** | Vercel (or localhost) | `web/` (Next.js 15) | Browse/search/edit/delete metadata; trigger download/upload; stream video; Bot Drop form. |
 | **Turso** | Cloud (free tier) | schema in `bot/schema.sql` | All metadata. Always-on, SQLite-compatible. |
@@ -157,8 +158,8 @@ separate: the bot only obeys `/start` downloads and Bot Drop from `OWNER_USER_ID
   `bot/Dockerfile`). web & watcher share a `staging` volume for browser uploads; the `streamer`
   service gets a `cache` volume for expendable video chunks. An optional `telegram-bot-api` local
   server container runs in `--local` mode to bypass the 3Mbps download throttle, sharing its data
-  folder (`telegram-bot-api-data`) with the `streamer` container. bot, watcher, & streamer run as
-  always-on services. `web/Dockerfile` receives `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
+  folder (`telegram-bot-api-data`) with the `streamer`, `bot`, and `web` containers (enabling direct filesystem reading of video chunks and thumbnails instead of HTTP downloads). bot, watcher, & streamer run as
+  always-on services. In the watcher service container, `index_history.py` automatically runs on startup before `watcher.py` to back-fill any offline changes. `web/Dockerfile` receives `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
   as build args (Next.js pre-renders API routes at build time). Portable to any host — full guide
   in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
   Under Docker the web's watcher/bot start-stop buttons are inert (processes are compose-managed).

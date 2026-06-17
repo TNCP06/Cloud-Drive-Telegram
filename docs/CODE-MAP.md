@@ -51,6 +51,9 @@ Same upload logic as the watcher but argparse-driven (`game` / `media` subcomman
 contrast watcher's `split_game` which raises), `collect_parts`, `make_progress`, `upload_parts`,
 `run`, `main`.
 
+### `index_history.py` — manual/automatic history back-indexer (Telethon, **laptop or server**)
+Utility to fetch channel messages using Telethon (via `worker.session`) and sync them back to the Turso catalog. Runs on-demand or automatically inside the watcher container on startup to back-fill any updates missed while the bot was offline.
+
 ### `streamer.py` — video streaming server (FastAPI + Telethon, **server/VPS**)
 HTTP 206 Partial Content server for single-part and multi-part media items. If `TELEGRAM_API_URL` is set,
 downloads files on-the-fly to a shared cache volume on the VPS disk using a local Telegram Bot API
@@ -71,10 +74,8 @@ and streams local file if active, else chunk-streams via Telethon).
 - `login.py` — one-time Telethon login → creates `worker.session` (or any custom session, e.g. `streamer.session` via CLI argument).
 - `schema.sql` — full Turso schema (run once). `migration-tags-color.sql` + `run-migration.py`
   — adds `tags.color`. `migration-bot-heartbeat.sql` — adds `bot_heartbeat` table.
-  `migration-staged-uploads.sql` — adds `origin`/`cleanup_source`/`parts_done`/`total_bytes` to
-  `upload_jobs` (browser-upload support). `status.py` — quick DB status dump.
-- `run-all.cmd` — start bot + watcher minimized (Windows). `install-autostart.ps1` /
-  `uninstall-autostart.ps1` — Windows startup registration.
+  `status.py` — quick DB status dump.
+- `run-all.cmd` — start bot + watcher minimized (Windows). `uninstall-autostart.ps1` — Windows startup deregistration.
 - `Dockerfile` — shared image for bot + watcher (ffmpeg + p7zip). See root
   `docker-compose.yml` and [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the server/VPS deployment.
 
@@ -149,7 +150,7 @@ and streams local file if active, else chunk-streams via Telethon).
   active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders a `<video>`
   element sourced from `/api/stream/{partId}` with the thumbnail as poster (styled to fit
   the player area immediately). Supports keyboard shortcuts for video streaming controls (ArrowLeft/Right
-  to seek 5s backward/forward, Spacebar to play/pause, F to toggle fullscreen, and Shift + ArrowLeft/Right to switch files).
+  to seek 5s backward/forward, F to toggle fullscreen, and Shift + ArrowLeft/Right to switch files).
   `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
 - `UploadManager.tsx` — upload queue UI + watcher/bot start/stop; **Source toggle**: "Upload
   from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).

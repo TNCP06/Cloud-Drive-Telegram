@@ -363,6 +363,21 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def download_file_content(tg_file) -> bytes:
+    """Read a local file directly if the path starts with '/' or exists locally,
+    otherwise download it to memory (fallback for non-local bot API)."""
+    path = tg_file.file_path
+    if path and (path.startswith("/") or os.path.exists(path)):
+        log.info("Reading local file for thumbnail: %s", path)
+        with open(path, "rb") as f:
+            return f.read()
+    else:
+        log.info("Downloading file over HTTP (fallback): %s", path)
+        buf = io.BytesIO()
+        await tg_file.download_to_memory(out=buf)
+        return buf.getvalue()
+
+
 async def _deferred_harvest(bot, db, part_id: int, channel_msg_id: int):
     """Background task: wait 60 s then re-fetch the message via forwardMessage to get
     the thumbnail Telegram generates asynchronously after the file is processed."""
@@ -378,9 +393,8 @@ async def _deferred_harvest(bot, db, part_id: int, channel_msg_id: int):
         file_id = pick_thumb_file_id(fwd)
         if file_id:
             tg_file = await bot.get_file(file_id)
-            buf = io.BytesIO()
-            await tg_file.download_to_memory(out=buf)
-            data_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            data_bytes = await download_file_content(tg_file)
+            data_b64 = base64.b64encode(data_bytes).decode("ascii")
             await upsert_thumbnail(db, part_id, "image/jpeg", data_b64)
             log.info("Deferred thumbnail harvested for part_id=%s", part_id)
         else:
@@ -409,9 +423,8 @@ async def harvest_thumbnail(context, db, part_id, message):
         )
         return
     tg_file = await context.bot.get_file(file_id)
-    buf = io.BytesIO()
-    await tg_file.download_to_memory(out=buf)
-    data_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    data_bytes = await download_file_content(tg_file)
+    data_b64 = base64.b64encode(data_bytes).decode("ascii")
     # Telegram's built-in thumbnails are JPEG.
     await upsert_thumbnail(db, part_id, "image/jpeg", data_b64)
 
