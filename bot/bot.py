@@ -289,7 +289,7 @@ async def warn_owner(context, text):
 
 
 async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.channel_post
+    message = update.channel_post or update.edited_channel_post
     if message is None:
         return
 
@@ -891,12 +891,72 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_user_authorized(db, user.id):
         return
 
-    if "upload_file" in context.user_data or "upload_state" in context.user_data:
+    if "upload_file" in context.user_data or "upload_state" in context.user_data or "upload_queue" in context.user_data:
         context.user_data.pop("upload_file", None)
         context.user_data.pop("upload_state", None)
-        await message.reply_text("❌ Upload flow cancelled.")
+        context.user_data.pop("upload_queue", None)
+        await message.reply_text("❌ Upload flow and queue cancelled.")
     else:
         await message.reply_text("There is no active upload flow to cancel.")
+
+
+# ---------------------------------------------------------------------------
+# Helper to process next file in the upload queue
+# ---------------------------------------------------------------------------
+async def process_next_in_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Clear current state first
+    context.user_data.pop("upload_file", None)
+    context.user_data.pop("upload_state", None)
+
+    queue = context.user_data.get("upload_queue", [])
+    if not queue:
+        return
+
+    # Pop next item
+    next_file = queue.pop(0)
+    context.user_data["upload_file"] = next_file
+    context.user_data["upload_state"] = "WAITING_TITLE"
+
+    msg_id = next_file["message_ids"][0]
+    chat_id = next_file["chat_id"]
+    web_url = context.bot_data.get("web_url", "http://localhost:3000")
+    file_name = next_file["file_name"]
+    file_size = next_file["file_size"]
+    auto_title = next_file["auto_title"]
+
+    try:
+        btn_title = auto_title
+        if len(btn_title) > 40:
+            btn_title = btn_title[:37] + "..."
+
+        link = f"{web_url}/upload-bot?msg_id={msg_id}&chat_id={chat_id}"
+
+        keyboard = [
+            [InlineKeyboardButton(f"✨ Use Auto Title: {btn_title}", callback_data="upload:skip_title")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        num_files = len(next_file["message_ids"])
+        files_info = f"• Total Files: <code>{num_files}</code>\n" if num_files > 1 else f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
+
+        # Send to chat
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📥 <b>Next File in Queue!</b>\n"
+                 f"{files_info}"
+                 f"• Total Size: <code>{file_size / 1024 / 1024:.2f} MB</code>\n\n"
+                 f"Please reply with a <b>Title</b> for this upload.\n"
+                 f"Or click the button below to use the Auto Title.\n\n"
+                 f"🔗 Alternatively, you can complete the details via the <a href=\"{link}\">web</a>!",
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        log.exception("Failed to start next upload flow questionnaire from queue")
+        # If this next item failed to display, clean up and try the next one recursively
+        await process_next_in_queue(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -925,6 +985,9 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not kind:
         # Not a media/document message
         return
+
+    file_name, file_size = get_file_meta(message)
+    auto_meta, _ = derive_media_meta(message)
 
     # Check if the file already has a valid caption contract matching Title | part/total | tags
     caption_meta = parse_caption(message.caption)
@@ -963,23 +1026,59 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    if "upload_file" in context.user_data:
+    active_upload = context.user_data.get("upload_file")
+    if active_upload:
+        # Check if this belongs to the active upload flow (same media group)
+        if message.media_group_id and active_upload.get("media_group_id") == message.media_group_id:
+            active_upload["message_ids"].append(message.message_id)
+            if file_size:
+                active_upload["file_size"] += file_size
+            return
+
+        # Check if this belongs to an item already in the queue
+        if "upload_queue" not in context.user_data:
+            context.user_data["upload_queue"] = []
+
+        if message.media_group_id:
+            for item in context.user_data["upload_queue"]:
+                if item.get("media_group_id") == message.media_group_id:
+                    item["message_ids"].append(message.message_id)
+                    if file_size:
+                        item["file_size"] += file_size
+                    return
+
+        # Otherwise, add it as a new item in the queue
+        queue_item = {
+            "message_ids": [message.message_id],
+            "media_group_id": message.media_group_id,
+            "chat_id": message.chat_id,
+            "kind": kind,
+            "file_name": file_name,
+            "file_size": file_size,
+            "auto_title": auto_meta["title"],
+            "auto_tags": auto_meta["tags"],
+        }
+        context.user_data["upload_queue"].append(queue_item)
+        pos = len(context.user_data["upload_queue"])
+
         await message.reply_text(
-            "⚠️ You already have an active upload flow. Please complete it or cancel it with `/cancel`."
+            f"📥 <b>Added to Queue (Position #{pos})</b>\n"
+            f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
+            f"• File Size: <code>{file_size / 1024 / 1024:.2f} MB</code>\n\n"
+            f"This file will be processed once the active upload flow completes.",
+            parse_mode="HTML"
         )
         return
 
     msg_id = message.message_id
     chat_id = message.chat_id
     web_url = context.bot_data.get("web_url", "http://localhost:3000")
-
-    file_name, file_size = get_file_meta(message)
-    auto_meta, _ = derive_media_meta(message)
     auto_title = auto_meta["title"]
     auto_tags = auto_meta["tags"]
 
     context.user_data["upload_file"] = {
-        "message_id": msg_id,
+        "message_ids": [msg_id],
+        "media_group_id": message.media_group_id,
         "chat_id": chat_id,
         "kind": kind,
         "file_name": file_name,
@@ -1006,13 +1105,13 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Detect if the file was forwarded or copied from another message
         is_forward = bool(message.forward_date or getattr(message, "forward_origin", None))
-        source_label = "Forwarded/Copied File" if is_forward else "File"
+        source_label = "Forwarded/Copied Album" if message.media_group_id else ("Forwarded/Copied File" if is_forward else "File")
 
         await message.reply_text(
             f"📥 <b>{source_label} Received!</b>\n"
             f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
             f"• File Size: <code>{file_size / 1024 / 1024:.2f} MB</code>\n\n"
-            f"Please reply with a <b>Title</b> for this file.\n"
+            f"Please reply with a <b>Title</b> for this upload.\n"
             f"Or click the button below to use the Auto Title.\n\n"
             f"🔗 Alternatively, you can complete the details via the <a href=\"{link}\">web</a>!",
             reply_markup=reply_markup,
@@ -1021,14 +1120,12 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         log.exception("Failed to start upload flow questionnaire")
-        # Clear state so we don't get stuck in an active upload flow
-        context.user_data.pop("upload_file", None)
-        context.user_data.pop("upload_state", None)
         await message.reply_text(
             f"❌ <b>Error processing file:</b> {html.escape(str(e))}\n"
             "Please try again or check the logs.",
             parse_mode="HTML"
         )
+        await process_next_in_queue(update, context)
 
 
 async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1057,15 +1154,13 @@ async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         log.exception("Failed to prompt for tags")
-        # Clear state so we don't get stuck in an active upload flow
-        context.user_data.pop("upload_file", None)
-        context.user_data.pop("upload_state", None)
         message = update.message or update.callback_query.message
         await context.bot.send_message(
             chat_id=message.chat_id,
             text=f"❌ <b>Error prompting for tags:</b> {html.escape(str(e))}",
             parse_mode="HTML"
         )
+        await process_next_in_queue(update, context)
 
 
 async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1077,46 +1172,59 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tags = upload_file.get("tags") or upload_file.get("auto_tags") or []
     tags_str = ", ".join(tags)
 
-    # Caption contract: Title | part/total | tags
-    caption = f"{title} | 1/1 | {tags_str}"
-
     chat_id = upload_file["chat_id"]
-    message_id = upload_file["message_id"]
+    message_ids = upload_file["message_ids"]
+    total_parts = len(message_ids)
 
     # Send status message
     status_msg = await context.bot.send_message(
         chat_id=chat_id,
-        text="📤 Copying file to storage channel..."
+        text="📤 Copying files to storage channel..."
     )
 
     try:
-        # Copy message to STORAGE_CHANNEL_ID with the generated caption contract
-        copied_msg = await context.bot.copy_message(
-            chat_id=STORAGE_CHANNEL_ID,
-            from_chat_id=chat_id,
-            message_id=message_id,
-            caption=caption
-        )
+        if total_parts == 1:
+            caption = f"{title} | 1/1 | {tags_str}"
+            copied_msg = await context.bot.copy_message(
+                chat_id=STORAGE_CHANNEL_ID,
+                from_chat_id=chat_id,
+                message_id=message_ids[0],
+                caption=caption
+            )
+        else:
+            # Copy all messages as a media group to preserve their grouping in the channel
+            copied_messages = await context.bot.copy_messages(
+                chat_id=STORAGE_CHANNEL_ID,
+                from_chat_id=chat_id,
+                message_ids=message_ids
+            )
+            # Edit the caption of the first copied message to set the contract caption
+            first_copied_msg_id = copied_messages[0].message_id
+            caption = f"{title} | 1/{total_parts} | {tags_str}"
+            await context.bot.edit_message_caption(
+                chat_id=STORAGE_CHANNEL_ID,
+                message_id=first_copied_msg_id,
+                caption=caption
+            )
 
         await status_msg.edit_text(
             f"🎉 <b>Success!</b>\n\n"
-            f"File has been successfully uploaded and indexed.\n"
+            f"All {total_parts} file(s) have been successfully uploaded and indexed.\n"
             f"• <b>Title</b>: <code>{html.escape(title)}</code>\n"
             f"• <b>Tags</b>: <code>{html.escape(tags_str if tags_str else 'none')}</code>\n\n"
-            f"It is now being indexed and will appear on the website shortly!",
+            f"They are now being indexed and will appear on the website shortly!",
             parse_mode="HTML"
         )
     except Exception as e:
-        log.exception("Failed to copy user file to channel")
+        log.exception("Failed to copy user files to channel")
         await status_msg.edit_text(
-            f"❌ <b>Error copying file:</b> {html.escape(str(e))}\n"
+            f"❌ <b>Error copying files:</b> {html.escape(str(e))}\n"
             "Please check bot configuration and try again.",
             parse_mode="HTML"
         )
     finally:
-        # Clear state
-        context.user_data.pop("upload_file", None)
-        context.user_data.pop("upload_state", None)
+        # Check queue
+        await process_next_in_queue(update, context)
 
 
 async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1175,7 +1283,8 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "upload:cancel":
         context.user_data.pop("upload_file", None)
         context.user_data.pop("upload_state", None)
-        await query.message.edit_text("❌ Upload flow cancelled.")
+        context.user_data.pop("upload_queue", None)
+        await query.message.edit_text("❌ Upload flow and queue cancelled.")
 
     elif data == "upload:skip_title":
         upload_file = context.user_data.get("upload_file")
@@ -1343,10 +1452,10 @@ def main():
         )
     )
 
-    # Only process channel_post from STORAGE_CHANNEL_ID.
+    # Process channel_post and edited_channel_post from STORAGE_CHANNEL_ID.
     app.add_handler(
         MessageHandler(
-            filters.Chat(STORAGE_CHANNEL_ID) & filters.UpdateType.CHANNEL_POST,
+            filters.Chat(STORAGE_CHANNEL_ID) & (filters.UpdateType.CHANNEL_POST | filters.UpdateType.EDITED_CHANNEL_POST),
             on_channel_post,
         )
     )

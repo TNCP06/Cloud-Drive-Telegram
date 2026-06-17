@@ -11,10 +11,10 @@ approximate and will drift — treat function names as the stable anchor.
 ### `bot.py` — indexer + download server + purge (long-running, `python-telegram-bot`)
 Pure helpers (no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
 (`media` vs `game`), `get_file_meta`, `derive_media_meta` (media caption fallback),
-`pick_thumb_file_id`.
+`pick_thumb_file_id`, `process_next_in_queue` (helper to process the next queued file).
 Turso ops (idempotent): `upsert_item` (`set_title` guard for albums), `upsert_part` (keyed on
 `channel_msg_id`), `recompute_totals`, `sync_tags`, `upsert_thumbnail`.
-Handlers: `on_channel_post` (index, Flow C), `harvest_thumbnail` (if the post has no thumbnail
+Handlers: `on_channel_post` (index new and edited channel posts, Flow C), `harvest_thumbnail` (if the post has no thumbnail
 yet — common for video, which Telegram generates asynchronously — it schedules
 `_deferred_harvest` instead of giving up), `_deferred_harvest` (background task: wait 60 s, then
 `forward_message` to owner chat to re-fetch the now-generated thumbnail, store it, delete the

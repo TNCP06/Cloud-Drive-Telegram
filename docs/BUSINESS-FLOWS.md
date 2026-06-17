@@ -106,10 +106,12 @@ Triggered by any new `channel_post` in `STORAGE_CHANNEL_ID` ([`bot/bot.py`](../b
 Bypasses Vercel's request-size limit: the **bot** holds the bytes, the **web** only sends a
 small API call. Alternatively, the user can complete the upload entirely within Telegram.
 
-1. **Intake**: User DMs or forwards a file (Photo, Video, or Document) to the bot.
+1. **Intake**: User DMs or forwards one or more files (Photo, Video, or Document) to the bot.
    - If not authorized, access is denied (see authorization below).
    - If the file has a caption matching the contract (`Title | part/total | tags`), the bot bypasses the interactive questionnaire and copies the file directly to the storage channel.
    - If authorized but the file does not have a valid caption contract, the bot initiates the interactive questionnaire (waiting for Title, then Tags).
+   - **Album/Media Group Grouping**: Multiple files forwarded simultaneously (sharing the same `media_group_id`) are grouped into a single upload flow under a single questionnaire.
+   - **Queuing**: If a user sends a new file while another upload questionnaire is active, it is placed in `upload_queue` and processed sequentially after the active flow completes.
    - The bot also sends a web link: `/<web>/upload-bot?msg_id=<id>&chat_id=<id>` as an alternative.
 2. **Finishing via Web**:
    - User opens the web link, completes Title & Tags, and clicks Save.
@@ -117,8 +119,8 @@ small API call. Alternatively, the user can complete the upload entirely within 
 3. **Finishing via Telegram**:
    - The user replies to the bot's message with a custom Title, or clicks/types `/skip` to use the auto-caption Title (derived from filename or media date).
    - The bot then asks for Tags. The user replies with comma-separated tags, or clicks/types `/skip` to skip/use auto-tags.
-   - The bot compiles the caption `Title | 1/1 | tags` and executes `copyMessage` to copy the file into the storage channel.
-4. **Indexing**: The new channel post is indexed by Flow C like any other upload.
+   - The bot compiles the caption `Title | 1/total | tags` and executes `copyMessage` (or `copyMessages` for albums) to copy the file(s) into the storage channel. For albums, the first message's caption in the channel is edited afterwards to set the caption contract.
+4. **Indexing**: The new channel post (or post edit) is indexed by Flow C like any other upload.
 
 ---
 
