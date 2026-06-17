@@ -29,7 +29,7 @@ from datetime import time as dtime
 import httpx
 import libsql_client
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -573,14 +573,27 @@ async def post_init(app: Application):
 
     # Register commands menu with Telegram
     try:
-        commands = [
+        # Default commands for regular authorized users
+        default_commands = [
             BotCommand("start", "Trigger file download / Greet"),
             BotCommand("help", "Show available commands & guide"),
             BotCommand("auth", "Authorize yourself using password"),
             BotCommand("cancel", "Cancel current file upload flow"),
         ]
-        await app.bot.set_my_commands(commands)
-        log.info("Bot commands menu registered successfully")
+        await app.bot.set_my_commands(default_commands, scope=BotCommandScopeDefault())
+        
+        # Admin/Owner commands (only visible in chat with OWNER_USER_ID)
+        owner_commands = [
+            BotCommand("start", "Trigger file download / Greet"),
+            BotCommand("help", "Show available commands & guide"),
+            BotCommand("cancel", "Cancel current file upload flow"),
+            BotCommand("approve", "Authorize a user: /approve <user_id>"),
+            BotCommand("revoke", "Revoke authorization: /revoke <user_id>"),
+            BotCommand("list_users", "List all authorized users"),
+        ]
+        await app.bot.set_my_commands(owner_commands, scope=BotCommandScopeChat(chat_id=OWNER_USER_ID))
+        
+        log.info("Bot commands menu registered successfully for default and owner scopes")
     except Exception as e:
         log.warning("Failed to set bot commands: %s", e)
 
@@ -869,13 +882,17 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # Detect if the file was forwarded or copied from another message
+    is_forward = bool(message.forward_date or getattr(message, "forward_origin", None))
+    source_label = "Forwarded/Copied File" if is_forward else "File"
+
     await message.reply_text(
-        f"📥 **File Received!**\n"
+        f"📥 **{source_label} Received!**\n"
         f"• File Name: `{file_name or 'Photo/Media'}`\n"
         f"• File Size: `{file_size / 1024 / 1024:.2f} MB`\n\n"
         f"Please reply with a **Title** for this file.\n"
         f"Or click the button below to use the Auto Title.\n\n"
-        f"🔗 Alternatively, you can complete the details via the web:\n{link}",
+        f"🔗 Alternatively, you can complete the details via the web!",
         reply_markup=reply_markup,
         parse_mode="Markdown",
         disable_web_page_preview=True
