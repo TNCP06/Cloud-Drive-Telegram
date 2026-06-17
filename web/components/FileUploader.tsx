@@ -119,12 +119,12 @@ export function FileUploader({
   const resume = () => {
     if (file) {
       pausedRef.current = false;
-      upload(file, true, activeUpload || undefined);
+      upload(file, activeUpload || undefined);
     }
   };
 
   const upload = useCallback(
-    async (f: File, isResuming = false, savedInfo?: ActiveUploadInfo) => {
+    async (f: File, savedInfo?: ActiveUploadInfo) => {
       setErr(null);
       setFile(f);
       setSent(0);
@@ -263,7 +263,7 @@ export function FileUploader({
       return;
     }
     setErr(null);
-    upload(f, true, activeUpload);
+    upload(f, activeUpload);
   };
 
   const totalSize = file ? file.size : activeUpload ? activeUpload.size : 0;
@@ -338,7 +338,7 @@ export function FileUploader({
               )}
 
               {phase === "error" && file && (
-                <button className="btn primary sm" onClick={() => upload(file, true, activeUpload || undefined)}>Retry</button>
+                <button className="btn primary sm" onClick={() => upload(file, activeUpload || undefined)}>Retry</button>
               )}
               <button className="btn subtle sm" onClick={cancel}>
                 {phase === "error" ? "Dismiss" : "Cancel"}
