@@ -106,9 +106,10 @@ Triggered by any new `channel_post` in `STORAGE_CHANNEL_ID` ([`bot/bot.py`](../b
 Bypasses Vercel's request-size limit: the **bot** holds the bytes, the **web** only sends a
 small API call. Alternatively, the user can complete the upload entirely within Telegram.
 
-1. **Intake**: User DMs a file (Photo, Video, or Document) to the bot.
+1. **Intake**: User DMs or forwards a file (Photo, Video, or Document) to the bot.
    - If not authorized, access is denied (see authorization below).
-   - If authorized, the bot initiates the interactive questionnaire (waiting for Title, then Tags).
+   - If the file has a caption matching the contract (`Title | part/total | tags`), the bot bypasses the interactive questionnaire and copies the file directly to the storage channel.
+   - If authorized but the file does not have a valid caption contract, the bot initiates the interactive questionnaire (waiting for Title, then Tags).
    - The bot also sends a web link: `/<web>/upload-bot?msg_id=<id>&chat_id=<id>` as an alternative.
 2. **Finishing via Web**:
    - User opens the web link, completes Title & Tags, and clicks Save.

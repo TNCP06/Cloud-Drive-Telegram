@@ -19,6 +19,7 @@ API notes:
 
 import asyncio
 import base64
+import html
 import io
 import logging
 import os
@@ -641,9 +642,9 @@ async def on_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         await message.reply_text(
-            "Usage: `/auth <password>`\n\n"
+            "Usage: <code>/auth &lt;password&gt;</code>\n\n"
             "If you don't know the password, please contact the bot owner.",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         return
 
@@ -683,7 +684,7 @@ async def on_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await message.reply_text("Usage: `/approve <user_id>`", parse_mode="Markdown")
+        await message.reply_text("Usage: <code>/approve &lt;user_id&gt;</code>", parse_mode="HTML")
         return
 
     try:
@@ -723,7 +724,7 @@ async def on_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await message.reply_text("Usage: `/revoke <user_id>`", parse_mode="Markdown")
+        await message.reply_text("Usage: <code>/revoke &lt;user_id&gt;</code>", parse_mode="HTML")
         return
 
     try:
@@ -766,10 +767,11 @@ async def on_list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("No other users authorized yet.")
             return
 
-        text = "👤 **Authorized Users:**\n"
+        text = "👤 <b>Authorized Users:</b>\n"
         for r in rs.rows:
-            text += f"- {r[2]} (@{r[1] or 'none'}, ID: `{r[0]}`), added on {r[3]}\n"
-        await message.reply_text(text, parse_mode="Markdown")
+            username = f"@{html.escape(r[1])}" if r[1] else "none"
+            text += f"- {html.escape(r[2])} ({username}, ID: <code>{r[0]}</code>), added on {html.escape(str(r[3]))}\n"
+        await message.reply_text(text, parse_mode="HTML")
     except Exception as e:
         log.exception("Failed to list users")
         await message.reply_text(f"❌ Error reading users: {e}")
@@ -788,10 +790,10 @@ async def on_set_web_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         current_url = context.bot_data.get("web_url", "http://localhost:3000")
         await message.reply_text(
-            f"🌐 Current web dashboard URL is: `{current_url}`\n\n"
+            f"🌐 Current web dashboard URL is: <code>{html.escape(current_url)}</code>\n\n"
             "To change it, use:\n"
-            "`/set_web_url <new_url>`",
-            parse_mode="Markdown"
+            "<code>/set_web_url &lt;new_url&gt;</code>",
+            parse_mode="HTML"
         )
         return
 
@@ -807,7 +809,7 @@ async def on_set_web_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [new_url]
         )
         context.bot_data["web_url"] = new_url
-        await message.reply_text(f"✅ Web dashboard URL successfully updated to:\n`{new_url}`", parse_mode="Markdown")
+        await message.reply_text(f"✅ Web dashboard URL successfully updated to:\n<code>{html.escape(new_url)}</code>", parse_mode="HTML")
         log.info("Owner updated web_url to: %s", new_url)
     except Exception as e:
         log.exception("Failed to update web_url in DB")
@@ -830,10 +832,10 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
 
     if not is_auth:
         text = (
-            "🤖 **Telegram Cloud Drive Bot**\n\n"
-            "🔒 You are currently **NOT authorized** to use this bot.\n\n"
+            "🤖 <b>Telegram Cloud Drive Bot</b>\n\n"
+            "🔒 You are currently <b>NOT authorized</b> to use this bot.\n\n"
             "To authorize, please type:\n"
-            "`/auth <password>`\n\n"
+            "<code>/auth &lt;password&gt;</code>\n\n"
             "Or ask the owner to approve your Telegram ID."
         )
         keyboard = [
@@ -841,13 +843,13 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         if edit and update.callback_query:
-            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
         else:
-            await context.bot.send_message(chat_id=message.chat_id, text=text, reply_markup=reply_markup, parse_mode="Markdown")
+            await context.bot.send_message(chat_id=message.chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
         return
 
     text = (
-        "🤖 **Telegram Cloud Drive Bot Menu**\n\n"
+        "🤖 <b>Telegram Cloud Drive Bot Menu</b>\n\n"
         "Welcome! Select an option below to interact with the cloud drive:"
     )
 
@@ -867,9 +869,9 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if edit and update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
     else:
-        await context.bot.send_message(chat_id=message.chat_id, text=text, reply_markup=reply_markup, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=message.chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
 
 
 async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -924,6 +926,43 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Not a media/document message
         return
 
+    # Check if the file already has a valid caption contract matching Title | part/total | tags
+    caption_meta = parse_caption(message.caption)
+    if caption_meta:
+        title = caption_meta["title"]
+        part = caption_meta["part"]
+        total = caption_meta["total"]
+        tags_str = ", ".join(caption_meta["tags"])
+        
+        status_msg = await context.bot.send_message(
+            chat_id=message.chat_id,
+            text="📤 Copying file directly to storage channel..."
+        )
+        try:
+            copied_msg = await context.bot.copy_message(
+                chat_id=STORAGE_CHANNEL_ID,
+                from_chat_id=message.chat_id,
+                message_id=message.message_id,
+                caption=message.caption
+            )
+            await status_msg.edit_text(
+                f"🎉 <b>Success!</b>\n\n"
+                f"File has been successfully uploaded and indexed directly via caption contract.\n"
+                f"• <b>Title</b>: <code>{html.escape(title)}</code>\n"
+                f"• <b>Part</b>: {part}/{total}\n"
+                f"• <b>Tags</b>: <code>{html.escape(tags_str if tags_str else 'none')}</code>\n\n"
+                f"It is now being indexed and will appear on the website shortly!",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            log.exception("Failed to copy user file to channel directly")
+            await status_msg.edit_text(
+                f"❌ <b>Error copying file:</b> {html.escape(str(e))}\n"
+                "Please check bot configuration and try again.",
+                parse_mode="HTML"
+            )
+        return
+
     if "upload_file" in context.user_data:
         await message.reply_text(
             "⚠️ You already have an active upload flow. Please complete it or cancel it with `/cancel`."
@@ -964,14 +1003,14 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     source_label = "Forwarded/Copied File" if is_forward else "File"
 
     await message.reply_text(
-        f"📥 **{source_label} Received!**\n"
-        f"• File Name: `{file_name or 'Photo/Media'}`\n"
-        f"• File Size: `{file_size / 1024 / 1024:.2f} MB`\n\n"
-        f"Please reply with a **Title** for this file.\n"
+        f"📥 <b>{source_label} Received!</b>\n"
+        f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
+        f"• File Size: <code>{file_size / 1024 / 1024:.2f} MB</code>\n\n"
+        f"Please reply with a <b>Title</b> for this file.\n"
         f"Or click the button below to use the Auto Title.\n\n"
         f"🔗 Alternatively, you can complete the details via the web!",
         reply_markup=reply_markup,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         disable_web_page_preview=True
     )
 
@@ -990,10 +1029,10 @@ async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.callback_query.message
     await context.bot.send_message(
         chat_id=message.chat_id,
-        text="🏷️ **Title set!**\n\nWhat are the **Tags** for this file? (Separate with commas, e.g. `holiday, video`)\n"
+        text="🏷️ <b>Title set!</b>\n\nWhat are the <b>Tags</b> for this file? (Separate with commas, e.g. <code>holiday, video</code>)\n"
              "Or click the button below to use the Auto Tags.",
         reply_markup=reply_markup,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
@@ -1028,18 +1067,19 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await status_msg.edit_text(
-            f"🎉 **Success!**\n\n"
+            f"🎉 <b>Success!</b>\n\n"
             f"File has been successfully uploaded and indexed.\n"
-            f"• **Title**: `{title}`\n"
-            f"• **Tags**: `{tags_str if tags_str else 'none'}`\n\n"
+            f"• <b>Title</b>: <code>{html.escape(title)}</code>\n"
+            f"• <b>Tags</b>: <code>{html.escape(tags_str if tags_str else 'none')}</code>\n\n"
             f"It is now being indexed and will appear on the website shortly!",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception as e:
         log.exception("Failed to copy user file to channel")
         await status_msg.edit_text(
-            f"❌ **Error copying file:** {str(e)}\n"
-            "Please check bot configuration and try again."
+            f"❌ <b>Error copying file:</b> {html.escape(str(e))}\n"
+            "Please check bot configuration and try again.",
+            parse_mode="HTML"
         )
     finally:
         # Clear state
@@ -1093,7 +1133,7 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Check menu:get_id which can be triggered by unauthorized users
     if data == "menu:get_id":
-        await query.message.reply_text(f"👤 Your Telegram ID is: `{user.id}`", parse_mode="Markdown")
+        await query.message.reply_text(f"👤 Your Telegram ID is: <code>{user.id}</code>", parse_mode="HTML")
         return
 
     if not await is_user_authorized(db, user.id):
@@ -1126,34 +1166,34 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "menu:upload_guide":
         text = (
-            "📥 **How to Upload Files:**\n\n"
-            "1. Send or **forward** any file (video, photo, document, animation) directly to this private chat.\n"
-            "2. The bot will ask you for a **Title** (suggesting a derived title from filename or caption).\n"
-            "3. The bot will ask you for **Tags** (optional).\n"
+            "📥 <b>How to Upload Files:</b>\n\n"
+            "1. Send or <b>forward</b> any file (video, photo, document, animation) directly to this private chat.\n"
+            "2. The bot will ask you for a <b>Title</b> (suggesting a derived title from filename or caption).\n"
+            "3. The bot will ask you for <b>Tags</b> (optional).\n"
             "4. The bot will automatically format the caption contract and copy the file to the storage channel, indexing it instantly into the website.\n\n"
-            "⚠️ Use `/cancel` if you need to abort an active upload questionnaire."
+            "⚠️ Use <code>/cancel</code> if you need to abort an active upload questionnaire."
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data == "menu:auth_info":
         text = (
-            "👤 **Your Authorization Info:**\n\n"
-            f"• **Telegram ID**: `{user.id}`\n"
-            f"• **Username**: `@{user.username or 'none'}`\n"
-            f"• **First Name**: `{user.first_name}`\n"
-            "• **Status**: ✅ Authorized\n\n"
+            "👤 <b>Your Authorization Info:</b>\n\n"
+            f"• <b>Telegram ID</b>: <code>{user.id}</code>\n"
+            f"• <b>Username</b>: <code>@{html.escape(user.username or 'none')}</code>\n"
+            f"• <b>First Name</b>: <code>{html.escape(user.first_name or '')}</code>\n"
+            "• <b>Status</b>: ✅ Authorized\n\n"
             "You have full access to download and upload features."
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data == "menu:admin_menu":
         if user.id != OWNER_USER_ID:
             await query.message.reply_text("⛔ Access denied.")
             return
         text = (
-            "👑 **Owner Admin Panel**\n\n"
+            "👑 <b>Owner Admin Panel</b>\n\n"
             "Manage users and bot access control:"
         )
         keyboard = [
@@ -1164,51 +1204,52 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data == "admin:approve_info":
         if user.id != OWNER_USER_ID:
             return
         text = (
-            "➕ **How to Approve a User:**\n\n"
+            "➕ <b>How to Approve a User:</b>\n\n"
             "To authorize a user, send the command:\n"
-            "`/approve <user_id>`\n\n"
+            "<code>/approve &lt;user_id&gt;</code>\n\n"
             "Example:\n"
-            "`/approve 123456789`\n\n"
+            "<code>/approve 123456789</code>\n\n"
             "The user will receive an automatic notification once approved."
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back to Admin Panel", callback_data="menu:admin_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data == "admin:revoke_info":
         if user.id != OWNER_USER_ID:
             return
         text = (
-            "➖ **How to Revoke a User:**\n\n"
+            "➖ <b>How to Revoke a User:</b>\n\n"
             "To revoke user access, send the command:\n"
-            "`/revoke <user_id>`\n\n"
+            "<code>/revoke &lt;user_id&gt;</code>\n\n"
             "Example:\n"
-            "`/revoke 123456789`"
+            "<code>/revoke 123456789</code>"
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back to Admin Panel", callback_data="menu:admin_menu")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data == "admin:list_users":
         if user.id != OWNER_USER_ID:
             return
         rs = await db.execute("SELECT user_id, username, first_name, added_at FROM authorized_users")
         if not rs.rows:
-            text = "👥 **Authorized Users:**\n\nNo other users authorized yet."
+            text = "👥 <b>Authorized Users:</b>\n\nNo other users authorized yet."
         else:
-            text = "👥 **Authorized Users:**\n\n"
+            text = "👥 <b>Authorized Users:</b>\n\n"
             for r in rs.rows:
-                text += f"- {r[2]} (@{r[1] or 'none'}, ID: `{r[0]}`), added on {r[3]}\n"
+                username = f"@{html.escape(r[1])}" if r[1] else "none"
+                text += f"- {html.escape(r[2])} ({username}, ID: <code>{r[0]}</code>), added on {html.escape(str(r[3]))}\n"
         
         keyboard = [
             [InlineKeyboardButton("⬅️ Back to Admin Panel", callback_data="menu:admin_menu")],
             [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
 
 def main():
