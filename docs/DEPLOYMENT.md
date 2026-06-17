@@ -195,3 +195,58 @@ Lihat [`.env.example`](../.env.example). Yang penting untuk mode server:
 | `APP_PASSWORD` | web | login dashboard; kosong = tanpa auth |
 | `UPLOAD_STAGING_DIR` | web+watcher | diset compose ke `/staging` (volume bersama) |
 | `WORKER_OUT_DIR` | watcher | diset compose ke `/staging/_parts` |
+
+---
+
+## 9. Deploy Otomatis (CI/CD via GitHub Actions)
+
+Untuk memisahkan proses pengujian (CI) dan penyebaran (CD):
+1. **CI (Continuous Integration)** dikonfigurasi di [.github/workflows/ci.yml](file:///D:/coding/Cloud-Drive-Telegram/.github/workflows/ci.yml) dan **hanya berjalan saat ada Pull Request** ke branch `main`.
+2. **CD (Continuous Deployment)** dikonfigurasi di [.github/workflows/deploy.yml](file:///D:/coding/Cloud-Drive-Telegram/.github/workflows/deploy.yml) dan **hanya berjalan saat ada `push` atau merge langsung** ke branch `main`.
+
+### A. Persiapan Secrets di GitHub Repository
+Buka repository GitHub Anda, masuk ke **Settings > Secrets and variables > Actions**, lalu tambahkan **Repository Secrets** berikut:
+
+1. **`VPS_SSH_HOST`**: IP Public VPS / EC2 Anda (contoh: `54.255.x.x` atau domain DNS public).
+2. **`VPS_SSH_USERNAME`**: Username SSH Anda (biasanya `ubuntu` untuk instance Ubuntu EC2 atau `ec2-user` untuk Amazon Linux).
+3. **`VPS_SSH_KEY`**: Isi private key SSH Anda (dari file `.pem` yang digunakan saat login ke EC2 VPS). Pastikan menyalin seluruh isinya termasuk baris header `-----BEGIN OPENSSH PRIVATE KEY-----` dan footer `-----END OPENSSH PRIVATE KEY-----`.
+4. **`VPS_DEPLOY_PATH`**: Path folder repository di server VPS Anda (contoh: `/home/ubuntu/tcd`).
+5. **`VPS_SSH_PORT`** *(Opsional)*: Port SSH VPS Anda. Secara default menggunakan port `22` jika tidak didefinisikan.
+
+### B. Konfigurasi Git Deploy Key di VPS (Penting untuk Private Repo)
+Agar server EC2 bisa melakukan `git pull` dari GitHub secara otomatis tanpa meminta password/interaksi:
+1. Hubungkan ke VPS via SSH.
+2. Generate SSH key baru di VPS:
+   ```bash
+   ssh-keygen -t ed25519 -C "vps-deploy-key"
+   ```
+   (Tekan Enter terus sampai selesai tanpa memasukkan passphrase).
+3. Ambil isi public key yang baru dibuat:
+   ```bash
+   cat ~/.ssh/id_ed25519.pub
+   ```
+4. Di GitHub, buka halaman repository Anda, lalu pergi ke **Settings > Deploy keys > Add deploy key**:
+   - Berikan judul (misal: `VPS Deploy Key`).
+   - Tempel isi public key tadi.
+   - **TIDAK PERLU** mencentang *"Allow write access"* (akses read-only sudah cukup).
+   - Klik **Add key**.
+5. Uji koneksi git di VPS secara manual sekali agar host GitHub masuk ke `known_hosts`:
+   ```bash
+   ssh -T git@github.com
+   ```
+   Ketik `yes` jika ditanya konfirmasi sidik jari host.
+
+### C. Alur Kerja Deployment Otomatis
+1. **Saat ada Pull Request ke branch `main`**:
+   - GitHub Actions memicu workflow CI ([ci.yml](file:///D:/coding/Cloud-Drive-Telegram/.github/workflows/ci.yml)).
+   - Menjalankan **Linting & Build Test** untuk Next.js (`web`).
+   - Menjalankan **Syntax Check** untuk Python (`bot`).
+   - *Deploy tidak berjalan di tahap ini.*
+2. **Saat Pull Request disetujui & digabungkan (merge), atau ada push langsung ke branch `main`**:
+   - GitHub Actions memicu workflow Deploy ([deploy.yml](file:///D:/coding/Cloud-Drive-Telegram/.github/workflows/deploy.yml)).
+   - Terkoneksi ke EC2 VPS menggunakan SSH Key yang terdaftar di Secrets.
+   - Masuk ke folder target di VPS (`VPS_DEPLOY_PATH`).
+   - Menjalankan `git pull origin main`.
+   - Menjalankan `docker compose up -d --build` untuk membangun ulang kontainer yang berubah dan menjalankannya kembali di background.
+   - Melakukan pembersihan image docker lama yang tidak terpakai (`docker image prune -f`).
+
