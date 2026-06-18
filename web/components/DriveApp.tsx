@@ -585,133 +585,142 @@ export function DriveApp({
       </div>
 
       {sortMenu && (
-        <Menu anchor={sortMenu} onClose={() => setSortMenu(null)} width={210}>
-          <div className="menu-label">Sort by</div>
-          {Object.entries(SORTS).map(([k, s]) => (
-            <MenuItem
-              key={k}
-              label={s.label}
-              check={sort === k}
-              onClick={() => {
-                setSort(k);
-                setSortMenu(null);
-              }}
-            />
-          ))}
-        </Menu>
+        <>
+          <div className="menu-scrim" onClick={() => setSortMenu(null)} />
+          <Menu anchor={sortMenu} onClose={() => setSortMenu(null)} width={210}>
+            <div className="menu-label">Sort by</div>
+            {Object.entries(SORTS).map(([k, s]) => (
+              <MenuItem
+                key={k}
+                label={s.label}
+                check={sort === k}
+                onClick={() => {
+                  setSort(k);
+                  setSortMenu(null);
+                }}
+              />
+            ))}
+          </Menu>
+        </>
       )}
 
       {menu && (
-        <Menu anchor={menu.anchor} onClose={() => setMenu(null)} width={206}>
-          {menu.item.trashed ? (
-            <>
-              <MenuItem
-                icon="restore"
-                label="Restore"
-                onClick={() => {
-                  doRestore(menu.item);
-                  setMenu(null);
-                }}
-              />
-              <div className="menu-sep"></div>
-              <MenuItem
-                icon="trash"
-                label="Delete permanently"
-                danger
-                onClick={() => {
-                  setConfirm({ item: menu.item, mode: "purge" });
-                  setMenu(null);
-                }}
-              />
-            </>
-          ) : (
-            <>
-              <MenuItem
-                icon="edit"
-                label="Edit"
-                onClick={() => {
-                  setInitialEditing(true);
-                  setInitialShowDetails(true);
-                  openPreview(menu.item);
-                  setMenu(null);
-                }}
-              />
-              <MenuItem
-                icon="kebab"
-                label="Detail"
-                onClick={() => {
-                  setInitialEditing(false);
-                  setInitialShowDetails(true);
-                  openPreview(menu.item);
-                  setMenu(null);
-                }}
-              />
-              <MenuItem
-                icon="folder"
-                label="Move to..."
-                onClick={() => {
-                  setMoveTargetIds([menu.item.id]);
-                  setMenu(null);
-                }}
-              />
-              <div className="menu-sep"></div>
-              <MenuItem
-                icon="download"
-                label="Download"
-                onClick={() => {
-                  const url = deepLink(menu.item.slug);
-                  if (url) window.open(url, "_blank");
-                  setMenu(null);
-                }}
-              />
-              <MenuItem
-                icon="star"
-                label={menu.item.starred ? "Remove from favorites" : "Add to favorites"}
-                onClick={() => {
-                  doStar(menu.item);
-                  setMenu(null);
-                }}
-              />
-              <div className="menu-sep"></div>
-              <MenuItem
-                icon="trash"
-                label="Delete"
-                danger
-                onClick={() => {
-                  setConfirm({ item: menu.item, mode: "trash" });
-                  setMenu(null);
-                }}
-              />
-            </>
-          )}
-        </Menu>
+        <>
+          <div className="menu-scrim" onClick={() => setMenu(null)} />
+          <Menu anchor={menu.anchor} onClose={() => setMenu(null)} width={206}>
+            {menu.item.trashed ? (
+              <>
+                <MenuItem
+                  icon="restore"
+                  label="Restore"
+                  onClick={() => {
+                    doRestore(menu.item);
+                    setMenu(null);
+                  }}
+                />
+                <div className="menu-sep"></div>
+                <MenuItem
+                  icon="trash"
+                  label="Delete permanently"
+                  danger
+                  onClick={() => {
+                    setConfirm({ item: menu.item, mode: "purge" });
+                    setMenu(null);
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <MenuItem
+                  icon="edit"
+                  label="Edit"
+                  onClick={() => {
+                    setInitialEditing(true);
+                    setInitialShowDetails(true);
+                    openPreview(menu.item);
+                    setMenu(null);
+                  }}
+                />
+                <MenuItem
+                  icon="kebab"
+                  label="Detail"
+                  onClick={() => {
+                    setInitialEditing(false);
+                    setInitialShowDetails(true);
+                    openPreview(menu.item);
+                    setMenu(null);
+                  }}
+                />
+                <MenuItem
+                  icon="folder"
+                  label="Move to..."
+                  onClick={() => {
+                    setMoveTargetIds([menu.item.id]);
+                    setMenu(null);
+                  }}
+                />
+                <div className="menu-sep"></div>
+                <MenuItem
+                  icon="download"
+                  label="Download"
+                  onClick={() => {
+                    const url = deepLink(menu.item.slug);
+                    if (url) window.open(url, "_blank");
+                    setMenu(null);
+                  }}
+                />
+                <MenuItem
+                  icon="star"
+                  label={menu.item.starred ? "Remove from favorites" : "Add to favorites"}
+                  onClick={() => {
+                    doStar(menu.item);
+                    setMenu(null);
+                  }}
+                />
+                <div className="menu-sep"></div>
+                <MenuItem
+                  icon="trash"
+                  label="Delete"
+                  danger
+                  onClick={() => {
+                    setConfirm({ item: menu.item, mode: "trash" });
+                    setMenu(null);
+                  }}
+                />
+              </>
+            )}
+          </Menu>
+        </>
       )}
 
       {folderMenu && (
-        <Menu anchor={folderMenu.anchor} onClose={() => setFolderMenu(null)} width={180}>
-          <MenuItem
-            icon="edit"
-            label="Rename"
-            onClick={() => {
-              setShowRenameFolder(folderMenu.folder);
-              setFolderMenu(null);
-            }}
-          />
-          <MenuItem
-            icon="trash"
-            label="Delete"
-            danger
-            onClick={() => {
-              const confirmDel = window.confirm(`Delete folder "${folderMenu.folder.name}" and soft-delete all items inside?`);
-              if (confirmDel) {
-                startTransition(async () => {
-                  await deleteFolder(folderMenu.folder.id);
-                });
-              }
-              setFolderMenu(null);
-            }}
-          />
-        </Menu>
+        <>
+          <div className="menu-scrim" onClick={() => setFolderMenu(null)} />
+          <Menu anchor={folderMenu.anchor} onClose={() => setFolderMenu(null)} width={180}>
+            <MenuItem
+              icon="edit"
+              label="Rename"
+              onClick={() => {
+                setShowRenameFolder(folderMenu.folder);
+                setFolderMenu(null);
+              }}
+            />
+            <MenuItem
+              icon="trash"
+              label="Delete"
+              danger
+              onClick={() => {
+                const confirmDel = window.confirm(`Delete folder "${folderMenu.folder.name}" and soft-delete all items inside?`);
+                if (confirmDel) {
+                  startTransition(async () => {
+                    await deleteFolder(folderMenu.folder.id);
+                  });
+                }
+                setFolderMenu(null);
+              }}
+            />
+          </Menu>
+        </>
       )}
 
       {previewItem && (

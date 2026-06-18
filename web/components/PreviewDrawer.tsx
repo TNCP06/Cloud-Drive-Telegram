@@ -388,58 +388,9 @@ export function PreviewDrawer({
             <button className="viewer-iconbtn" onClick={onClose} title="Close">
               <Icon name="close" size={17} />
             </button>
-            {!item.trashed && (
-              <>
-                <button className="viewer-iconbtn" onClick={openEdit} title="Edit metadata">
-                  <Icon name="edit" size={17} />
-                </button>
-                <button className="viewer-iconbtn" onClick={() => onTrash(item)} title="Delete">
-                  <Icon name="trash" size={17} />
-                </button>
-              </>
-            )}
           </div>
           <span className="viewer-name">{item.version ? item.family : item.name}</span>
-          <div className="viewer-tools">
-            {item.trashed ? (
-              <>
-                <button className="viewer-iconbtn" onClick={() => onRestore(item)} title="Restore">
-                  <Icon name="restore" size={17} />
-                </button>
-                <button
-                  className="viewer-iconbtn"
-                  onClick={() => onPurge(item)}
-                  title="Delete permanently"
-                >
-                  <Icon name="trash" size={17} />
-                </button>
-              </>
-            ) : (
-              <>
-                {deepLink && (
-                  <a
-                    className="viewer-iconbtn"
-                    href={deepLink}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Download"
-                  >
-                    <Icon name="download" size={17} />
-                  </a>
-                )}
-                <button
-                  className={"viewer-iconbtn" + (item.starred ? " on" : "")}
-                  onClick={() => onStar(item)}
-                  title="Favorite"
-                >
-                  <Icon name="star" size={17} fill={item.starred} />
-                </button>
-              </>
-            )}
-            <button className="viewer-iconbtn" onClick={openDetails} title="Metadata details">
-              <Icon name="kebab" size={17} />
-            </button>
-          </div>
+          <div className="viewer-tools" style={{ width: 32 }}></div>
         </div>
 
         {(canPrev || canNext) && (

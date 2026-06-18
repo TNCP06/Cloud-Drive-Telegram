@@ -405,6 +405,10 @@ button { font-family: inherit; }
 /* ===========================================================================
    Menus / dropdowns
    =========================================================================== */
+.menu-scrim {
+  position: fixed; inset: 0; z-index: 190;
+  background: transparent;
+}
 .menu {
   position: fixed; z-index: 200;
   background: var(--card); border: 1px solid var(--line-2);
