@@ -638,34 +638,17 @@ export function DriveApp({
               {title}
             </span>
           )}
-          <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
-            <button
-              className="sortbtn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSortMenu(e.currentTarget);
-              }}
-            >
-              <Icon name="sort" size={16} />
-              {SORTS[sort].label}
-              <Icon name="chevdown" size={14} />
-            </button>
-            <button
-              className="sortbtn"
-              onClick={() => setSortOrder((o) => (o === "asc" ? "desc" : "asc"))}
-              title={sortOrder === "asc" ? "Ascending" : "Descending"}
-              style={{ padding: "6px" }}
-            >
-              <Icon
-                name="chevdown"
-                size={14}
-                style={{
-                  transform: sortOrder === "asc" ? "rotate(180deg)" : "none",
-                  transition: "transform 0.2s",
-                }}
-              />
-            </button>
-          </div>
+          <button
+            className="sortbtn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setSortMenu(e.currentTarget);
+            }}
+          >
+            <Icon name="sort" size={16} />
+            {SORTS[sort].label}
+            <Icon name="chevdown" size={14} />
+          </button>
           <button
             className={"sortbtn toggle" + (groupVersions ? " on" : "")}
             onClick={() => setGroupVersions((v) => !v)}

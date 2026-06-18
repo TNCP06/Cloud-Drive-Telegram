@@ -126,6 +126,12 @@ async def main():
     print("Connecting to Turso database...")
     db = libsql_client.create_client(url=url, auth_token=TURSO_AUTH_TOKEN)
     
+    # Fetch already indexed message IDs from the database to skip them
+    print("Fetching already indexed channel_msg_ids from database...")
+    existing_rs = await db.execute("SELECT channel_msg_id FROM parts")
+    existing_ids = {row[0] for row in existing_rs.rows}
+    print(f"Found {len(existing_ids)} messages already indexed.")
+
     # Initialize Telethon Client using worker.session
     session_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker")
     print(f"Starting Telethon client with session: {session_path}...")
@@ -139,6 +145,8 @@ async def main():
         print("Fetching channel messages...")
         count = 0
         async for raw_msg in client.iter_messages(entity):
+            if raw_msg.id in existing_ids:
+                continue
             adapter = MessageAdapter(raw_msg)
             try:
                 success = await index_message(db, adapter)

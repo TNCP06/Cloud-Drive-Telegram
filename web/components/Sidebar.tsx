@@ -48,14 +48,19 @@ export function Sidebar({
   onManageTags: () => void;
 }) {
   const [mediaOpen, setMediaOpen] = useState(true);
+  const [showMoreTags, setShowMoreTags] = useState(false);
 
   const isMediaTag = (name: string) => name.toLowerCase() === "image" || name.toLowerCase() === "video";
   const mediaTags = tags.filter((t) => isMediaTag(t.name));
   const regularTags = tags.filter((t) => !isMediaTag(t.name));
 
-  const topRegularTags = [...regularTags]
-    .sort((a, b) => (counts.tags[b.id] || 0) - (counts.tags[a.id] || 0))
-    .slice(0, 5)
+  const sortedRegularTags = [...regularTags]
+    .sort((a, b) => (counts.tags[b.id] || 0) - (counts.tags[a.id] || 0));
+
+  const topRegularTags = sortedRegularTags.slice(0, 5)
+    .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+
+  const remainingTags = sortedRegularTags.slice(5)
     .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
 
   return (
@@ -116,6 +121,34 @@ export function Sidebar({
             );
           })}
 
+          {showMoreTags && remainingTags.map((t) => {
+            const c = TAG_COLORS[t.color] || t.color;
+            return (
+              <button
+                key={t.id}
+                className={"nav-item tag-row" + (view === "tag" && tag === t.id ? " active" : "")}
+                onClick={() => onTag(t.id)}
+              >
+                <span className="tag-dot" style={{ background: c }}></span>
+                <span className="name">{t.name}</span>
+                {counts.tags[t.id] > 0 && <span className="count">{counts.tags[t.id]}</span>}
+              </button>
+            );
+          })}
+
+          {remainingTags.length > 0 && (
+            <button
+              className="nav-item"
+              style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", color: "var(--muted)", fontSize: "13px" }}
+              onClick={() => setShowMoreTags(!showMoreTags)}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                <Icon name={showMoreTags ? "chevdown" : "chevright"} size={14} style={{ opacity: 0.7 }} />
+                <span>{showMoreTags ? "Show less" : `Show more (${remainingTags.length})`}</span>
+              </div>
+            </button>
+          )}
+
           {mediaTags.length > 0 && (
             <>
               <button
@@ -175,7 +208,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="Tags">
+      <div className="storage">
         <div className="top">
           <div className="num">
             {storage.usedLabel.num}
@@ -196,7 +229,7 @@ export function Sidebar({
           )}
           <span style={{ flex: 1, background: "var(--line)" }}></span>
         </div>
-        <div className="legend">
+        <div className="Tags">
           {storage.legend.map((l) => (
             <span key={l.label}>
               <i style={{ background: l.color }}></i>

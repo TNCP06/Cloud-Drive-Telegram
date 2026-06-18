@@ -239,6 +239,38 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
     else:
         folder_id = None
 
+    # Check if the item already exists to protect user modifications
+    rs_exist = await db.execute("SELECT title, folder_id FROM items WHERE slug = ?", [slug])
+    if rs_exist.rows:
+        existing_title = rs_exist.rows[0][0]
+        existing_folder_id = rs_exist.rows[0][1]
+        
+        allow_overwrite = False
+        if set_title:
+            if existing_title == title:
+                allow_overwrite = True
+            elif slug.startswith("album-"):
+                # Fallbacks for albums: Media YYYY-MM-DD
+                if re.match(r"^Media \d{4}-\d{2}-\d{2}$", existing_title):
+                    allow_overwrite = True
+                else:
+                    # Or check if existing title matches any of the parts' base filenames
+                    parts_rs = await db.execute(
+                        "SELECT file_name FROM parts WHERE item_id = (SELECT id FROM items WHERE slug = ?)", 
+                        [slug]
+                    )
+                    for row in parts_rs.rows:
+                        fn = row[0]
+                        if fn:
+                            base_fn = os.path.splitext(os.path.basename(fn))[0]
+                            if existing_title == base_fn:
+                                allow_overwrite = True
+                                break
+        
+        if not allow_overwrite:
+            title = existing_title
+            folder_id = existing_folder_id
+
     await db.execute(
         """
         INSERT INTO items (slug, title, kind, total_parts, folder_id)
