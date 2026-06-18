@@ -113,6 +113,17 @@ export function PreviewDrawer({
   const [thumbMsg, setThumbMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const detailsClosedTimeRef = useRef<number>(0);
+  const closeDetails = () => {
+    detailsClosedTimeRef.current = Date.now();
+    setShowDetails(false);
+  };
+  const handleStageClick = () => {
+    if (Date.now() - detailsClosedTimeRef.current < 150) {
+      return;
+    }
+    onClose();
+  };
   // Initialise from cache — if the gallery was already loaded (or pre-fetched),
   // all photos appear instantly on first render without a cover flash.
   const [gallery, setGallery] = useState<GalleryPart[] | null>(() =>
@@ -293,7 +304,7 @@ export function PreviewDrawer({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (showDetails && !editing) setShowDetails(false);
+        if (showDetails && !editing) closeDetails();
         else onClose();
         return;
       }
@@ -350,9 +361,9 @@ export function PreviewDrawer({
   return (
     <>
       {/* ---- Full-screen photo layer ---- */}
-      <div className="viewer-scrim" onClick={onClose}></div>
+      <div className="viewer-scrim" onClick={handleStageClick}></div>
       <div className={"viewer" + (multi ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
-        <div className="viewer-stage" onClick={onClose}>
+        <div className="viewer-stage" onClick={handleStageClick}>
           {isPartStreamableVideo(activePart, item.kind) ? (
             <video
               ref={videoRef}
@@ -441,14 +452,14 @@ export function PreviewDrawer({
         <>
           <div
             className="drawer-scrim"
-            onClick={() => setShowDetails(false)}
+            onClick={closeDetails}
           ></div>
           <div className="drawer">
             <div className="dv-head">
               <strong>{editing ? "Edit metadata" : "Details"}</strong>
               <button
                 className="iconbtn ghost"
-                onClick={() => setShowDetails(false)}
+                onClick={closeDetails}
                 title="Close"
               >
                 <Icon name="close" size={18} />

@@ -86,8 +86,13 @@ export function DriveApp({
   const [isPending, startTransition] = useTransition();
 
   const menuClosedTimeRef = useRef<number>(0);
+  const previewClosedTimeRef = useRef<number>(0);
   const markMenuClosed = () => {
     menuClosedTimeRef.current = Date.now();
+  };
+  const closePreview = () => {
+    previewClosedTimeRef.current = Date.now();
+    setPreviewId(null);
   };
 
   const closeMenu = () => {
@@ -164,7 +169,7 @@ export function DriveApp({
     if (!confirm) return;
     if (confirm.mode === "purge") doPurge(confirm.item);
     else doTrash(confirm.item);
-    if (previewId === confirm.item.id) setPreviewId(null);
+    if (previewId === confirm.item.id) closePreview();
     setConfirm(null);
   };
   const doSave = (
@@ -349,7 +354,7 @@ export function DriveApp({
     const onMenu = (item: DriveFile, anchor: HTMLElement) => setMenu({ anchor, item });
     const { list: shown, counts } = collapseVersions(list);
     const isClickThrough = () => {
-      return Date.now() - menuClosedTimeRef.current < 100;
+      return (Date.now() - menuClosedTimeRef.current < 150) || (Date.now() - previewClosedTimeRef.current < 150);
     };
     if (viewMode === "grid") {
       return (
@@ -756,17 +761,17 @@ export function DriveApp({
           hasPrevFile={hasPrevFile}
           hasNextFile={hasNextFile}
           onNavigateFile={navigatePreview}
-          onClose={() => setPreviewId(null)}
+          onClose={closePreview}
           onStar={doStar}
           onTrash={(it) => setConfirm({ item: it, mode: "trash" })}
           onPurge={(it) => setConfirm({ item: it, mode: "purge" })}
           onRestore={(it) => {
             doRestore(it);
-            setPreviewId(null);
+            closePreview();
           }}
           onSave={(it, input) => {
             doSave(it, input);
-            setPreviewId(null);
+            closePreview();
           }}
           initialEditing={initialEditing}
           initialShowDetails={initialShowDetails}
