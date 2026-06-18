@@ -33,11 +33,27 @@ const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME;
 const deepLink = (slug: string): string | null =>
   BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=${slug}` : null;
 
-const SORTS: Record<string, { label: string; fn: (a: DriveFile, b: DriveFile) => number }> = {
-  modified: { label: "Last modified", fn: (a, b) => b.modified - a.modified },
-  name: { label: "Name", fn: (a, b) => a.name.localeCompare(b.name, "en") },
-  size: { label: "Size", fn: (a, b) => (b.size || 0) - (a.size || 0) },
-  kind: { label: "Type", fn: (a, b) => a.kind.localeCompare(b.kind) },
+const SORTS: Record<string, { label: string; fn: (a: DriveFile, b: DriveFile, order: "asc" | "desc") => number }> = {
+  modified: {
+    label: "Last modified",
+    fn: (a, b, order) => (order === "asc" ? a.modified - b.modified : b.modified - a.modified),
+  },
+  name: {
+    label: "Name",
+    fn: (a, b, order) => (order === "asc" ? a.name.localeCompare(b.name, "en") : b.name.localeCompare(a.name, "en")),
+  },
+  size: {
+    label: "Size",
+    fn: (a, b, order) => {
+      const szA = a.size || 0;
+      const szB = b.size || 0;
+      return order === "asc" ? szA - szB : szB - szA;
+    },
+  },
+  kind: {
+    label: "Type",
+    fn: (a, b, order) => (order === "asc" ? a.kind.localeCompare(b.kind) : b.kind.localeCompare(a.kind)),
+  },
 };
 
 export function DriveApp({
@@ -56,6 +72,7 @@ export function DriveApp({
   const [query, setQuery] = useState("");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [sort, setSort] = useState("modified");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [groupVersions, setGroupVersions] = useState(true);
   const [navOpen, setNavOpen] = useState(false);
   const [sortMenu, setSortMenu] = useState<HTMLElement | null>(null);
@@ -245,8 +262,8 @@ export function DriveApp({
     if (q) list = list.filter((f) => f.name.toLowerCase().includes(q));
 
     const fn = SORTS[sort].fn;
-    return [...list].sort(fn);
-  }, [files, view, activeTag, query, sort, currentFolderId]);
+    return [...list].sort((a, b) => fn(a, b, sortOrder));
+  }, [files, view, activeTag, query, sort, sortOrder, currentFolderId]);
 
   /* ---- folders at the current level ---- */
   const currentFolders = useMemo(() => {
@@ -335,7 +352,7 @@ export function DriveApp({
         out[idx] = f;
       }
     }
-    out.sort(SORTS[sort].fn);
+    out.sort((a, b) => SORTS[sort].fn(a, b, sortOrder));
     return { list: out, counts };
   };
 
@@ -405,14 +422,68 @@ export function DriveApp({
     return (
       <div className="list">
         <div className="list-head">
-          <button onClick={() => setSort("name")}>
-            Name {sort === "name" && <Icon name="chevdown" size={13} />}
+          <button onClick={() => {
+            if (sort === "name") {
+              setSortOrder(o => o === "asc" ? "desc" : "asc");
+            } else {
+              setSort("name");
+              setSortOrder("asc");
+            }
+          }}>
+            Name {sort === "name" && (
+              <Icon
+                name="chevdown"
+                size={13}
+                style={{
+                  transform: sortOrder === "asc" ? "rotate(180deg)" : "none",
+                  transition: "transform 0.2s",
+                  display: "inline-block",
+                  marginLeft: "4px"
+                }}
+              />
+            )}
           </button>
-          <button className="h-mod" onClick={() => setSort("modified")}>
-            Modified {sort === "modified" && <Icon name="chevdown" size={13} />}
+          <button className="h-mod" onClick={() => {
+            if (sort === "modified") {
+              setSortOrder(o => o === "asc" ? "desc" : "asc");
+            } else {
+              setSort("modified");
+              setSortOrder("desc");
+            }
+          }}>
+            Modified {sort === "modified" && (
+              <Icon
+                name="chevdown"
+                size={13}
+                style={{
+                  transform: sortOrder === "asc" ? "rotate(180deg)" : "none",
+                  transition: "transform 0.2s",
+                  display: "inline-block",
+                  marginLeft: "4px"
+                }}
+              />
+            )}
           </button>
-          <button className="h-size" onClick={() => setSort("size")}>
-            Size {sort === "size" && <Icon name="chevdown" size={13} />}
+          <button className="h-size" onClick={() => {
+            if (sort === "size") {
+              setSortOrder(o => o === "asc" ? "desc" : "asc");
+            } else {
+              setSort("size");
+              setSortOrder("desc");
+            }
+          }}>
+            Size {sort === "size" && (
+              <Icon
+                name="chevdown"
+                size={13}
+                style={{
+                  transform: sortOrder === "asc" ? "rotate(180deg)" : "none",
+                  transition: "transform 0.2s",
+                  display: "inline-block",
+                  marginLeft: "4px"
+                }}
+              />
+            )}
           </button>
           <span className="hide-mob">Type</span>
           <span></span>
@@ -567,17 +638,34 @@ export function DriveApp({
               {title}
             </span>
           )}
-          <button
-            className="sortbtn"
-            onClick={(e) => {
-              e.stopPropagation();
-              setSortMenu(e.currentTarget);
-            }}
-          >
-            <Icon name="sort" size={16} />
-            {SORTS[sort].label}
-            <Icon name="chevdown" size={14} />
-          </button>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+            <button
+              className="sortbtn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSortMenu(e.currentTarget);
+              }}
+            >
+              <Icon name="sort" size={16} />
+              {SORTS[sort].label}
+              <Icon name="chevdown" size={14} />
+            </button>
+            <button
+              className="sortbtn"
+              onClick={() => setSortOrder((o) => (o === "asc" ? "desc" : "asc"))}
+              title={sortOrder === "asc" ? "Ascending" : "Descending"}
+              style={{ padding: "6px" }}
+            >
+              <Icon
+                name="chevdown"
+                size={14}
+                style={{
+                  transform: sortOrder === "asc" ? "rotate(180deg)" : "none",
+                  transition: "transform 0.2s",
+                }}
+              />
+            </button>
+          </div>
           <button
             className={"sortbtn toggle" + (groupVersions ? " on" : "")}
             onClick={() => setGroupVersions((v) => !v)}
@@ -629,11 +717,34 @@ export function DriveApp({
                 label={s.label}
                 check={sort === k}
                 onClick={() => {
-                  setSort(k);
+                  if (sort === k) {
+                    setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
+                  } else {
+                    setSort(k);
+                    setSortOrder(k === "name" || k === "kind" ? "asc" : "desc");
+                  }
                   closeSortMenu();
                 }}
               />
             ))}
+            <div className="menu-sep" />
+            <div className="menu-label">Order</div>
+            <MenuItem
+              label="Ascending"
+              check={sortOrder === "asc"}
+              onClick={() => {
+                setSortOrder("asc");
+                closeSortMenu();
+              }}
+            />
+            <MenuItem
+              label="Descending"
+              check={sortOrder === "desc"}
+              onClick={() => {
+                setSortOrder("desc");
+                closeSortMenu();
+              }}
+            />
           </Menu>
         </>
       )}

@@ -26,7 +26,7 @@ export function AppSkeleton() {
             ))}
           </div>
         </div>
-        <div className="storage">
+        <div className="Tags">
           <div className="skel" style={{ height: 64 }} />
         </div>
       </aside>

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Icon } from "@/lib/icons";
 import { TAG_COLORS } from "@/lib/kinds";
 import type { Tag } from "@/lib/types";
@@ -46,6 +47,17 @@ export function Sidebar({
   onTag: (id: number) => void;
   onManageTags: () => void;
 }) {
+  const [mediaOpen, setMediaOpen] = useState(true);
+
+  const isMediaTag = (name: string) => name.toLowerCase() === "image" || name.toLowerCase() === "video";
+  const mediaTags = tags.filter((t) => isMediaTag(t.name));
+  const regularTags = tags.filter((t) => !isMediaTag(t.name));
+
+  const topRegularTags = [...regularTags]
+    .sort((a, b) => (counts.tags[b.id] || 0) - (counts.tags[a.id] || 0))
+    .slice(0, 5)
+    .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -89,7 +101,7 @@ export function Sidebar({
               <Icon name="plus" size={15} />
             </button>
           </div>
-          {tags.map((t) => {
+          {topRegularTags.map((t) => {
             const c = TAG_COLORS[t.color] || t.color;
             return (
               <button
@@ -103,6 +115,49 @@ export function Sidebar({
               </button>
             );
           })}
+
+          {mediaTags.length > 0 && (
+            <>
+              <button
+                className="nav-item"
+                style={{ cursor: "pointer", display: "flex", justifyContent: "space-between" }}
+                onClick={() => setMediaOpen(!mediaOpen)}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                  <Icon name="video" size={18} className="ico" />
+                  <span>Media Tags</span>
+                </div>
+                <Icon
+                  name="chevdown"
+                  size={14}
+                  style={{
+                    transform: mediaOpen ? "none" : "rotate(-90deg)",
+                    transition: "transform 0.2s",
+                    opacity: 0.7,
+                  }}
+                />
+              </button>
+              {mediaOpen && (
+                <div className="sub-list" style={{ paddingLeft: 12 }}>
+                  {mediaTags.map((t) => {
+                    const c = TAG_COLORS[t.color] || t.color;
+                    return (
+                      <button
+                        key={t.id}
+                        className={"nav-item tag-row" + (view === "tag" && tag === t.id ? " active" : "")}
+                        onClick={() => onTag(t.id)}
+                      >
+                        <span className="tag-dot" style={{ background: c }}></span>
+                        <span className="name">{t.name}</span>
+                        {counts.tags[t.id] > 0 && <span className="count">{counts.tags[t.id]}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+
           {tags.length === 0 && (
             <div style={{ padding: "6px 10px", fontSize: 12.5, color: "var(--faint)" }}>
               No tags yet.
@@ -120,7 +175,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="storage">
+      <div className="Tags">
         <div className="top">
           <div className="num">
             {storage.usedLabel.num}
