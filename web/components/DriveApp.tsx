@@ -671,7 +671,7 @@ export function DriveApp({
                   onClick={() => {
                     setInitialEditing(true);
                     setInitialShowDetails(true);
-                    setDetailsOnly(false);
+                    setDetailsOnly(true);
                     openPreview(menu.item);
                     closeMenu();
                   }}
