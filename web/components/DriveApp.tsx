@@ -616,8 +616,8 @@ export function DriveApp({
 
       {sortMenu && (
         <>
-          <div className="menu-scrim" onClick={() => { markMenuClosed(); setSortMenu(null); }} />
-          <Menu anchor={sortMenu} onClose={() => setSortMenu(null)} width={210}>
+          <div className="menu-scrim" onClick={closeSortMenu} />
+          <Menu anchor={sortMenu} onClose={closeSortMenu} width={210}>
             <div className="menu-label">Sort by</div>
             {Object.entries(SORTS).map(([k, s]) => (
               <MenuItem
@@ -636,8 +636,8 @@ export function DriveApp({
 
       {menu && (
         <>
-          <div className="menu-scrim" onClick={() => { markMenuClosed(); setMenu(null); }} />
-          <Menu anchor={menu.anchor} onClose={() => setMenu(null)} width={206}>
+          <div className="menu-scrim" onClick={closeMenu} />
+          <Menu anchor={menu.anchor} onClose={closeMenu} width={206}>
             {menu.item.trashed ? (
               <>
                 <MenuItem
@@ -725,8 +725,8 @@ export function DriveApp({
 
       {folderMenu && (
         <>
-          <div className="menu-scrim" onClick={() => { markMenuClosed(); setFolderMenu(null); }} />
-          <Menu anchor={folderMenu.anchor} onClose={() => setFolderMenu(null)} width={180}>
+          <div className="menu-scrim" onClick={closeFolderMenu} />
+          <Menu anchor={folderMenu.anchor} onClose={closeFolderMenu} width={180}>
             <MenuItem
               icon="edit"
               label="Rename"
