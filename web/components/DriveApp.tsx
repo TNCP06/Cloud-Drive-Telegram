@@ -238,7 +238,8 @@ export function DriveApp({
     });
 
     const num = fmtSize(used).split(" ");
-    const tagSegments = tags.map((tg) => ({
+    const sortedTags = [...tags].sort((a, b) => (byTag[b.id] || 0) - (byTag[a.id] || 0));
+    const tagSegments = sortedTags.map((tg) => ({
       label: tg.name,
       color: TAG_COLORS[tg.color] || "#888",
       pct: used > 0 ? (byTag[tg.id] / used) * 100 : 0,
