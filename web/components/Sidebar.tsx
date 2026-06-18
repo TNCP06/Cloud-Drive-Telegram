@@ -5,6 +5,7 @@ import { Icon } from "@/lib/icons";
 import { TAG_COLORS } from "@/lib/kinds";
 import type { Tag } from "@/lib/types";
 import { logout } from "@/app/login/actions";
+import { TagLegend } from "./TagLegend";
 
 export interface Counts {
   all: number;
@@ -229,14 +230,7 @@ export function Sidebar({
           )}
           <span style={{ flex: 1, background: "var(--line)" }}></span>
         </div>
-        <div className="Tags">
-          {storage.legend.map((l) => (
-            <span key={l.label}>
-              <i style={{ background: l.color }}></i>
-              {l.label}
-            </span>
-          ))}
-        </div>
+        <TagLegend items={storage.legend} />
       </div>
     </aside>
   );

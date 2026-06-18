@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Icon } from "@/lib/icons";
 import { fmtSize, relGroup } from "@/lib/format";
-import { STORAGE_GROUPS, TAG_COLORS } from "@/lib/kinds";
+import { TAG_COLORS } from "@/lib/kinds";
 import type { DriveFile, Tag, Folder } from "@/lib/types";
 import { Sidebar, type Counts, type Storage } from "./Sidebar";
 import { FileCard, FileRow, FolderCard, FolderRow, Menu, MenuItem } from "./FileViews";
@@ -216,32 +216,51 @@ export function DriveApp({
     return c;
   }, [files, tags]);
 
-  /* ---- storage meter (composition by kind) ---- */
+  /* ---- storage meter (composition by tag) ---- */
   const storage: Storage = useMemo(() => {
     const live = files.filter((f) => !f.trashed);
     const used = live.reduce((s, f) => s + (f.size || 0), 0);
-    const byGroup: Record<string, number> = {};
-    STORAGE_GROUPS.forEach((g) => (byGroup[g.key] = 0));
+
+    // Size used per tag. A file with multiple tags contributes its full
+    // size to each tag it belongs to (segments may sum to > 100%, same
+    // tradeoff any multi-tag breakdown has).
+    const byTag: Record<number, number> = {};
+    tags.forEach((tg) => (byTag[tg.id] = 0));
+    let untaggedSize = 0;
     live.forEach((f) => {
-      const g = STORAGE_GROUPS.find((x) => x.key === f.kind);
-      if (g) byGroup[g.key] += f.size || 0;
+      if (f.tags.length === 0) {
+        untaggedSize += f.size || 0;
+        return;
+      }
+      f.tags.forEach((tagId) => {
+        byTag[tagId] = (byTag[tagId] || 0) + (f.size || 0);
+      });
     });
+
     const num = fmtSize(used).split(" ");
+    const tagSegments = tags.map((tg) => ({
+      label: tg.name,
+      color: TAG_COLORS[tg.color] || "#888",
+      pct: used > 0 ? (byTag[tg.id] / used) * 100 : 0,
+      sizeLabel: fmtSize(byTag[tg.id]),
+    }));
+    const untaggedSegment = {
+      label: "Untagged",
+      color: "var(--line-2)",
+      pct: used > 0 ? (untaggedSize / used) * 100 : 0,
+      sizeLabel: fmtSize(untaggedSize),
+    };
+    const segments = [...tagSegments, untaggedSegment];
+
     return {
       usedLabel: { num: num[0], unit: " " + (num[1] || "B") },
       capLabel: "Telegram",
-      segments: STORAGE_GROUPS.map((g) => ({
-        label: g.label,
-        color: g.color,
-        pct: used > 0 ? (byGroup[g.key] / used) * 100 : 0,
-        sizeLabel: fmtSize(byGroup[g.key]),
-      })),
-      legend: STORAGE_GROUPS.filter((g) => byGroup[g.key] > 0).map((g) => ({
-        label: g.label,
-        color: g.color,
-      })),
+      segments,
+      legend: segments
+        .filter((s) => s.pct > 0)
+        .map((s) => ({ label: s.label, color: s.color })),
     };
-  }, [files]);
+  }, [files, tags]);
 
   /* ---- filtered + sorted item list ---- */
   const items = useMemo(() => {

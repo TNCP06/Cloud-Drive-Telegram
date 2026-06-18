@@ -28,8 +28,4 @@ export const KINDS: Record<Kind, { icon: string; tint: string; label: string }> 
   media: { icon: "video", tint: "#A65656", label: "Media" },
 };
 
-// Grup storage meter (per kind).
-export const STORAGE_GROUPS: { key: Kind; label: string; color: string }[] = [
-  { key: "media", label: "Media", color: "#A65656" },
-  { key: "archive", label: "Archive", color: "#8A8068" },
-];
+
