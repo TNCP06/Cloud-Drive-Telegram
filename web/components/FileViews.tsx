@@ -107,18 +107,6 @@ export function FolderCard({
 }) {
   return (
     <div className="card folder" onClick={() => onOpen(folder.id)}>
-      <button
-        className="kebab"
-        title="Actions"
-        style={{ left: "auto", right: "9px" }}
-        onClick={(e) => {
-          e.stopPropagation();
-          onMenu(folder, e.currentTarget);
-        }}
-      >
-        <Icon name="kebab" size={15} />
-      </button>
-
       <div className="thumb">
         <div
           style={{
@@ -133,6 +121,19 @@ export function FolderCard({
           <Icon name="folder" size={26} stroke={1.5} style={{ color: "var(--accent)" }} />
         </div>
       </div>
+
+      <button
+        className="kebab"
+        title="Actions"
+        style={{ left: "auto", right: "9px" }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onMenu(folder, e.currentTarget);
+        }}
+      >
+        <Icon name="kebab" size={15} />
+      </button>
+
       <div className="fname" title={folder.name}>
         {folder.name}
       </div>
@@ -199,6 +200,14 @@ export function FileCard({
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
     <div className={`card ${selected ? "sel" : ""}`} onClick={() => onOpen(item)}>
+      <div className="thumb">
+        {item.thumb ? (
+          <Image src={item.thumb!} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+        ) : (
+          <TypeTile kind={item.kind} size={40} />
+        )}
+      </div>
+
       {onSelectToggle && (
         <button
           className={`card-check ${selected ? "on" : ""}`}
@@ -231,13 +240,6 @@ export function FileCard({
         />
       )}
 
-      <div className="thumb">
-        {item.thumb ? (
-          <Image src={item.thumb!} alt="" fill unoptimized style={{ objectFit: "cover" }} />
-        ) : (
-          <TypeTile kind={item.kind} size={40} />
-        )}
-      </div>
       <div className="fname" title={item.name}>
         {item.version ? item.family : item.name}
       </div>
