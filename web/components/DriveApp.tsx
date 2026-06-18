@@ -77,6 +77,7 @@ export function DriveApp({
   // Preview options
   const [initialShowDetails, setInitialShowDetails] = useState(false);
   const [initialEditing, setInitialEditing] = useState(false);
+  const [detailsOnly, setDetailsOnly] = useState(false);
 
   // Destructive-action confirmation. mode "trash" = move to Trash (reversible);
   // mode "purge" = delete from Telegram + DB now (irreversible).
@@ -93,6 +94,7 @@ export function DriveApp({
   const closePreview = () => {
     previewClosedTimeRef.current = Date.now();
     setPreviewId(null);
+    setDetailsOnly(false);
   };
 
   const closeMenu = () => {
@@ -382,6 +384,7 @@ export function DriveApp({
                 if (isClickThrough()) return;
                 setInitialShowDetails(false);
                 setInitialEditing(false);
+                setDetailsOnly(false);
                 openPreview(it);
               }}
               versionCount={counts.get(item.familyKey)}
@@ -437,6 +440,7 @@ export function DriveApp({
               if (isClickThrough()) return;
               setInitialShowDetails(false);
               setInitialEditing(false);
+              setDetailsOnly(false);
               openPreview(it);
             }}
             versionCount={counts.get(item.familyKey)}
@@ -667,6 +671,7 @@ export function DriveApp({
                   onClick={() => {
                     setInitialEditing(true);
                     setInitialShowDetails(true);
+                    setDetailsOnly(false);
                     openPreview(menu.item);
                     closeMenu();
                   }}
@@ -677,6 +682,7 @@ export function DriveApp({
                   onClick={() => {
                     setInitialEditing(false);
                     setInitialShowDetails(true);
+                    setDetailsOnly(true);
                     openPreview(menu.item);
                     closeMenu();
                   }}
@@ -775,6 +781,7 @@ export function DriveApp({
           }}
           initialEditing={initialEditing}
           initialShowDetails={initialShowDetails}
+          detailsOnly={detailsOnly}
         />
       )}
 

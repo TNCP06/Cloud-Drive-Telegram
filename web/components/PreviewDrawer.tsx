@@ -85,6 +85,7 @@ export function PreviewDrawer({
   onSave,
   initialEditing = false,
   initialShowDetails = false,
+  detailsOnly = false,
 }: {
   item: DriveFile;
   tags: Tag[];
@@ -100,6 +101,7 @@ export function PreviewDrawer({
   onSave: (item: DriveFile, input: { title: string; kind: Kind; tags: string }) => void;
   initialEditing?: boolean;
   initialShowDetails?: boolean;
+  detailsOnly?: boolean;
 }) {
   const router = useRouter();
   const meta = KINDS[item.kind] || { icon: "archive", tint: "#8A8068", label: item.kind || "Archive" };
@@ -304,10 +306,16 @@ export function PreviewDrawer({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (showDetails && !editing) closeDetails();
-        else onClose();
+        if (detailsOnly) {
+          onClose();
+        } else if (showDetails && !editing) {
+          closeDetails();
+        } else {
+          onClose();
+        }
         return;
       }
+      if (detailsOnly) return;
       if (editing || showDetails) return;
 
       // Ignore global shortcuts if the user is typing in any input/textarea/editable
@@ -339,7 +347,7 @@ export function PreviewDrawer({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, showDetails, editing, go, item.kind, activePart, handleVideoKey]);
+  }, [onClose, showDetails, editing, go, item.kind, activePart, handleVideoKey, detailsOnly]);
 
   const save = () => {
     if (!title.trim()) return;
@@ -361,105 +369,109 @@ export function PreviewDrawer({
   return (
     <>
       {/* ---- Full-screen photo layer ---- */}
-      <div className="viewer-scrim" onClick={handleStageClick}></div>
-      <div className={"viewer" + (multi ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
-        <div className="viewer-stage" onClick={handleStageClick}>
-          {isPartStreamableVideo(activePart, item.kind) ? (
-            <video
-              ref={videoRef}
-              key={activePart!.partId}
-              src={`/api/stream/${activePart!.partId}`}
-              poster={activePart!.thumb || undefined}
-              controls
-              autoPlay
-              preload="metadata"
-              tabIndex={0}
-              onClick={(e) => e.stopPropagation()}
-              onVolumeChange={(e) => {
-                const video = e.currentTarget;
-                try {
-                  localStorage.setItem("video-volume", String(video.volume));
-                  localStorage.setItem("video-muted", String(video.muted));
-                } catch {}
-              }}
-              style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
-            />
-          ) : activePart?.thumb ? (
-            <img src={activePart.thumb} alt={item.name} onClick={(e) => e.stopPropagation()} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
-          ) : (
-            <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />
-          )}
-        </div>
+      {!detailsOnly && (
+        <>
+          <div className="viewer-scrim" onClick={handleStageClick}></div>
+          <div className={"viewer" + (multi ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
+            <div className="viewer-stage" onClick={handleStageClick}>
+              {isPartStreamableVideo(activePart, item.kind) ? (
+                <video
+                  ref={videoRef}
+                  key={activePart!.partId}
+                  src={`/api/stream/${activePart!.partId}`}
+                  poster={activePart!.thumb || undefined}
+                  controls
+                  autoPlay
+                  preload="metadata"
+                  tabIndex={0}
+                  onClick={(e) => e.stopPropagation()}
+                  onVolumeChange={(e) => {
+                    const video = e.currentTarget;
+                    try {
+                      localStorage.setItem("video-volume", String(video.volume));
+                      localStorage.setItem("video-muted", String(video.muted));
+                    } catch {}
+                  }}
+                  style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
+                />
+              ) : activePart?.thumb ? (
+                <img src={activePart.thumb} alt={item.name} onClick={(e) => e.stopPropagation()} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
+              ) : (
+                <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />
+              )}
+            </div>
 
-        {/* Floating controls above the photo. Close/edit/delete on the left, download/
-            favorite/kebab on the right — balanced so the title stays centered.
-            Kebab only opens the metadata panel. */}
-        <div className="viewer-top">
-          <div className="viewer-tools">
-            <button className="viewer-iconbtn" onClick={onClose} title="Close">
-              <Icon name="close" size={17} />
-            </button>
+            {/* Floating controls above the photo. Close/edit/delete on the left, download/
+                favorite/kebab on the right — balanced so the title stays centered.
+                Kebab only opens the metadata panel. */}
+            <div className="viewer-top">
+              <div className="viewer-tools">
+                <button className="viewer-iconbtn" onClick={onClose} title="Close">
+                  <Icon name="close" size={17} />
+                </button>
+              </div>
+              <span className="viewer-name">{item.version ? item.family : item.name}</span>
+              <div className="viewer-tools" style={{ width: 32 }}></div>
+            </div>
+
+            {(canPrev || canNext) && (
+              <>
+                <button
+                  className="viewer-nav prev"
+                  onClick={() => go(-1)}
+                  disabled={!canPrev}
+                  title="Previous (←)"
+                >
+                  <Icon name="back" size={22} />
+                </button>
+                <button
+                  className="viewer-nav next"
+                  onClick={() => go(1)}
+                  disabled={!canNext}
+                  title="Next (→)"
+                >
+                  <Icon name="chevright" size={22} />
+                </button>
+              </>
+            )}
+
+            {multi && (
+              <div className="viewer-strip">
+                {partsList.map((part, i) => (
+                  <button
+                    key={i}
+                    className={"viewer-thumb" + (i === activeIdx ? " on" : "")}
+                    onClick={() => setActiveIdx(i)}
+                    title={`Part ${i + 1}`}
+                  >
+                    {part.thumb ? (
+                      <Image src={part.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+                    ) : (
+                      <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
+                        <Icon name={isPartStreamableVideo(part, item.kind) ? "video" : "file"} size={16} />
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <span className="viewer-name">{item.version ? item.family : item.name}</span>
-          <div className="viewer-tools" style={{ width: 32 }}></div>
-        </div>
-
-        {(canPrev || canNext) && (
-          <>
-            <button
-              className="viewer-nav prev"
-              onClick={() => go(-1)}
-              disabled={!canPrev}
-              title="Previous (←)"
-            >
-              <Icon name="back" size={22} />
-            </button>
-            <button
-              className="viewer-nav next"
-              onClick={() => go(1)}
-              disabled={!canNext}
-              title="Next (→)"
-            >
-              <Icon name="chevright" size={22} />
-            </button>
-          </>
-        )}
-
-        {multi && (
-          <div className="viewer-strip">
-            {partsList.map((part, i) => (
-              <button
-                key={i}
-                className={"viewer-thumb" + (i === activeIdx ? " on" : "")}
-                onClick={() => setActiveIdx(i)}
-                title={`Part ${i + 1}`}
-              >
-                {part.thumb ? (
-                  <Image src={part.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
-                ) : (
-                  <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
-                    <Icon name={isPartStreamableVideo(part, item.kind) ? "video" : "file"} size={16} />
-                  </div>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+        </>
+      )}
 
       {/* ---- Detail panel (appears when the kebab button is pressed) ---- */}
       {showDetails && (
         <>
           <div
             className="drawer-scrim"
-            onClick={closeDetails}
+            onClick={detailsOnly ? onClose : closeDetails}
           ></div>
           <div className="drawer">
             <div className="dv-head">
               <strong>{editing ? "Edit metadata" : "Details"}</strong>
               <button
                 className="iconbtn ghost"
-                onClick={closeDetails}
+                onClick={detailsOnly ? onClose : closeDetails}
                 title="Close"
               >
                 <Icon name="close" size={18} />
