@@ -85,6 +85,10 @@ export function DriveApp({
   const [toast, setToast] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  const closeMenu = () => setTimeout(() => setMenu(null), 0);
+  const closeFolderMenu = () => setTimeout(() => setFolderMenu(null), 0);
+  const closeSortMenu = () => setTimeout(() => setSortMenu(null), 0);
+
   useEffect(() => {
     if (!toast) return;
     const t = window.setTimeout(() => setToast(null), 6000);
@@ -596,7 +600,7 @@ export function DriveApp({
                 check={sort === k}
                 onClick={() => {
                   setSort(k);
-                  setSortMenu(null);
+                  closeSortMenu();
                 }}
               />
             ))}
@@ -615,7 +619,7 @@ export function DriveApp({
                   label="Restore"
                   onClick={() => {
                     doRestore(menu.item);
-                    setMenu(null);
+                    closeMenu();
                   }}
                 />
                 <div className="menu-sep"></div>
@@ -625,7 +629,7 @@ export function DriveApp({
                   danger
                   onClick={() => {
                     setConfirm({ item: menu.item, mode: "purge" });
-                    setMenu(null);
+                    closeMenu();
                   }}
                 />
               </>
@@ -638,7 +642,7 @@ export function DriveApp({
                     setInitialEditing(true);
                     setInitialShowDetails(true);
                     openPreview(menu.item);
-                    setMenu(null);
+                    closeMenu();
                   }}
                 />
                 <MenuItem
@@ -648,7 +652,7 @@ export function DriveApp({
                     setInitialEditing(false);
                     setInitialShowDetails(true);
                     openPreview(menu.item);
-                    setMenu(null);
+                    closeMenu();
                   }}
                 />
                 <MenuItem
@@ -656,7 +660,7 @@ export function DriveApp({
                   label="Move to..."
                   onClick={() => {
                     setMoveTargetIds([menu.item.id]);
-                    setMenu(null);
+                    closeMenu();
                   }}
                 />
                 <div className="menu-sep"></div>
@@ -666,7 +670,7 @@ export function DriveApp({
                   onClick={() => {
                     const url = deepLink(menu.item.slug);
                     if (url) window.open(url, "_blank");
-                    setMenu(null);
+                    closeMenu();
                   }}
                 />
                 <MenuItem
@@ -674,7 +678,7 @@ export function DriveApp({
                   label={menu.item.starred ? "Remove from favorites" : "Add to favorites"}
                   onClick={() => {
                     doStar(menu.item);
-                    setMenu(null);
+                    closeMenu();
                   }}
                 />
                 <div className="menu-sep"></div>
@@ -684,7 +688,7 @@ export function DriveApp({
                   danger
                   onClick={() => {
                     setConfirm({ item: menu.item, mode: "trash" });
-                    setMenu(null);
+                    closeMenu();
                   }}
                 />
               </>
@@ -702,7 +706,7 @@ export function DriveApp({
               label="Rename"
               onClick={() => {
                 setShowRenameFolder(folderMenu.folder);
-                setFolderMenu(null);
+                closeFolderMenu();
               }}
             />
             <MenuItem
@@ -716,7 +720,7 @@ export function DriveApp({
                     await deleteFolder(folderMenu.folder.id);
                   });
                 }
-                setFolderMenu(null);
+                closeFolderMenu();
               }}
             />
           </Menu>

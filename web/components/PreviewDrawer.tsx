@@ -371,10 +371,10 @@ export function PreviewDrawer({
                   localStorage.setItem("video-muted", String(video.muted));
                 } catch {}
               }}
-              style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
+              style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
             />
           ) : activePart?.thumb ? (
-            <Image src={activePart.thumb} alt={item.name} fill unoptimized onClick={(e) => e.stopPropagation()} style={{ objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
+            <img src={activePart.thumb} alt={item.name} onClick={(e) => e.stopPropagation()} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
           ) : (
             <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />
           )}
