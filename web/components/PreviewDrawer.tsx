@@ -281,11 +281,11 @@ export function PreviewDrawer({
       }
     };
 
-    video.addEventListener("keydown", handleNativeKey);
-    video.addEventListener("keyup", handleNativeKey);
+    video.addEventListener("keydown", handleNativeKey, true);
+    video.addEventListener("keyup", handleNativeKey, true);
     return () => {
-      video.removeEventListener("keydown", handleNativeKey);
-      video.removeEventListener("keyup", handleNativeKey);
+      video.removeEventListener("keydown", handleNativeKey, true);
+      video.removeEventListener("keyup", handleNativeKey, true);
     };
   }, [activePart, item.kind, gallery, handleVideoKey]);
 

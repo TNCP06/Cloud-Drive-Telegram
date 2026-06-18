@@ -85,9 +85,23 @@ export function DriveApp({
   const [toast, setToast] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const closeMenu = () => setTimeout(() => setMenu(null), 0);
-  const closeFolderMenu = () => setTimeout(() => setFolderMenu(null), 0);
-  const closeSortMenu = () => setTimeout(() => setSortMenu(null), 0);
+  const menuClosedTimeRef = useRef<number>(0);
+  const markMenuClosed = () => {
+    menuClosedTimeRef.current = Date.now();
+  };
+
+  const closeMenu = () => {
+    markMenuClosed();
+    setTimeout(() => setMenu(null), 0);
+  };
+  const closeFolderMenu = () => {
+    markMenuClosed();
+    setTimeout(() => setFolderMenu(null), 0);
+  };
+  const closeSortMenu = () => {
+    markMenuClosed();
+    setTimeout(() => setSortMenu(null), 0);
+  };
 
   useEffect(() => {
     if (!toast) return;
@@ -334,6 +348,9 @@ export function DriveApp({
   function renderItems(list: DriveFile[]) {
     const onMenu = (item: DriveFile, anchor: HTMLElement) => setMenu({ anchor, item });
     const { list: shown, counts } = collapseVersions(list);
+    const isClickThrough = () => {
+      return Date.now() - menuClosedTimeRef.current < 100;
+    };
     if (viewMode === "grid") {
       return (
         <div className="grid">
@@ -342,6 +359,7 @@ export function DriveApp({
               key={`folder-${folder.id}`}
               folder={folder}
               onOpen={(id) => {
+                if (isClickThrough()) return;
                 setCurrentFolderId(id);
                 setSelectedIds([]);
               }}
@@ -356,6 +374,7 @@ export function DriveApp({
               onStar={doStar}
               onMenu={onMenu}
               onOpen={(it) => {
+                if (isClickThrough()) return;
                 setInitialShowDetails(false);
                 setInitialEditing(false);
                 openPreview(it);
@@ -395,6 +414,7 @@ export function DriveApp({
             key={`folder-${folder.id}`}
             folder={folder}
             onOpen={(id) => {
+              if (isClickThrough()) return;
               setCurrentFolderId(id);
               setSelectedIds([]);
             }}
@@ -409,6 +429,7 @@ export function DriveApp({
             onStar={doStar}
             onMenu={onMenu}
             onOpen={(it) => {
+              if (isClickThrough()) return;
               setInitialShowDetails(false);
               setInitialEditing(false);
               openPreview(it);
@@ -590,7 +611,7 @@ export function DriveApp({
 
       {sortMenu && (
         <>
-          <div className="menu-scrim" onClick={() => setSortMenu(null)} />
+          <div className="menu-scrim" onClick={() => { markMenuClosed(); setSortMenu(null); }} />
           <Menu anchor={sortMenu} onClose={() => setSortMenu(null)} width={210}>
             <div className="menu-label">Sort by</div>
             {Object.entries(SORTS).map(([k, s]) => (
@@ -610,7 +631,7 @@ export function DriveApp({
 
       {menu && (
         <>
-          <div className="menu-scrim" onClick={() => setMenu(null)} />
+          <div className="menu-scrim" onClick={() => { markMenuClosed(); setMenu(null); }} />
           <Menu anchor={menu.anchor} onClose={() => setMenu(null)} width={206}>
             {menu.item.trashed ? (
               <>
@@ -699,7 +720,7 @@ export function DriveApp({
 
       {folderMenu && (
         <>
-          <div className="menu-scrim" onClick={() => setFolderMenu(null)} />
+          <div className="menu-scrim" onClick={() => { markMenuClosed(); setFolderMenu(null); }} />
           <Menu anchor={folderMenu.anchor} onClose={() => setFolderMenu(null)} width={180}>
             <MenuItem
               icon="edit"
