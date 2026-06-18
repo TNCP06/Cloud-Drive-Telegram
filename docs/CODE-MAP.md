@@ -147,13 +147,8 @@ and streams local file if active, else chunk-streams via Telethon).
 ### `web/components/` — UI (client)
 - `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).
 - `DriveApp.tsx` — top-level app shell/state (largest component). `Sidebar.tsx` — nav/filters.
-- `FileViews.tsx` — grid/list rendering of `DriveFile`s. `PreviewDrawer.tsx` — item detail +
-  on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the
-  active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders a `<video>`
-  element sourced from `/api/stream/{partId}` with the thumbnail as poster (styled to fit
-  the player area immediately). Supports keyboard shortcuts for video streaming controls (ArrowLeft/Right
-  to seek 5s backward/forward, F to toggle fullscreen, and Shift + ArrowLeft/Right to switch files).
-  `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
+- `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders (`FolderCard`/`FolderRow`) with checkboxes for multi-select, a star toggle, and a kebab action button (now ordered to stack correctly above thumbnails).
+- `PreviewDrawer.tsx` — item detail + on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders a `<video>` element sourced from `/api/stream/{partId}` (styled using `maxWidth`/`maxHeight` to shrink-to-fit the player area immediately, allowing clicks on letterbox areas to trigger `onClose`). All action buttons are removed from this drawer's top bar (delegated entirely to the external card/row kebab menus). Supports keyboard shortcuts for video controls. `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
 - `UploadManager.tsx` — upload queue UI + watcher/bot start/stop; **Source toggle**: "Upload
   from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).
   `FileUploader.tsx` — **resumable browser uploader** (16 MB chunks, auto-resume on drop via

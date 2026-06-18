@@ -124,6 +124,7 @@ These are load-bearing — break them and indexing/downloads break:
   change the slug on rename — it's the multi-part grouping key (`ON CONFLICT` during
   indexing) and the download deep-link target. `family`/`version` are re-derived from the
   title at read time so a rename still shows in the UI.
+- **Folders and nesting:** Folder hierarchy is managed in the `folders` table. The bot's `upsert_item` auto-resolves caption paths (e.g. `Movies/Sci-Fi/Inception`) to nested folders. Deleting a folder recursively soft-deletes (sets `items.deleted_at` and `folders.deleted_at`) all nested subfolders and files.
 - **Soft delete:** `items.deleted_at` set → vanishes from UI instantly; the real Telegram
   message survives until the bot's daily purge (>7 days), so restore is lossless. The Trash
   view can also purge a single item on demand via `purgeNow()` (irreversible).
