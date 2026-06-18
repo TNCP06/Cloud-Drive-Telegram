@@ -21,10 +21,9 @@ yet — common for video, which Telegram generates asynchronously — it schedul
 forward), `on_start` (download via `copy_message` for authorized users), `on_auth` / `on_approve` / 
 `on_revoke` / `on_list_users` / `on_set_web_url` (user authorization, management, and settings), `send_main_menu` / `on_menu` (button-driven main menu and guide),
 `on_cancel` (cancel active file upload), `on_private_file` (interactive PM upload & Bot Drop intake),
-`on_private_text` / `on_callback_query` (interactive questionnaire and menu callbacks), `purge_job` (daily trash purge),
-`bot_heartbeat_job` (writes to `bot_heartbeat` every 10 s — web UI liveness check).
+`on_private_text` / `on_callback_query` (interactive questionnaire and menu callbacks), `purge_job` (daily trash purge).
 Lifecycle: `post_init`/`post_shutdown` (Turso client, auto-migration for `authorized_users` table, and commands menu registration), `main` (handler registration +
-`run_daily` + `run_repeating` heartbeat). **Env:** `BOT_TOKEN`, `STORAGE_CHANNEL_ID`,
+`run_daily`). **Env:** `BOT_TOKEN`, `STORAGE_CHANNEL_ID`,
 `OWNER_USER_ID`, `TURSO_*`, `AUTH_PASSWORD`/`APP_PASSWORD`.
 
 ### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
@@ -73,7 +72,7 @@ and streams local file if active, else chunk-streams via Telethon).
 ### Supporting scripts
 - `login.py` — one-time Telethon login → creates `worker.session` (or any custom session, e.g. `streamer.session` via CLI argument).
 - `schema.sql` — full Turso schema (run once). `migration-tags-color.sql` + `run-migration.py`
-  — adds `tags.color`. `migration-bot-heartbeat.sql` — adds `bot_heartbeat` table.
+  — adds `tags.color`. `migration-bot-heartbeat.sql` — adds legacy `bot_heartbeat` table.
   `status.py` — quick DB status dump.
 - `run-all.cmd` — start bot + watcher minimized (Windows). `uninstall-autostart.ps1` — Windows startup deregistration.
 - `Dockerfile` — shared image for bot + watcher (ffmpeg + p7zip). See root

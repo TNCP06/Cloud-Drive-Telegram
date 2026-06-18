@@ -225,7 +225,7 @@ All in [`web/app/actions.ts`](../web/app/actions.ts), no Telegram involved:
 
 ## H. Watcher lifecycle & control
 
-- **Heartbeat**: Watcher writes `watcher_heartbeat` every 10 s. Same for the bot (`bot_heartbeat`). While these tables are still updated by the scripts, the frontend UI no longer displays these status indicators or heartbeats.
+- **Heartbeat**: Watcher writes `watcher_heartbeat` every 10 s. While this table is still updated by the watcher, the frontend UI no longer displays these status indicators or heartbeats.
 - **Process control**: The web UI start/stop buttons for the bot and watcher have been completely removed. The processes are started manually (laptop mode) or managed as always-on compose services (Docker mode). The actions `startWatcher`, `stopWatcher`, `startBot`, and `stopBot` are no longer active in the web page.
 - **Startup Back-Indexing**: In Docker/server mode, the watcher service container automatically runs `index_history.py` before starting `watcher.py` on startup. This uses Telethon to back-index any channel messages/updates that occurred while the services were offline, keeping Turso synchronized.
 

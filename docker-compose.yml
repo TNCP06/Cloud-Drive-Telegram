@@ -51,8 +51,6 @@ services:
       dockerfile: bot/Dockerfile
     command: ["python", "-u", "bot.py"]
     env_file: .env
-    environment:
-      TELEGRAM_API_URL: http://telegram-bot-api:8081
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
     restart: unless-stopped

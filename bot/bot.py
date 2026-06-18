@@ -580,18 +580,7 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # JobQueue — daily purge of trashed items older than 7 days
 # ---------------------------------------------------------------------------
-async def bot_heartbeat_job(context: ContextTypes.DEFAULT_TYPE):
-    db = context.bot_data.get("db")
-    if db is None:
-        return
-    try:
-        await db.execute(
-            "INSERT INTO bot_heartbeat (id, last_seen, status) VALUES (1, datetime('now'), 'idle') "
-            "ON CONFLICT(id) DO UPDATE SET last_seen=datetime('now'), status=excluded.status",
-            [],
-        )
-    except Exception:  # noqa: BLE001
-        log.exception("Failed to write bot heartbeat")
+
 
 
 async def purge_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1557,8 +1546,7 @@ def main():
         )
     )
 
-    # Heartbeat: write to bot_heartbeat every 10 s so the web UI knows the bot is alive.
-    app.job_queue.run_repeating(bot_heartbeat_job, interval=10, first=5)
+
 
     # Daily purge of trashed items older than 7 days (03:00 UTC).
     app.job_queue.run_daily(purge_job, time=dtime(hour=3, minute=0))
