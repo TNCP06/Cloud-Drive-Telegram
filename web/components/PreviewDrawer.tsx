@@ -83,6 +83,8 @@ export function PreviewDrawer({
   onPurge,
   onRestore,
   onSave,
+  initialEditing = false,
+  initialShowDetails = false,
 }: {
   item: DriveFile;
   tags: Tag[];
@@ -96,12 +98,14 @@ export function PreviewDrawer({
   onPurge: (item: DriveFile) => void;
   onRestore: (item: DriveFile) => void;
   onSave: (item: DriveFile, input: { title: string; kind: Kind; tags: string }) => void;
+  initialEditing?: boolean;
+  initialShowDetails?: boolean;
 }) {
   const router = useRouter();
   const meta = KINDS[item.kind] || { icon: "archive", tint: "#8A8068", label: item.kind || "Archive" };
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
 
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(initialEditing);
   const [title, setTitle] = useState(item.name);
   const [kind, setKind] = useState<Kind>(item.kind);
   const [tagsText, setTagsText] = useState(itemTags.map((t) => t.name).join(", "));
@@ -116,17 +120,17 @@ export function PreviewDrawer({
   );
   const [activeIdx, setActiveIdx] = useState(0);
   // Detail panel is hidden behind the kebab button; photos show full-screen.
-  const [showDetails, setShowDetails] = useState(false);
+  const [showDetails, setShowDetails] = useState(initialEditing || initialShowDetails);
 
   // Reset form when the opened item changes (or when leaving edit mode).
   useEffect(() => {
-    setEditing(false);
-    setShowDetails(false);
+    setEditing(initialEditing);
+    setShowDetails(initialEditing || initialShowDetails);
     setTitle(item.name);
     setKind(item.kind);
     setTagsText(item.tags.map((id) => tags.find((t) => t.id === id)?.name).filter(Boolean).join(", "));
     setThumbMsg(null);
-  }, [item.id, item.name, item.kind, item.tags, tags]);
+  }, [item.id, item.name, item.kind, item.tags, tags, initialEditing, initialShowDetails]);
 
   const onRefreshThumb = async () => {
     setThumbBusy(true);

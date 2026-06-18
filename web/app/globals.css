@@ -910,3 +910,108 @@ button { font-family: inherit; }
 .fu-row2 { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
 .fu-phase { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
 .fu-err { color: #A8362B; }
+
+/* Checkbox and position overrides for multi-select and floating menu */
+.card .card-check {
+  position: absolute; top: 9px; left: 9px;
+  width: 27px; height: 27px; border-radius: 7px;
+  display: grid; place-items: center; cursor: pointer;
+  color: var(--faint); border: 0; background: color-mix(in oklab, var(--card) 70%, transparent);
+  opacity: 0; transition: opacity .12s;
+  z-index: 20;
+}
+.card:hover .card-check, .card .card-check.on { opacity: 1; }
+.card .card-check.on { color: var(--accent); }
+
+.card .kebab {
+  left: auto !important; right: 9px !important;
+  z-index: 20;
+}
+.card:hover .kebab { opacity: 1 !important; }
+
+.card .star {
+  right: 42px !important;
+  z-index: 20;
+}
+.card:hover .star { opacity: 1 !important; }
+
+/* Selection toolbar style */
+.selection-toolbar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  padding: 10px 20px;
+  box-shadow: var(--sh-3);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 250;
+  animation: slideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideUp {
+  from { transform: translate(-50%, 100px); opacity: 0; }
+  to { transform: translate(-50%, 0); opacity: 1; }
+}
+
+.selection-toolbar .sel-count {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  border-right: 1px solid var(--line);
+  padding-right: 16px;
+}
+
+.selection-toolbar .sel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selection-toolbar button.action-btn {
+  background: none;
+  border: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.12s;
+}
+
+.selection-toolbar button.action-btn:hover {
+  background: var(--card-2);
+  color: var(--ink);
+}
+
+.selection-toolbar button.action-btn.danger-btn:hover {
+  background: color-mix(in oklab, var(--red) 10%, var(--card));
+  color: var(--red);
+}
+
+/* Row checkbox styling */
+.row-check {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  color: var(--faint);
+  transition: opacity 0.12s;
+  flex: none;
+  margin-right: 8px;
+  border: 0;
+  background: none;
+}
+.row:hover .row-check, .row-check.on { opacity: 1; color: var(--muted); }
+.row-check.on { color: var(--accent) !important; }
+

@@ -5,6 +5,6 @@ import { DriveApp } from "@/components/DriveApp";
 export const dynamic = "force-dynamic";
 
 export default async function TrashPage() {
-  const { files, tags } = await getDriveData();
-  return <DriveApp files={files} tags={tags} initialView="trash" />;
+  const { files, tags, folders } = await getDriveData();
+  return <DriveApp files={files} tags={tags} folders={folders} initialView="trash" />;
 }

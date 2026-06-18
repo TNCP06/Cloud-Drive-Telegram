@@ -43,8 +43,8 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 
 ```
                     ┌───────────────────────── Turso (libSQL) ─────────────────────────┐
-                    │  items · parts · tags · item_tags · thumbnails · jobs ·           │
-                    │  upload_jobs · watcher_heartbeat · bot_heartbeat                  │
+                    │  folders · items · parts · tags · item_tags · thumbnails ·       │
+                    │  jobs · upload_jobs · watcher_heartbeat · bot_heartbeat          │
                     └──▲───────────▲──────────────▲──────────────▲────────────▲─────────┘
    read/write metadata │           │ index result │ claim job    │ heartbeat  │ read grid
    (instant, no TG)    │           │              │ + progress   │            │

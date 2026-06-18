@@ -4,12 +4,26 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Icon } from "@/lib/icons";
 import { fmtSize, relGroup } from "@/lib/format";
 import { STORAGE_GROUPS, TAG_COLORS } from "@/lib/kinds";
-import type { DriveFile, Tag } from "@/lib/types";
+import type { DriveFile, Tag, Folder } from "@/lib/types";
 import { Sidebar, type Counts, type Storage } from "./Sidebar";
-import { FileCard, FileRow, Menu, MenuItem } from "./FileViews";
+import { FileCard, FileRow, FolderCard, FolderRow, Menu, MenuItem } from "./FileViews";
 import { PreviewDrawer } from "./PreviewDrawer";
 import { TagManager } from "./TagManager";
-import { toggleFavorite, softDelete, restore, purgeNow, updateMetadata } from "@/app/actions";
+import {
+  toggleFavorite,
+  softDelete,
+  restore,
+  purgeNow,
+  updateMetadata,
+  createFolder,
+  renameFolder,
+  deleteFolder,
+  moveItemsToFolder,
+  bulkToggleFavorite,
+  bulkSoftDelete,
+  bulkRestore,
+  bulkPurgeNow
+} from "@/app/actions";
 import { prefetchGallery } from "@/lib/gallery-cache";
 
 type View = "all" | "recent" | "starred" | "trash" | "tag";
@@ -29,10 +43,12 @@ const SORTS: Record<string, { label: string; fn: (a: DriveFile, b: DriveFile) =>
 export function DriveApp({
   files,
   tags,
+  folders = [],
   initialView = "all",
 }: {
   files: DriveFile[];
   tags: Tag[];
+  folders?: Folder[];
   initialView?: View;
 }) {
   const [view, setView] = useState<View>(initialView);
@@ -46,6 +62,22 @@ export function DriveApp({
   const [menu, setMenu] = useState<{ anchor: HTMLElement; item: DriveFile } | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [manageTags, setManageTags] = useState(false);
+
+  // Folder states
+  const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
+  const [showCreateFolder, setShowCreateFolder] = useState(false);
+  const [showRenameFolder, setShowRenameFolder] = useState<Folder | null>(null);
+  const [moveTargetIds, setMoveTargetIds] = useState<number[]>([]);
+  const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
+
+  // Multi-select states
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [confirmBulk, setConfirmBulk] = useState<{ ids: number[]; mode: "trash" | "purge" } | null>(null);
+
+  // Preview options
+  const [initialShowDetails, setInitialShowDetails] = useState(false);
+  const [initialEditing, setInitialEditing] = useState(false);
+
   // Destructive-action confirmation. mode "trash" = move to Trash (reversible);
   // mode "purge" = delete from Telegram + DB now (irreversible).
   const [confirm, setConfirm] = useState<{ item: DriveFile; mode: "trash" | "purge" } | null>(null);
@@ -180,11 +212,37 @@ export function DriveApp({
       list = list.filter((f) => (Date.now() - f.modified) / 86400000 < 14);
     else if (view === "tag") list = list.filter((f) => f.tags.includes(activeTag!));
 
+    // Filter items by current folder in the main directory when search is not active
+    if (view === "all" && !q) {
+      list = list.filter((f) => f.folderId === currentFolderId);
+    }
+
     if (q) list = list.filter((f) => f.name.toLowerCase().includes(q));
 
     const fn = SORTS[sort].fn;
     return [...list].sort(fn);
-  }, [files, view, activeTag, query, sort]);
+  }, [files, view, activeTag, query, sort, currentFolderId]);
+
+  /* ---- folders at the current level ---- */
+  const currentFolders = useMemo(() => {
+    if (view !== "all" || query) return [];
+    return folders.filter((f) => f.parentId === currentFolderId);
+  }, [folders, view, currentFolderId, query]);
+
+  /* ---- breadcrumbs path ---- */
+  const breadcrumbs = useMemo(() => {
+    if (view !== "all") return null;
+    const crumbs = [{ id: null as number | null, name: "All files" }];
+    let currId = currentFolderId;
+    const path = [];
+    while (currId !== null) {
+      const folder = folders.find((f) => f.id === currId);
+      if (!folder) break;
+      path.unshift({ id: folder.id, name: folder.name });
+      currId = folder.parentId;
+    }
+    return [...crumbs, ...path];
+  }, [view, currentFolderId, folders]);
 
   /* ---- grouping for the "Recent" view ---- */
   const grouped = useMemo(() => {
@@ -204,12 +262,16 @@ export function DriveApp({
     setActiveTag(null);
     setQuery("");
     setNavOpen(false);
+    setCurrentFolderId(null);
+    setSelectedIds([]);
   };
   const goTag = (id: number) => {
     setView("tag");
     setActiveTag(id);
     setQuery("");
     setNavOpen(false);
+    setCurrentFolderId(null);
+    setSelectedIds([]);
   };
 
   const title =
@@ -271,6 +333,17 @@ export function DriveApp({
     if (viewMode === "grid") {
       return (
         <div className="grid">
+          {currentFolders.map((folder) => (
+            <FolderCard
+              key={`folder-${folder.id}`}
+              folder={folder}
+              onOpen={(id) => {
+                setCurrentFolderId(id);
+                setSelectedIds([]);
+              }}
+              onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
+            />
+          ))}
           {shown.map((item) => (
             <FileCard
               key={item.id}
@@ -278,9 +351,21 @@ export function DriveApp({
               tags={tags}
               onStar={doStar}
               onMenu={onMenu}
-              onOpen={openPreview}
+              onOpen={(it) => {
+                setInitialShowDetails(false);
+                setInitialEditing(false);
+                openPreview(it);
+              }}
               versionCount={counts.get(item.familyKey)}
               onPickFamily={pickFamily}
+              selected={selectedIds.includes(item.id)}
+              onSelectToggle={(it) => {
+                setSelectedIds((prev) =>
+                  prev.includes(it.id)
+                    ? prev.filter((id) => id !== it.id)
+                    : [...prev, it.id]
+                );
+              }}
             />
           ))}
         </div>
@@ -301,6 +386,17 @@ export function DriveApp({
           <span className="hide-mob">Type</span>
           <span></span>
         </div>
+        {currentFolders.map((folder) => (
+          <FolderRow
+            key={`folder-${folder.id}`}
+            folder={folder}
+            onOpen={(id) => {
+              setCurrentFolderId(id);
+              setSelectedIds([]);
+            }}
+            onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
+          />
+        ))}
         {shown.map((item) => (
           <FileRow
             key={item.id}
@@ -308,9 +404,21 @@ export function DriveApp({
             tags={tags}
             onStar={doStar}
             onMenu={onMenu}
-            onOpen={openPreview}
+            onOpen={(it) => {
+              setInitialShowDetails(false);
+              setInitialEditing(false);
+              openPreview(it);
+            }}
             versionCount={counts.get(item.familyKey)}
             onPickFamily={pickFamily}
+            selected={selectedIds.includes(item.id)}
+            onSelectToggle={(it) => {
+              setSelectedIds((prev) =>
+                prev.includes(it.id)
+                  ? prev.filter((id) => id !== it.id)
+                  : [...prev, it.id]
+              );
+            }}
           />
         ))}
       </div>
@@ -338,8 +446,38 @@ export function DriveApp({
             <Icon name="menu" size={20} />
           </button>
           <div className="crumbs">
-            <span className="crumb">{title}</span>
-            <span className="crumb-count">{items.length} item</span>
+            {breadcrumbs ? (
+              breadcrumbs.map((crumb, idx) => (
+                <span key={idx} className="crumb-item" style={{ display: "inline-flex", alignItems: "center" }}>
+                  {idx > 0 && <Icon name="chevright" size={12} style={{ margin: "0 6px", color: "var(--faint)" }} />}
+                  <button
+                    className="crumb-btn"
+                    style={{
+                      border: 0,
+                      background: "none",
+                      padding: 0,
+                      font: "inherit",
+                      cursor: crumb.id === currentFolderId ? "default" : "pointer",
+                      fontWeight: crumb.id === currentFolderId ? 600 : 400,
+                      color: crumb.id === currentFolderId ? "var(--ink)" : "var(--muted)",
+                    }}
+                    onClick={() => crumb.id !== currentFolderId && setCurrentFolderId(crumb.id)}
+                  >
+                    {crumb.name}
+                  </button>
+                </span>
+              ))
+            ) : (
+              <>
+                <span className="crumb">{title}</span>
+                <span className="crumb-count">{items.length} item</span>
+              </>
+            )}
+            {view === "all" && !query && (
+              <span className="crumb-count" style={{ marginLeft: 8 }}>
+                {currentFolders.length} folder, {items.length} item
+              </span>
+            )}
           </div>
 
           <div className="spacer"></div>
@@ -414,11 +552,24 @@ export function DriveApp({
             <Icon name={groupVersions ? "check" : "all"} size={15} />
             Group versions
           </button>
+
+          {/* New Folder Button */}
+          {view === "all" && !query && (
+            <button
+              className="sortbtn"
+              onClick={() => setShowCreateFolder(true)}
+              title="Create new folder"
+            >
+              <Icon name="plus" size={15} />
+              New Folder
+            </button>
+          )}
+
           <div className="spacer"></div>
         </div>
 
         <div className="content scroll">
-          {items.length === 0 ? (
+          {items.length === 0 && currentFolders.length === 0 ? (
             <EmptyState view={view} query={query} />
           ) : grouped ? (
             grouped.map((g) => (
@@ -476,6 +627,35 @@ export function DriveApp({
           ) : (
             <>
               <MenuItem
+                icon="edit"
+                label="Edit"
+                onClick={() => {
+                  setInitialEditing(true);
+                  setInitialShowDetails(true);
+                  openPreview(menu.item);
+                  setMenu(null);
+                }}
+              />
+              <MenuItem
+                icon="kebab"
+                label="Detail"
+                onClick={() => {
+                  setInitialEditing(false);
+                  setInitialShowDetails(true);
+                  openPreview(menu.item);
+                  setMenu(null);
+                }}
+              />
+              <MenuItem
+                icon="folder"
+                label="Move to..."
+                onClick={() => {
+                  setMoveTargetIds([menu.item.id]);
+                  setMenu(null);
+                }}
+              />
+              <div className="menu-sep"></div>
+              <MenuItem
                 icon="download"
                 label="Download"
                 onClick={() => {
@@ -484,7 +664,6 @@ export function DriveApp({
                   setMenu(null);
                 }}
               />
-              <div className="menu-sep"></div>
               <MenuItem
                 icon="star"
                 label={menu.item.starred ? "Remove from favorites" : "Add to favorites"}
@@ -508,6 +687,33 @@ export function DriveApp({
         </Menu>
       )}
 
+      {folderMenu && (
+        <Menu anchor={folderMenu.anchor} onClose={() => setFolderMenu(null)} width={180}>
+          <MenuItem
+            icon="edit"
+            label="Rename"
+            onClick={() => {
+              setShowRenameFolder(folderMenu.folder);
+              setFolderMenu(null);
+            }}
+          />
+          <MenuItem
+            icon="trash"
+            label="Delete"
+            danger
+            onClick={() => {
+              const confirmDel = window.confirm(`Delete folder "${folderMenu.folder.name}" and soft-delete all items inside?`);
+              if (confirmDel) {
+                startTransition(async () => {
+                  await deleteFolder(folderMenu.folder.id);
+                });
+              }
+              setFolderMenu(null);
+            }}
+          />
+        </Menu>
+      )}
+
       {previewItem && (
         <PreviewDrawer
           item={previewItem}
@@ -528,6 +734,8 @@ export function DriveApp({
             doSave(it, input);
             setPreviewId(null);
           }}
+          initialEditing={initialEditing}
+          initialShowDetails={initialShowDetails}
         />
       )}
 
@@ -545,6 +753,160 @@ export function DriveApp({
           mode={confirm.mode}
           onCancel={() => setConfirm(null)}
           onConfirm={runConfirm}
+        />
+      )}
+
+      {confirmBulk && (
+        <ConfirmBulkDelete
+          count={confirmBulk.ids.length}
+          mode={confirmBulk.mode}
+          onCancel={() => setConfirmBulk(null)}
+          onConfirm={() => {
+            if (confirmBulk.mode === "purge") {
+              startTransition(async () => {
+                const r = await bulkPurgeNow(confirmBulk.ids);
+                if (!r.ok) setToast(r.error ?? "Failed to delete permanently.");
+                setSelectedIds([]);
+              });
+            } else {
+              startTransition(async () => {
+                await bulkSoftDelete(confirmBulk.ids);
+                setSelectedIds([]);
+              });
+            }
+            setConfirmBulk(null);
+          }}
+        />
+      )}
+
+      {/* Multi-select Floating Selection Toolbar */}
+      {selectedIds.length > 0 && (
+        <div className="selection-toolbar">
+          <div className="sel-count">{selectedIds.length} selected</div>
+          <div className="sel-actions">
+            <button
+              className="action-btn"
+              onClick={() => {
+                const allSelectedStarred = selectedIds.every((id) => files.find((f) => f.id === id)?.starred);
+                startTransition(async () => {
+                  await bulkToggleFavorite(selectedIds, !allSelectedStarred);
+                });
+              }}
+              title="Toggle Favorite"
+            >
+              <Icon name="star" size={16} fill={selectedIds.every((id) => files.find((f) => f.id === id)?.starred)} />
+              <span>Favorite</span>
+            </button>
+            <button
+              className="action-btn"
+              onClick={() => setMoveTargetIds(selectedIds)}
+              title="Move to folder"
+            >
+              <Icon name="folder" size={16} />
+              <span>Move to</span>
+            </button>
+            {view === "trash" ? (
+              <>
+                <button
+                  className="action-btn"
+                  onClick={() => {
+                    startTransition(async () => {
+                      await bulkRestore(selectedIds);
+                      setSelectedIds([]);
+                    });
+                  }}
+                  title="Restore items"
+                >
+                  <Icon name="restore" size={16} />
+                  <span>Restore</span>
+                </button>
+                <button
+                  className="action-btn danger-btn"
+                  onClick={() => {
+                    setConfirmBulk({ ids: selectedIds, mode: "purge" });
+                  }}
+                  title="Delete permanently"
+                >
+                  <Icon name="trash" size={16} />
+                  <span>Delete permanently</span>
+                </button>
+              </>
+            ) : (
+              <button
+                className="action-btn danger-btn"
+                onClick={() => {
+                  setConfirmBulk({ ids: selectedIds, mode: "trash" });
+                }}
+                title="Delete items"
+              >
+                <Icon name="trash" size={16} />
+                <span>Delete</span>
+              </button>
+            )}
+            <button
+              className="action-btn"
+              onClick={() => {
+                if (selectedIds.length === items.length) {
+                  setSelectedIds([]);
+                } else {
+                  setSelectedIds(items.map((item) => item.id));
+                }
+              }}
+            >
+              <Icon name={selectedIds.length === items.length ? "circle" : "check"} size={16} />
+              <span>{selectedIds.length === items.length ? "Deselect all" : "Select all"}</span>
+            </button>
+            <button
+              className="action-btn"
+              style={{ borderLeft: "1px solid var(--line)", paddingLeft: "16px" }}
+              onClick={() => setSelectedIds([])}
+            >
+              <Icon name="close" size={16} />
+              <span>Clear</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Create Folder Modal */}
+      {showCreateFolder && (
+        <CreateFolderModal
+          onClose={() => setShowCreateFolder(false)}
+          onCreate={(name) => {
+            startTransition(async () => {
+              await createFolder(name, currentFolderId);
+            });
+            setShowCreateFolder(false);
+          }}
+        />
+      )}
+
+      {/* Rename Folder Modal */}
+      {showRenameFolder && (
+        <RenameFolderModal
+          folder={showRenameFolder}
+          onClose={() => setShowRenameFolder(null)}
+          onRename={(name) => {
+            startTransition(async () => {
+              await renameFolder(showRenameFolder.id, name);
+            });
+            setShowRenameFolder(null);
+          }}
+        />
+      )}
+
+      {/* Move Items to Folder Modal */}
+      {moveTargetIds.length > 0 && (
+        <MoveToFolderModal
+          folders={folders}
+          onClose={() => setMoveTargetIds([])}
+          onMove={(targetFolderId) => {
+            startTransition(async () => {
+              await moveItemsToFolder(moveTargetIds, targetFolderId);
+              setSelectedIds([]);
+            });
+            setMoveTargetIds([]);
+          }}
         />
       )}
 
@@ -621,6 +983,218 @@ function ConfirmDelete({
           <button className="btn danger" onClick={onConfirm}>
             <Icon name="trash" size={16} />
             {purge ? "Delete forever" : "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmBulkDelete({
+  count,
+  mode,
+  onCancel,
+  onConfirm,
+}: {
+  count: number;
+  mode: "trash" | "purge";
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  const purge = mode === "purge";
+
+  return (
+    <div
+      className="overlay"
+      style={{ zIndex: 320 }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className="dialog" style={{ maxWidth: 420 }}>
+        <div className="dhead">
+          <h2>{purge ? "Delete permanently" : "Move to Trash"}</h2>
+        </div>
+        <div className="dbody">
+          <p className="sub" style={{ fontSize: 14, lineHeight: 1.5 }}>
+            {purge ? (
+              <>
+                Are you sure you want to <strong>permanently delete {count} items</strong> from the
+                Telegram channel and the database right now? This cannot be undone.
+              </>
+            ) : (
+              <>
+                Are you sure you want to move <strong>{count} items</strong> to Trash? They will be
+                automatically removed from Telegram after 7 days.
+              </>
+            )}
+          </p>
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn danger" onClick={onConfirm}>
+            <Icon name="trash" size={16} />
+            {purge ? "Delete forever" : "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CreateFolderModal({
+  onClose,
+  onCreate,
+}: {
+  onClose: () => void;
+  onCreate: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+  return (
+    <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="dialog" style={{ maxWidth: 360 }}>
+        <div className="dhead">
+          <h2>New folder</h2>
+        </div>
+        <div className="dbody">
+          <input
+            className="input"
+            style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--line-2)", borderRadius: "8px", background: "var(--card-2)", color: "var(--ink)" }}
+            autoFocus
+            placeholder="Folder name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && name.trim() && onCreate(name)}
+          />
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={() => name.trim() && onCreate(name)} disabled={!name.trim()}>
+            Create
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RenameFolderModal({
+  folder,
+  onClose,
+  onRename,
+}: {
+  folder: Folder;
+  onClose: () => void;
+  onRename: (name: string) => void;
+}) {
+  const [name, setName] = useState(folder.name);
+  return (
+    <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="dialog" style={{ maxWidth: 360 }}>
+        <div className="dhead">
+          <h2>Rename folder</h2>
+        </div>
+        <div className="dbody">
+          <input
+            className="input"
+            style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--line-2)", borderRadius: "8px", background: "var(--card-2)", color: "var(--ink)" }}
+            autoFocus
+            placeholder="Folder name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && name.trim() && onRename(name)}
+          />
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={() => name.trim() && onRename(name)} disabled={!name.trim() || name.trim() === folder.name}>
+            Rename
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MoveToFolderModal({
+  folders,
+  onClose,
+  onMove,
+}: {
+  folders: Folder[];
+  onClose: () => void;
+  onMove: (folderId: number | null) => void;
+}) {
+  const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
+
+  const list = useMemo(() => {
+    const folderList: { id: number | null; name: string; depth: number }[] = [
+      { id: null, name: "All files (Root)", depth: 0 }
+    ];
+    
+    const addChildren = (parentId: number | null, depth: number) => {
+      const children = folders.filter((f) => f.parentId === parentId);
+      for (const child of children) {
+        folderList.push({ id: child.id, name: child.name, depth });
+        addChildren(child.id, depth + 1);
+      }
+    };
+    
+    addChildren(null, 1);
+    return folderList;
+  }, [folders]);
+
+  return (
+    <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="dialog" style={{ maxWidth: 400 }}>
+        <div className="dhead">
+          <h2>Move items to folder</h2>
+        </div>
+        <div className="dbody" style={{ maxHeight: 300, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4, padding: "8px 0" }}>
+          {list.map((item) => (
+            <button
+              key={item.id === null ? "root" : item.id}
+              className="btn subtle"
+              style={{
+                textAlign: "left",
+                paddingLeft: `${item.depth * 16 + 12}px`,
+                fontWeight: selectedFolderId === item.id ? 600 : 400,
+                background: selectedFolderId === item.id ? "var(--accent-soft)" : "transparent",
+                color: selectedFolderId === item.id ? "var(--accent)" : "var(--ink)",
+                border: "1px solid transparent",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                borderRadius: "6px",
+                width: "100%",
+              }}
+              onClick={() => setSelectedFolderId(item.id)}
+            >
+              <Icon name="folder" size={16} />
+              {item.name}
+            </button>
+          ))}
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={() => onMove(selectedFolderId)}>
+            Move
           </button>
         </div>
       </div>

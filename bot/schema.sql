@@ -1,6 +1,14 @@
 -- Skema final Turso (libSQL / SQLite-compatible) untuk Telegram Cloud Drive.
 -- Termasuk is_favorite + trash (deleted_at). Jalankan sekali via Turso CLI.
 
+CREATE TABLE IF NOT EXISTS folders (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    parent_id  INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS items (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     slug         TEXT UNIQUE NOT NULL,
@@ -11,7 +19,8 @@ CREATE TABLE IF NOT EXISTS items (
     is_favorite  INTEGER NOT NULL DEFAULT 0,
     date_added   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    deleted_at   TEXT                            -- NULL = aktif; terisi = di sampah
+    deleted_at   TEXT,                           -- NULL = aktif; terisi = di sampah
+    folder_id    INTEGER REFERENCES folders(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS parts (

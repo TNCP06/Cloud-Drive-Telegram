@@ -3,13 +3,13 @@ import { db } from "./db";
 import { sqliteToMs } from "./format";
 import { tagColorKey } from "./kinds";
 import { parseTitle } from "./version";
-import type { DriveFile, Kind, Tag } from "./types";
+import type { DriveFile, Folder, Kind, Tag } from "./types";
 
 // Fetch and shape all drive data from Turso (used by the main page and /trash).
-export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] }> {
-  const [itemsRs, tagsRs, itemTagsRs, thumbsRs, streamRs] = await Promise.all([
+export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[]; folders: Folder[] }> {
+  const [itemsRs, tagsRs, itemTagsRs, thumbsRs, streamRs, foldersRs] = await Promise.all([
     db.execute(
-      "SELECT id, slug, title, kind, total_parts, total_size, is_favorite, date_added, updated_at, deleted_at FROM items"
+      "SELECT id, slug, title, kind, total_parts, total_size, is_favorite, date_added, updated_at, deleted_at, folder_id FROM items"
     ),
     db.execute("SELECT id, name, color FROM tags ORDER BY name COLLATE NOCASE"),
     db.execute("SELECT it.item_id AS item_id, it.tag_id AS tag_id FROM item_tags it"),
@@ -33,6 +33,7 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
        )
        SELECT item_id, part_id, file_name FROM first_part WHERE rn = 1`
     ),
+    db.execute("SELECT id, name, parent_id, created_at, updated_at FROM folders ORDER BY name COLLATE NOCASE"),
   ]);
 
   const tags: Tag[] = tagsRs.rows.map((r) => {
@@ -96,9 +97,18 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[] 
       family: tp.family,
       familyKey: tp.familyKey,
       version: tp.version,
+      folderId: r.folder_id ? Number(r.folder_id) : null,
     };
   });
 
-  return { files, tags };
+  const folders: Folder[] = foldersRs.rows.map((r) => ({
+    id: Number(r.id),
+    name: String(r.name),
+    parentId: r.parent_id ? Number(r.parent_id) : null,
+    createdAt: sqliteToMs(String(r.created_at)),
+    updatedAt: sqliteToMs(String(r.updated_at)),
+  }));
+
+  return { files, tags, folders };
 }
 

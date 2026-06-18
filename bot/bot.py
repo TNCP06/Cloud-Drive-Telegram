@@ -198,6 +198,31 @@ async def is_user_authorized(db, user_id: int) -> bool:
 # ---------------------------------------------------------------------------
 # Turso operations (idempotent)
 # ---------------------------------------------------------------------------
+async def resolve_folders(db, folder_path: str) -> int | None:
+    parts = [p.strip() for p in folder_path.split("/") if p.strip()]
+    if not parts:
+        return None
+    parent_id = None
+    for part in parts:
+        rs = await db.execute(
+            "SELECT id FROM folders WHERE name = ? AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))",
+            [part, parent_id, parent_id]
+        )
+        if rs.rows:
+            parent_id = rs.rows[0][0]
+        else:
+            await db.execute(
+                "INSERT INTO folders (name, parent_id) VALUES (?, ?)",
+                [part, parent_id]
+            )
+            rs = await db.execute(
+                "SELECT id FROM folders WHERE name = ? AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))",
+                [part, parent_id, parent_id]
+            )
+            parent_id = rs.rows[0][0]
+    return parent_id
+
+
 async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
     """Upsert item by slug, return item_id.
 
@@ -205,17 +230,27 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
     without a caption so they don't clobber the title set by a captioned member
     (album update order is not guaranteed).
     """
+    original_title = title
+    if "/" in original_title:
+        title_parts = [p.strip() for p in original_title.split("/")]
+        folder_path = "/".join(title_parts[:-1])
+        title = title_parts[-1]
+        folder_id = await resolve_folders(db, folder_path)
+    else:
+        folder_id = None
+
     await db.execute(
         """
-        INSERT INTO items (slug, title, kind, total_parts)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO items (slug, title, kind, total_parts, folder_id)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(slug) DO UPDATE SET
             title       = CASE WHEN ? THEN excluded.title ELSE items.title END,
             kind        = excluded.kind,
             total_parts = MAX(items.total_parts, excluded.total_parts),
+            folder_id   = CASE WHEN ? THEN excluded.folder_id ELSE items.folder_id END,
             updated_at  = datetime('now')
         """,
-        [slug, title, kind, total, 1 if set_title else 0],
+        [slug, title, kind, total, folder_id, 1 if set_title else 0, 1 if set_title else 0],
     )
     rs = await db.execute("SELECT id FROM items WHERE slug = ?", [slug])
     return rs.rows[0][0]

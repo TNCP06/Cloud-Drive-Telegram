@@ -107,6 +107,8 @@ and streams local file if active, else chunk-streams via Telethon).
   `softDelete`, `restore`, `purgeNow` (on-demand permanent delete of a trashed item — Telegram
   `deleteMessage` + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
   intentionally NOT changed on rename).
+  Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`.
+  Bulk ops: `bulkToggleFavorite`, `bulkSoftDelete`, `bulkRestore`, `bulkPurgeNow`.
   Tags: `listTags`, `createTag`, `recolorTag`, `renameTag` (merge-aware), `deleteTag`.
   Gallery: `getGallery` (all parts' thumbnails on demand). Upload queue: `enqueueUpload`
   (local path), `cancelUpload`, `startUpload`, `retryUpload` (error→pending, keeps `parts_done`

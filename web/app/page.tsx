@@ -5,6 +5,6 @@ import { DriveApp } from "@/components/DriveApp";
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const { files, tags } = await getDriveData();
-  return <DriveApp files={files} tags={tags} />;
+  const { files, tags, folders } = await getDriveData();
+  return <DriveApp files={files} tags={tags} folders={folders} />;
 }

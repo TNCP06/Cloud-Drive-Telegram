@@ -15,6 +15,14 @@ export interface Tag {
   color: string;
 }
 
+export interface Folder {
+  id: number;
+  name: string;
+  parentId: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface DriveFile {
   id: number;
   slug: string;
@@ -34,6 +42,7 @@ export interface DriveFile {
   family: string;          // base name (title without version) for grouping
   familyKey: string;       // grouping key (lowercase)
   version: string | null;  // version label, e.g. "v0.6.0" (archives only)
+  folderId: number | null; // items.folder_id
 }
 
 export type UploadStatus = "queued" | "pending" | "running" | "done" | "error" | "canceled";

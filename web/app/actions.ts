@@ -458,4 +458,168 @@ export async function uploadThumbnail(
   return { ok: true, updated };
 }
 
+// --- Folders & Bulk Operations Server Actions ---------------------------------
+
+export async function createFolder(name: string, parentId: number | null) {
+  const n = name.trim();
+  if (!n) throw new Error("Folder name cannot be empty.");
+  
+  await db.execute({
+    sql: "INSERT INTO folders (name, parent_id) VALUES (?, ?)",
+    args: [n, parentId],
+  });
+  refresh();
+}
+
+export async function renameFolder(id: number, name: string) {
+  const n = name.trim();
+  if (!n) throw new Error("Folder name cannot be empty.");
+  
+  await db.execute({
+    sql: "UPDATE folders SET name = ?, updated_at = datetime('now') WHERE id = ?",
+    args: [n, id],
+  });
+  refresh();
+}
+
+// Helper to get all items and subfolder IDs inside a folder recursively
+async function getFolderItemsAndSubfolders(folderId: number): Promise<{ itemIds: number[], folderIds: number[] }> {
+  const itemIds: number[] = [];
+  const folderIds: number[] = [folderId];
+  
+  const itemsRs = await db.execute({
+    sql: "SELECT id FROM items WHERE folder_id = ?",
+    args: [folderId],
+  });
+  for (const row of itemsRs.rows) {
+    itemIds.push(Number(row.id));
+  }
+  
+  const subRs = await db.execute({
+    sql: "SELECT id FROM folders WHERE parent_id = ?",
+    args: [folderId],
+  });
+  for (const row of subRs.rows) {
+    const subFolderId = Number(row.id);
+    const recurse = await getFolderItemsAndSubfolders(subFolderId);
+    itemIds.push(...recurse.itemIds);
+    folderIds.push(...recurse.folderIds);
+  }
+  
+  return { itemIds, folderIds };
+}
+
+export async function deleteFolder(id: number) {
+  const { itemIds } = await getFolderItemsAndSubfolders(id);
+  
+  if (itemIds.length > 0) {
+    // Soft delete items inside recursively
+    for (const itemId of itemIds) {
+      await db.execute({
+        sql: "UPDATE items SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+        args: [itemId],
+      });
+    }
+  }
+  
+  // Hard delete folder entries from database (ordered to delete children first if needed,
+  // but since parent_id references folders(id) ON DELETE CASCADE, deleting the parent folder
+  // automatically cascade deletes all child folders! So we only need to delete the top folder).
+  await db.execute({
+    sql: "DELETE FROM folders WHERE id = ?",
+    args: [id],
+  });
+  
+  refresh();
+}
+
+export async function moveItemsToFolder(itemIds: number[], folderId: number | null) {
+  if (itemIds.length === 0) return;
+  for (const itemId of itemIds) {
+    await db.execute({
+      sql: "UPDATE items SET folder_id = ?, updated_at = datetime('now') WHERE id = ?",
+      args: [folderId, itemId],
+    });
+  }
+  refresh();
+}
+
+export async function bulkToggleFavorite(itemIds: number[], starred: boolean) {
+  if (itemIds.length === 0) return;
+  for (const itemId of itemIds) {
+    await db.execute({
+      sql: "UPDATE items SET is_favorite = ?, updated_at = datetime('now') WHERE id = ?",
+      args: [starred ? 1 : 0, itemId],
+    });
+  }
+  refresh();
+}
+
+export async function bulkSoftDelete(itemIds: number[]) {
+  if (itemIds.length === 0) return;
+  for (const itemId of itemIds) {
+    await db.execute({
+      sql: "UPDATE items SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+      args: [itemId],
+    });
+  }
+  refresh();
+}
+
+export async function bulkRestore(itemIds: number[]) {
+  if (itemIds.length === 0) return;
+  for (const itemId of itemIds) {
+    await db.execute({
+      sql: "UPDATE items SET deleted_at = NULL WHERE id = ?",
+      args: [itemId],
+    });
+  }
+  refresh();
+}
+
+export async function bulkPurgeNow(itemIds: number[]): Promise<{ ok: boolean; error?: string }> {
+  if (itemIds.length === 0) return { ok: true };
+  
+  const BOT_TOKEN = process.env.BOT_TOKEN;
+  const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
+  if (!BOT_TOKEN || !STORAGE_CHANNEL_ID) {
+    return { ok: false, error: "BOT_TOKEN or STORAGE_CHANNEL_ID not set in web env." };
+  }
+
+  const telegramApiUrl = process.env.TELEGRAM_API_URL || "https://api.telegram.org";
+  const apiBase = `${telegramApiUrl.replace(/\/+$/, "")}/bot${BOT_TOKEN}`;
+  
+  for (const id of itemIds) {
+    const guard = await db.execute({
+      sql: "SELECT id FROM items WHERE id = ? AND deleted_at IS NOT NULL",
+      args: [id],
+    });
+    if (!guard.rows.length) continue;
+
+    const parts = await db.execute({
+      sql: "SELECT channel_msg_id FROM parts WHERE item_id = ?",
+      args: [id],
+    });
+
+    for (const row of parts.rows) {
+      await fetch(`${apiBase}/deleteMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: STORAGE_CHANNEL_ID, message_id: Number(row[0]) }),
+      }).catch(() => {});
+    }
+
+    await db.execute({
+      sql: "DELETE FROM thumbnails WHERE part_id IN (SELECT id FROM parts WHERE item_id = ?)",
+      args: [id],
+    });
+    await db.execute({ sql: "DELETE FROM parts WHERE item_id = ?", args: [id] });
+    await db.execute({ sql: "DELETE FROM item_tags WHERE item_id = ?", args: [id] });
+    await db.execute({ sql: "DELETE FROM items WHERE id = ?", args: [id] });
+  }
+
+  refresh();
+  return { ok: true };
+}
+
 

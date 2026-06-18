@@ -28,6 +28,7 @@ const PATHS: Record<string, string> = {
   check: '<path d="M5 12.5l4.5 4.5L19 7"/>',
   chevdown: '<path d="M6 9.5l6 6 6-6"/>',
   chevright: '<path d="M9.5 6l6 6-6 6"/>',
+  circle: '<circle cx="12" cy="12" r="8.5"/>',
   sort: '<path d="M5 8.5h9M5 12h6M5 15.5h3M16 7v10M16 17l2.5-2.5M16 17l-2.5-2.5"/>',
   cloud: '<path d="M6.5 18.5h10a3.8 3.8 0 00.6-7.55 5.3 5.3 0 00-10.2-1.2A3.7 3.7 0 006.5 18.5z"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',

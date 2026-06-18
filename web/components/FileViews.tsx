@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { Icon } from "@/lib/icons";
 import { KINDS, TAG_COLORS } from "@/lib/kinds";
 import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
-import type { DriveFile, Tag } from "@/lib/types";
+import type { DriveFile, Tag, Folder } from "@/lib/types";
 
 /* ---- Tag chip ---- */
 export function Chip({ tag, big }: { tag: Tag | undefined; big?: boolean }) {
@@ -20,11 +20,12 @@ export function Chip({ tag, big }: { tag: Tag | undefined; big?: boolean }) {
 }
 
 /* ---- Star (interactive) ---- */
-function Star({ on, onClick, cls = "star" }: { on: boolean; onClick: () => void; cls?: string }) {
+function Star({ on, onClick, cls = "star", style }: { on: boolean; onClick: () => void; cls?: string; style?: React.CSSProperties }) {
   return (
     <button
       className={cls + (on ? " on" : "")}
       title={on ? "Remove from favorites" : "Mark as favorite"}
+      style={style}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -63,6 +64,8 @@ interface ItemProps {
   versionCount?: number;
   /** Clicking the "N versions" badge → show all versions in this family. */
   onPickFamily?: (family: string) => void;
+  selected?: boolean;
+  onSelectToggle?: (item: DriveFile, e: React.MouseEvent) => void;
 }
 
 /** Version badge (e.g. "v0.6.0") + optional "N versions" button. */
@@ -92,14 +95,127 @@ function VersionBadge({
   );
 }
 
-/* ============================================================ Grid card */
-export function FileCard({ item, tags, onStar, onMenu, onOpen, versionCount, onPickFamily }: ItemProps) {
-  const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
+/* ============================================================ Folder Card */
+export function FolderCard({
+  folder,
+  onOpen,
+  onMenu,
+}: {
+  folder: Folder;
+  onOpen: (id: number) => void;
+  onMenu: (folder: Folder, anchor: HTMLElement) => void;
+}) {
   return (
-    <div className="card" onClick={() => onOpen(item)}>
+    <div className="card folder" onClick={() => onOpen(folder.id)}>
       <button
         className="kebab"
         title="Actions"
+        style={{ left: "auto", right: "9px" }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onMenu(folder, e.currentTarget);
+        }}
+      >
+        <Icon name="kebab" size={15} />
+      </button>
+
+      <div className="thumb">
+        <div
+          style={{
+            width: "44px",
+            height: "44px",
+            background: "color-mix(in oklab, var(--accent) 9%, var(--card-2))",
+            display: "grid",
+            placeItems: "center",
+            borderRadius: "10px",
+          }}
+        >
+          <Icon name="folder" size={26} stroke={1.5} style={{ color: "var(--accent)" }} />
+        </div>
+      </div>
+      <div className="fname" title={folder.name}>
+        {folder.name}
+      </div>
+      <div className="meta">Folder</div>
+    </div>
+  );
+}
+
+/* ============================================================ Folder Row */
+export function FolderRow({
+  folder,
+  onOpen,
+  onMenu,
+}: {
+  folder: Folder;
+  onOpen: (id: number) => void;
+  onMenu: (folder: Folder, anchor: HTMLElement) => void;
+}) {
+  return (
+    <div className="row" onClick={() => onOpen(folder.id)}>
+      <div className="rname">
+        <div
+          className="ico-wrap"
+          style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--card-2))" }}
+        >
+          <Icon name="folder" size={19} stroke={1.5} style={{ color: "var(--accent)" }} />
+        </div>
+        <div className="txt">
+          <div className="t" title={folder.name}>
+            {folder.name}
+          </div>
+        </div>
+      </div>
+      <div className="col c-mod">—</div>
+      <div className="col c-size">—</div>
+      <div className="col c-kind hide-mob">Folder</div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 2 }}>
+        <button
+          className="rstar rkebab"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMenu(folder, e.currentTarget);
+          }}
+        >
+          <Icon name="kebab" size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================ Grid card */
+export function FileCard({
+  item,
+  tags,
+  onStar,
+  onMenu,
+  onOpen,
+  versionCount,
+  onPickFamily,
+  selected = false,
+  onSelectToggle,
+}: ItemProps) {
+  const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
+  return (
+    <div className={`card ${selected ? "sel" : ""}`} onClick={() => onOpen(item)}>
+      {onSelectToggle && (
+        <button
+          className={`card-check ${selected ? "on" : ""}`}
+          title={selected ? "Deselect" : "Select"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelectToggle(item, e);
+          }}
+        >
+          <Icon name={selected ? "check" : "circle"} size={16} fill={selected} stroke={1.5} />
+        </button>
+      )}
+
+      <button
+        className="kebab"
+        title="Actions"
+        style={{ left: "auto", right: "9px" }}
         onClick={(e) => {
           e.stopPropagation();
           onMenu(item, e.currentTarget);
@@ -107,11 +223,17 @@ export function FileCard({ item, tags, onStar, onMenu, onOpen, versionCount, onP
       >
         <Icon name="kebab" size={15} />
       </button>
-      {!item.trashed && <Star on={item.starred} onClick={() => onStar(item)} />}
+      {!item.trashed && (
+        <Star
+          on={item.starred}
+          onClick={() => onStar(item)}
+          style={{ right: "42px" }}
+        />
+      )}
 
       <div className="thumb">
         {item.thumb ? (
-          <Image src={item.thumb!} alt="" fill unoptimized />
+          <Image src={item.thumb!} alt="" fill unoptimized style={{ objectFit: "cover" }} />
         ) : (
           <TypeTile kind={item.kind} size={40} />
         )}
@@ -142,12 +264,34 @@ export function FileCard({ item, tags, onStar, onMenu, onOpen, versionCount, onP
 }
 
 /* ============================================================ List row */
-export function FileRow({ item, tags, onStar, onMenu, onOpen, versionCount, onPickFamily }: ItemProps) {
+export function FileRow({
+  item,
+  tags,
+  onStar,
+  onMenu,
+  onOpen,
+  versionCount,
+  onPickFamily,
+  selected = false,
+  onSelectToggle,
+}: ItemProps) {
   const meta = KINDS[item.kind] || { icon: "archive", tint: "#8A8068", label: item.kind || "Archive" };
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
-    <div className="row" onClick={() => onOpen(item)}>
+    <div className={`row ${selected ? "sel" : ""}`} onClick={() => onOpen(item)}>
       <div className="rname">
+        {onSelectToggle && (
+          <button
+            className={`row-check ${selected ? "on" : ""}`}
+            style={{ border: 0, background: "none", display: "grid", placeItems: "center", cursor: "pointer", padding: 0 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectToggle(item, e);
+            }}
+          >
+            <Icon name={selected ? "check" : "circle"} size={16} fill={selected} stroke={1.5} />
+          </button>
+        )}
         <div
           className="ico-wrap"
           style={{ background: `color-mix(in oklab, ${meta.tint} 12%, var(--card-2))` }}
