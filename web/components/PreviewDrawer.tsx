@@ -373,7 +373,7 @@ export function PreviewDrawer({
                   style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
                 />
               ) : activePart?.thumb ? (
-                <img src={activePart.thumb} alt={item.name} onClick={(e) => e.stopPropagation()} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
+                <Image src={activePart.thumb} alt={item.name} unoptimized width={0} height={0} sizes="100vw" onClick={(e) => e.stopPropagation()} style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
               ) : (
                 <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />
               )}

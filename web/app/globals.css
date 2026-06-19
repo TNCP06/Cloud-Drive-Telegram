@@ -144,10 +144,7 @@ button { font-family: inherit; }
   padding: 22px 22px 16px;
 }
 .brand-mark {
-  width: 30px; height: 30px;
-  border-radius: 8px;
-  background: var(--ink);
-  color: var(--paper);
+  width: 44px; height: 34px;
   display: grid; place-items: center;
   flex: none;
 }

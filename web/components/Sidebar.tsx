@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { Icon } from "@/lib/icons";
 import { TAG_COLORS } from "@/lib/kinds";
 import type { Tag } from "@/lib/types";
@@ -73,7 +74,7 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="brand">
         <div className="brand-mark">
-          <Icon name="cloud" size={17} stroke={1.7} />
+          <Image src="/logo.png" alt="logo" width={52} height={33} unoptimized style={{ display: "block" }} />
         </div>
         <div>
           <div className="brand-name">Vault</div>

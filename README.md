@@ -1,4 +1,8 @@
-# Telegram Cloud Drive ☁️
+<p align="center">
+  <img src="assets/logo.png" alt="Telegram Cloud Drive Logo" width="120" />
+</p>
+
+# Telegram Cloud Drive
 
 > Personal, effectively-unlimited cloud storage with a clean web dashboard — built on a private **Telegram channel** for bytes, **Turso (libSQL)** for metadata, and **Next.js** for the UI.
 
