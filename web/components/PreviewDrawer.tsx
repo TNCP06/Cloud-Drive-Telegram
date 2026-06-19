@@ -73,15 +73,10 @@ async function videoFrameToJpeg(file: File): Promise<string> {
 export function PreviewDrawer({
   item,
   tags,
-  deepLink,
   hasPrevFile = false,
   hasNextFile = false,
   onNavigateFile,
   onClose,
-  onStar,
-  onTrash,
-  onPurge,
-  onRestore,
   onSave,
   initialEditing = false,
   initialShowDetails = false,
@@ -89,15 +84,10 @@ export function PreviewDrawer({
 }: {
   item: DriveFile;
   tags: Tag[];
-  deepLink: string | null;
   hasPrevFile?: boolean;
   hasNextFile?: boolean;
   onNavigateFile?: (delta: number) => void;
   onClose: () => void;
-  onStar: (item: DriveFile) => void;
-  onTrash: (item: DriveFile) => void;
-  onPurge: (item: DriveFile) => void;
-  onRestore: (item: DriveFile) => void;
   onSave: (item: DriveFile, input: { title: string; kind: Kind; tags: string }) => void;
   initialEditing?: boolean;
   initialShowDetails?: boolean;
@@ -352,18 +342,6 @@ export function PreviewDrawer({
   const save = () => {
     if (!title.trim()) return;
     onSave(item, { title, kind, tags: tagsText });
-  };
-
-  // Kebab button only opens the metadata panel (read-only).
-  const openDetails = () => {
-    setEditing(false);
-    setShowDetails(true);
-  };
-
-  // Edit button in the top bar opens the panel directly in edit mode.
-  const openEdit = () => {
-    setEditing(true);
-    setShowDetails(true);
   };
 
   return (

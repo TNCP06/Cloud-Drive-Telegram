@@ -886,18 +886,10 @@ export function DriveApp({
         <PreviewDrawer
           item={previewItem}
           tags={tags}
-          deepLink={deepLink(previewItem.slug)}
           hasPrevFile={hasPrevFile}
           hasNextFile={hasNextFile}
           onNavigateFile={navigatePreview}
           onClose={closePreview}
-          onStar={doStar}
-          onTrash={(it) => setConfirm({ item: it, mode: "trash" })}
-          onPurge={(it) => setConfirm({ item: it, mode: "purge" })}
-          onRestore={(it) => {
-            doRestore(it);
-            closePreview();
-          }}
           onSave={(it, input) => {
             doSave(it, input);
             closePreview();
