@@ -166,19 +166,25 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 
 ### `web/components/` — UI (client)
 - `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).
-- `DriveApp.tsx` — top-level app shell/state (largest component). `Sidebar.tsx` — nav/filters.
-- `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders (`FolderCard`/`FolderRow`) with checkboxes for multi-select, a star toggle, and a kebab action button (now ordered to stack correctly above thumbnails).
+- `DriveApp.tsx` — top-level app shell/state (largest component). Folders render in their own
+  compact `.grid.folders` above the file grid. `Sidebar.tsx` — nav/filters; regular tags sorted by
+  usage count (desc); a collapsible **Type Tags** group (Image/Video/**Archive**); the storage meter
+  is a button that opens a `StorageDetail` breakdown popup.
+- `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders. `FolderCard` is a **compact
+  horizontal tile** (icon + name, no big thumbnail) to avoid wasted space; `FolderRow` for list view.
+  File cards keep checkboxes for multi-select, a star toggle, and a kebab action button.
 - `PreviewDrawer.tsx` — item detail + on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders a `<video>` element sourced from `/api/stream/{partId}` (styled using `maxWidth`/`maxHeight` to shrink-to-fit the player area immediately, allowing clicks on letterbox areas to trigger `onClose`). All action buttons are removed from this drawer's top bar (delegated entirely to the external card/row kebab menus). Supports keyboard shortcuts for video controls. Supports `detailsOnly` mode to render the metadata/edit panel as a standalone popup without the full-screen photo/video stage layer. `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
-- `UploadManager.tsx` — upload queue UI; **Source toggle**: "Upload
-  from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).
-  The queue list collapses to the first 6 jobs with a **Show more / Show less** toggle.
-  `FileUploader.tsx` — **resumable browser uploader** (16 MB chunks, auto-resume on drop via
-  server offset, progress/speed, Retry, Pause/Resume). Supports **single file** (rich view +
-  resume-after-refresh via localStorage), **multiple files** (uploaded sequentially, each its own
-  item, title from filename), and **folder upload** (`webkitdirectory`: each file's title becomes
-  its relative path so the bot recreates the folder tree — Telegram has no folders). Fallback token
-  strips both `-` and `.` to satisfy `TOKEN_RE` in `staging.ts`. `TagManager.tsx` / `TagPicker.tsx`
-  — category library + chip picker (picker dedupes existing tags case-insensitively).
+- `UploadManager.tsx` — **unified, queue-first** upload UI. Selecting files (multiple, or a whole
+  **folder** via `webkitdirectory`) adds them to ONE queue as editable **ready** items (NOT uploading
+  yet); you set Title/Tags per item, then **Start** runs the full pipeline in that same list:
+  browser→VPS (client progress) → the watcher job (VPS→Telegram) appears and takes over. Folder files
+  carry their relative path as the title so the bot recreates nested folders. Type toggle is **Media
+  (left) / Archive (right)**; a type tag (**Image/Video/Archive**) is auto-added per file. Queued
+  (not-yet-started) jobs have an **Edit** button (`updateUploadJob`). **Source toggle**: device
+  (default) vs "Host path (advanced)" (`FsBrowser` + `enqueueUpload`). The list collapses to ~6 rows
+  with **Show more / Show less**. The resumable engine lives in `lib/uploadClient.ts`
+  (`uploadResumable` 16 MB chunks + server-offset resume; `autoTypeTag`, `withTag`, `newToken`).
+  `TagManager.tsx` / `TagPicker.tsx` — category library + chip picker (picker dedupes existing tags case-insensitively).
   `ThemeToggle.tsx` — light/dark switch (flips `data-theme` on `<html>`, persists to localStorage
   `tcd_theme`; theme is applied pre-paint by an inline script in `layout.tsx`). `AppSkeleton.tsx` — loading skeleton.
 

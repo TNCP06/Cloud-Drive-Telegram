@@ -1,249 +1,226 @@
-# Panduan Migrasi & Deploy ke VPS / AWS EC2
+# Deployment Guide — VPS / AWS EC2 (Docker)
 
-Panduan ini menjelaskan cara memindahkan Telegram Cloud Drive dari laptop ke server
-selalu-hidup (AWS EC2 Free Tier, lalu VPS mana pun), supaya **bisa diakses dari device
-lain** dan **upload file besar tinggal "terima beres"** — Anda upload satu file, server
-yang memecah (<2 GB/part) dan mengirim ke Telegram.
+This guide explains how to run **Telegram Cloud Drive** on an always-on server so it's
+reachable from any device, large uploads are handled server-side ("upload one file, the
+server splits it into <2 GB parts and pushes them to Telegram"), and videos stream in the
+browser. It's written for anyone deploying their own copy — not just the original author.
 
-> Bahasa Indonesia karena ini panduan operasional untuk pemilik repo. Referensi konsep
-> ada di [`ARCHITECTURE.md`](./ARCHITECTURE.md), alur di [`BUSINESS-FLOWS.md`](./BUSINESS-FLOWS.md),
-> peta file di [`CODE-MAP.md`](./CODE-MAP.md).
-
----
-
-## 1. Apa yang berubah dari versi laptop
-
-| Dulu (laptop) | Sekarang (server) |
-|---|---|
-| Upload = pilih **path lokal**; watcher baca dari disk laptop | Upload = **kirim file lewat browser** (resumable) ke server; watcher baca dari folder staging bersama |
-| File Besar di-split 7-Zip di laptop sebelum upload | **Server** yang split otomatis (raw streaming, <2 GB/part) — Anda tidak split manual |
-| Watcher & bot hanya jalan di Windows | Jalan di Linux juga; dikelola **Docker Compose** |
-| Reassembly download = `7z x` | Reassembly = gabung biasa: `copy /b a+b out` / `cat a b > out` |
-
-Yang **tidak** berubah: Turso tetap otak metadata, channel Telegram tetap penyimpanan,
-caption contract `Title | i/total | tags`, slug immutable, soft-delete + purge >7 hari.
-
-Mode lama (browse path di mesin yang sama) **tetap ada** di tab "Host path (advanced)"
-untuk pemakaian di laptop — bukan lagi jalur utama.
+> Concepts: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · flows: [`BUSINESS-FLOWS.md`](./BUSINESS-FLOWS.md)
+> · file map: [`CODE-MAP.md`](./CODE-MAP.md). For the fastest path, just run `setup.sh` (§5).
 
 ---
 
-## 2. Alur upload baru (menjawab kekhawatiran "corrupt / ulang dari awal")
+## 1. What runs (Docker Compose services)
 
-```
-Browser (device apa pun)                Server (EC2/VPS)                 Telegram
-  pilih 1 file besar  ──chunk 16MB──▶  /api/upload (append, resumable)
-       (koneksi putus? lanjut dari offset terakhir, TIDAK ulang)
-  selesai  ───────────────────────▶  /api/upload/complete → upload_jobs
-                                       watcher: streaming split <2GB
-                                         part 1 ─ kirim ─ hapus ─┐
-                                         part 2 ─ kirim ─ hapus ─┼──▶ pesan di channel
-                                         …       checkpoint/part ─┘
-                                       sukses → hapus file staging
-```
-
-Dua perlindungan terhadap koneksi tidak stabil:
-
-1. **Resumable upload device→server.** File dikirim per potongan 16 MB. Kalau putus,
-   browser tanya `GET /api/upload` posisi byte terakhir di server lalu lanjut dari sana —
-   **bukan mulai dari nol, bukan corrupt** (server cek offset; potongan nyasar ditolak 409
-   lalu disinkronkan ulang).
-2. **Checkpoint per-part server→Telegram.** `parts_done` mencatat part yang sudah naik.
-   Kalau gagal di tengah, tombol **Retry** melanjutkan dari part berikutnya, bukan
-   mengulang seluruh file. Hop server→Telegram juga jauh lebih stabil (koneksi datacenter)
-   daripada laptop rumah.
-
----
-
-## 3. Realita AWS EC2 Free Tier (baca sebelum pilih spek)
-
-Sumber: [AWS Free Tier docs](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-limits.html),
-[AWS Free Tier 2025](https://builder.aws.com/content/30mPEVUw3fzFwtEzPurrkoRXAIO/aws-free-tier-2025-whats-free-and-for-how-long).
-
-- **Akun baru (≥ 15 Juli 2025):** kredit **$100 (bisa $200), berlaku 6 bulan**. Instance
-  free-tier-eligible lebih luas: **t3.micro, t3.small, t4g.micro, t4g.small,
-  c7i-flex.large, m7i-flex.large**. Jadi Anda boleh pilih spek lebih besar dari yang
-  termurah — selama kredit/6 bulan belum habis.
-- **Akun lama (< 15 Juli 2025):** 750 jam/bulan t2/t3.micro (1 GB RAM), 12 bulan.
-- **Disk EBS gratis hanya 30 GB** di kedua skema. Ini **leher botol** untuk file besar.
-- **Egress ~100 GB/bulan** gratis. Upload server→Telegram dihitung egress; download pakai
-  `copy_message` (sisi Telegram) = **0 egress**.
-
-### Hitungan disk untuk file besar ~20 GB
-
-Streaming split menjaga disk: file ter-stage + **1 part** saja (part lama langsung dihapus).
-
-```
-file ter-stage 20 GB  +  1 part (~1.5 GB)  ≈ 21.5 GB puncak  →  MUAT di 30 GB (mepet)
-```
-
-**Rekomendasi:** **t3.small (2 GB RAM) + EBS 45–50 GB** (ditanggung kredit $200 di akun
-baru). RAM 1 GB pada `t3.micro` sesak untuk web+bot+watcher → minimal tambah swap 2 GB.
-EBS 30 GB murni cukup untuk file besar **≤ ~25 GB satu per satu**, tanpa margin aman.
-
-> Karena Free Tier ada masa berlakunya, seluruh stack dibungkus Docker → migrasi ke VPS
-> lain tinggal pindah folder (lihat §6).
-
----
-
-## 4. Persiapan (sekali saja)
-
-1. **Turso**: jalankan skema:
-   ```bash
-   turso db shell <db-anda> < bot/schema.sql
-   ```
-2. **Telethon session**: login sekali untuk membuat `bot/worker.session` (di mesin mana
-   pun yang punya nomor Telegram Anda), lalu salin file `worker.session` ke server di
-   `bot/worker.session`. File ini di-bind-mount ke kontainer watcher.
-3. **Bot admin** di channel penyimpanan (sudah seperti sebelumnya).
-
----
-
-## 5. Deploy di EC2 dengan Docker
-
-```bash
-# 0) Instance: Ubuntu/Amazon Linux, t3.small, EBS 50 GB, security group buka port 22 + 3000
-#    (atau 80/443 jika pakai reverse proxy). Tambah swap kalau RAM 1 GB:
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
-
-# 1) Install Docker + compose plugin
-sudo apt-get update && sudo apt-get install -y docker.io docker-compose-plugin
-sudo usermod -aG docker $USER && newgrp docker
-
-# 2) Ambil kode + konfigurasi
-git clone <repo-anda> tcd && cd tcd
-cp .env.example .env && nano .env          # isi semua kredensial
-#    pastikan bot/worker.session sudah ada (lihat §4.2)
-
-# 3) Jalankan
-docker compose up -d --build
-docker compose logs -f                      # cek bot & watcher konek, web siap
-
-# 4) Buka  http://<IP-EC2>:3000   (login pakai APP_PASSWORD)
-```
-
-Catatan:
-- **Tombol Start/Stop watcher & bot beserta display status liveness (heartbeat) di UI sudah dihapus**. Bot & watcher dikelola secara terpisah di luar web dashboard (misalnya sebagai compose service `restart: unless-stopped` di Docker, atau dijalankan secara manual di terminal/background).
-- Untuk domain + HTTPS, taruh **Caddy/Nginx** di depan service `web` (port 3000). Upload
-  besar **harus** lewat server ini, jangan lewat Vercel (batas body kecil).
-- Folder staging adalah volume Docker `staging`, dibagi web ↔ watcher. Tidak perlu diatur
-  manual.
-
----
-
-## 6. Migrasi ke VPS lain nanti (saat Free Tier habis)
-
-Karena semuanya Docker + Turso eksternal, pindah host = pindah 3 hal:
-
-```bash
-# di server lama: cukup butuh repo, .env, dan worker.session (data ada di Turso & Telegram)
-scp .env bot/worker.session user@vps-baru:~/tcd/
-
-# di VPS baru:
-git clone <repo> tcd && cd tcd
-# letakkan .env dan bot/worker.session, lalu:
-docker compose up -d --build
-```
-
-Tidak ada migrasi database (Turso tetap), tidak ada migrasi file (tetap di Telegram).
-Arahkan ulang domain → IP baru. Selesai.
-
----
-
-## 7. Kelebihan & Kelemahan
-
-### Kelebihan
-- ✅ **Akses dari device mana pun** (browser) — dashboard + download + upload.
-- ✅ **Upload "terima beres"**: 1 file → server yang split & kirim, lalu bersih sendiri.
-- ✅ **Tahan koneksi putus**: resumable per-chunk + checkpoint per-part (tidak ulang/corrupt).
-- ✅ **Hemat disk** lewat streaming split (puncak ≈ ukuran file + 1 part).
-- ✅ **Portabel**: pindah VPS = `docker compose up` (Turso & Telegram tak ikut pindah).
-- ✅ **Bot ringan**: download pakai `copy_message`, tidak streaming byte → cocok spek kecil.
-- ✅ **Download gratis egress** (sisi Telegram).
-
-### Kelemahan / hal yang perlu disadari
-- ⚠️ **Disk Free Tier 30 GB ketat** untuk file besar ~20 GB (puncak ~21.5 GB). Disarankan EBS
-  45–50 GB. File Besar **> ~28 GB** butuh disk lebih besar.
-- ⚠️ **Egress 100 GB/bulan**: total ukuran semua upload per bulan tidak boleh lewat itu
-  (download tidak dihitung).
-- ⚠️ **RAM 1 GB (t3.micro) sesak** untuk web+bot+watcher → pakai t3.small atau swap.
-- ⚠️ **Free Tier ada masanya** (6 bulan/12 month) → harus migrasi lagi (sudah dimudahkan).
-- ⚠️ **Reassembly download berubah** untuk upload baru: gabung biasa, bukan `7z x`
-  (archive lama yang sudah 7-Zip tetap `7z x`).
-- ⚠️ **Upload tetap lewat server** (2 hop: device→server→Telegram). Hop pertama bergantung
-  koneksi upload Anda; resumable yang menjaganya, bukan menghilangkannya.
-- ⚠️ **`worker.session` itu kredensial akun Telegram Anda** — jaga, jangan commit (sudah
-  di `.gitignore` & `.dockerignore`).
-- ⚠️ **Folder** harus dibungkus jadi 1 file dulu (zip biasa) sebelum upload;
-  server hanya men-split file tunggal.
-
----
-
-## 8. Variabel lingkungan (ringkas)
-
-Lihat [`.env.example`](../.env.example). Yang penting untuk mode server:
-
-| Var | Dipakai | Catatan |
+| Service | Port | Role |
 |---|---|---|
-| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | semua | otak metadata |
-| `BOT_TOKEN`, `STORAGE_CHANNEL_ID`, `OWNER_USER_ID` | bot, web | indeks/download/purge |
-| `TG_API_ID`, `TG_API_HASH` | watcher | Telethon (MTProto) |
-| `NEXT_PUBLIC_BOT_USERNAME` | web (build) | deep link download — di-inline saat build |
-| `APP_PASSWORD` | web | login dashboard; kosong = tanpa auth |
-| `UPLOAD_STAGING_DIR` | web+watcher | diset compose ke `/staging` (volume bersama) |
-| `WORKER_OUT_DIR` | watcher | diset compose ke `/staging/_parts` |
+| `web` | 3000 | Next.js dashboard + server actions + upload/stream API |
+| `telegram-bot-api` | 8081 (internal) | Local Telegram Bot API server in `--local` mode → bypasses the 3 Mbps download throttle; shares a data volume with bot/web/streamer |
+| `bot` | — | Indexes channel posts, serves downloads (`copy_message`), Bot Drop, daily purge |
+| `watcher` | — | Runs `index_history.py` (back-fill) then `watcher.py` (executes the upload queue via MTProto) |
+| `streamer` | 8080 (internal) | Range-streams video; background H.264 compression to a persistent volume |
+
+**Volumes:** `staging` (browser uploads, web↔watcher), `cache` (expendable video chunks),
+`compressed` (**persistent** compressed videos), `telegram-bot-api-data` (local Bot API files,
+shared by bot/web/streamer). Nothing user-critical lives only on the VPS disk — **metadata is in
+Turso (managed), file bytes are in Telegram** — so the VPS is disposable.
 
 ---
 
-## 9. Deploy Otomatis (CI/CD via GitHub Actions)
+## 2. Prerequisites (gather these once — see the project README §Prerequisites)
 
-Untuk memisahkan proses pengujian (CI) dan penyebaran (CD):
-1. **CI (Continuous Integration)** dikonfigurasi di [.github/workflows/ci.yml](file:///D:/coding/Cloud-Drive-Telegram/.github/workflows/ci.yml) dan **hanya berjalan saat ada Pull Request** ke branch `main`.
-2. **CD (Continuous Deployment)** dikonfigurasi di [.github/workflows/deploy.yml](file:///D:/coding/Cloud-Drive-Telegram/.github/workflows/deploy.yml) dan **hanya berjalan saat ada `push` atau merge langsung** ke branch `main`.
+- A Telegram **bot token**, a private **storage channel** (bot is admin) + its `-100…` id, your
+  **Telegram user id**, and **`TG_API_ID`/`TG_API_HASH`** from [my.telegram.org](https://my.telegram.org).
+- A **Turso** database URL + auth token ([turso.tech](https://turso.tech)).
+- A server (EC2 or any VPS) with SSH access. Open inbound **22** (SSH) and **3000** (dashboard);
+  add 80/443 only if you put a reverse proxy in front.
 
-### A. Persiapan Secrets di GitHub Repository
-Buka repository GitHub Anda, masuk ke **Settings > Secrets and variables > Actions**, lalu tambahkan **Repository Secrets** berikut:
+---
 
-1. **`VPS_SSH_HOST`**: IP Public VPS / EC2 Anda (contoh: `54.255.x.x` atau domain DNS public).
-2. **`VPS_SSH_USERNAME`**: Username SSH Anda (biasanya `ubuntu` untuk instance Ubuntu EC2 atau `ec2-user` untuk Amazon Linux).
-3. **`VPS_SSH_KEY`**: Isi private key SSH Anda (dari file `.pem` yang digunakan saat login ke EC2 VPS). Pastikan menyalin seluruh isinya termasuk baris header `-----BEGIN OPENSSH PRIVATE KEY-----` dan footer `-----END OPENSSH PRIVATE KEY-----`.
-4. **`VPS_DEPLOY_PATH`**: Path folder repository di server VPS Anda (contoh: `/home/ubuntu/tcd`).
-5. **`VPS_SSH_PORT`** *(Opsional)*: Port SSH VPS Anda. Secara default menggunakan port `22` jika tidak didefinisikan.
+## 3. The upload path (why a dropped connection won't corrupt or restart)
 
-### B. Konfigurasi Git Deploy Key di VPS (Penting untuk Private Repo)
-Agar server EC2 bisa melakukan `git pull` dari GitHub secara otomatis tanpa meminta password/interaksi:
-1. Hubungkan ke VPS via SSH.
-2. Generate SSH key baru di VPS:
-   ```bash
-   ssh-keygen -t ed25519 -C "vps-deploy-key"
-   ```
-   (Tekan Enter terus sampai selesai tanpa memasukkan passphrase).
-3. Ambil isi public key yang baru dibuat:
-   ```bash
-   cat ~/.ssh/id_ed25519.pub
-   ```
-4. Di GitHub, buka halaman repository Anda, lalu pergi ke **Settings > Deploy keys > Add deploy key**:
-   - Berikan judul (misal: `VPS Deploy Key`).
-   - Tempel isi public key tadi.
-   - **TIDAK PERLU** mencentang *"Allow write access"* (akses read-only sudah cukup).
-   - Klik **Add key**.
-5. Uji koneksi git di VPS secara manual sekali agar host GitHub masuk ke `known_hosts`:
-   ```bash
-   ssh -T git@github.com
-   ```
-   Ketik `yes` jika ditanya konfirmasi sidik jari host.
+```
+Browser (any device)                 Server (EC2/VPS)                 Telegram
+  pick file(s) ──16 MB chunks──▶  /api/upload (append, resumable)
+       (connection drops? resume from the last offset — NOT from zero)
+  done ───────────────────────▶  /api/upload/complete → upload_jobs
+                                   watcher: streaming split <2 GB
+                                     part 1 ─ send ─ delete ─┐
+                                     part 2 ─ send ─ delete ─┼──▶ messages in channel
+                                     …       checkpoint/part ─┘
+                                   success → delete the staged file
+```
 
-### C. Alur Kerja Deployment Otomatis
-1. **Saat ada Pull Request ke branch `main`**:
-   - GitHub Actions memicu workflow CI ([ci.yml](file:///D:/coding/Cloud-Drive-Telegram/.github/workflows/ci.yml)).
-   - Menjalankan **Linting & Build Test** untuk Next.js (`web`).
-   - Menjalankan **Syntax Check** untuk Python (`bot`).
-   - *Deploy tidak berjalan di tahap ini.*
-2. **Saat Pull Request disetujui & digabungkan (merge), atau ada push langsung ke branch `main`**:
-   - GitHub Actions memicu workflow Deploy ([deploy.yml](file:///D:/coding/Cloud-Drive-Telegram/.github/workflows/deploy.yml)).
-   - Terkoneksi ke EC2 VPS menggunakan SSH Key yang terdaftar di Secrets.
-   - Masuk ke folder target di VPS (`VPS_DEPLOY_PATH`).
-   - Menjalankan `git pull origin main`.
-   - Menjalankan `docker compose up -d --build` untuk membangun ulang kontainer yang berubah dan menjalankannya kembali di background.
-   - Melakukan pembersihan image docker lama yang tidak terpakai (`docker image prune -f`).
+Two protections against flaky links:
+1. **Resumable device→server.** 16 MB chunks; on a drop the browser asks `GET /api/upload` for the
+   bytes already received and continues (a stray chunk gets a `409` + the real offset). No restart,
+   no corruption.
+2. **Per-part checkpoint server→Telegram.** `parts_done` records pushed parts; **Retry** resumes
+   from the next part, not the whole file.
 
+Folders and multiple files are supported: the browser uploads each file (a folder's files keep
+their relative path as the title, which the bot recreates as nested folders — Telegram has no
+folders). You no longer need to zip a folder first.
+
+---
+
+## 4. AWS EC2 Free Tier reality (read before picking a size)
+
+- **Disk is the bottleneck.** Free tier includes only **30 GB EBS**. Streaming split keeps disk use
+  to roughly *staged file + 1 part*, so a ~20 GB upload peaks around ~21.5 GB — fits 30 GB but with
+  little margin. For routinely large files, attach **45–50 GB**. The `cache`/`compressed`/local Bot
+  API volumes also consume disk (tune `CACHE_MAX_SIZE_GB`, `COMPRESSED_MAX_SIZE_GB`).
+- **RAM:** 1 GB (`t2/t3.micro`) is tight for web+bot+watcher+streamer+local Bot API and the Next.js
+  build. Prefer **2 GB (`t3.small`)**, or add a 2 GB swap file (below).
+- **Egress ~100 GB/month** free. Uploads (server→Telegram) count as egress; downloads use
+  `copy_message` (Telegram-side) = **0 egress**.
+
+---
+
+## 5. Deploy — the easy way (`setup.sh`)
+
+On a fresh Linux VPS:
+
+```bash
+git clone <your-repo-url> tcd && cd tcd
+bash setup.sh
+```
+
+`setup.sh` installs Docker + Compose (via get.docker.com, works on Amazon Linux/Ubuntu/Debian),
+creates `.env` from `.env.example` (opens it for you to fill in), runs the one-time Telethon logins
+(→ `bot/worker.session`, `bot/streamer.session`), applies the Turso schema, and runs
+`docker compose up -d --build`. Re-run it any time; it skips completed steps.
+
+Then open `http://<server-ip>:3000` (log in with `APP_PASSWORD`).
+
+> Low-RAM tip — add swap before building if you're on 1 GB:
+> ```bash
+> sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+> ```
+
+---
+
+## 6. Deploy — the manual way
+
+```bash
+# 1) Install Docker (cross-distro)
+curl -fsSL https://get.docker.com | sudo sh
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER" && newgrp docker
+
+# 2) Get the code + config
+git clone <your-repo-url> tcd && cd tcd
+cp .env.example .env && nano .env        # fill in every credential
+
+# 3) One-time Telethon logins (creates the two session files the watcher + streamer bind-mount)
+#    Build a helper image, then log in interactively (phone + code, 2FA if enabled):
+docker build -t tcd-login -f bot/Dockerfile .
+docker run --rm -it --env-file .env -v "$PWD/bot:/login" -w /login tcd-login python login.py worker
+docker run --rm -it --env-file .env -v "$PWD/bot:/login" -w /login tcd-login python login.py streamer
+
+# 4) Apply the Turso schema (idempotent)
+docker run --rm --env-file .env -v "$PWD/bot:/app" -w /app tcd-login \
+  sh -c "python run-migration.py schema.sql && python run-migration.py migration-folders.sql"
+
+# 5) Build + start
+docker compose up -d --build
+docker compose logs -f                   # confirm bot/watcher/streamer connect, web is ready
+```
+
+Notes:
+- The local Bot API server (`telegram-bot-api`) and `TELEGRAM_API_URL=http://telegram-bot-api:8081`
+  are already wired in `docker-compose.yml` — no manual setup.
+- The bot/watcher start/stop buttons and heartbeat were removed from the UI; processes are managed
+  by Compose (`restart: unless-stopped`).
+- For a domain + HTTPS, put **Caddy/Nginx** in front of the `web` service (port 3000). Large uploads
+  must go through this server, never through a serverless host (small body limit).
+
+---
+
+## 7. Moving to another VPS later
+
+Everything is Docker + external Turso, so migrating is: copy 3 things and bring up the stack.
+
+```bash
+# from the old server (data lives in Turso + Telegram, not here):
+scp .env bot/worker.session bot/streamer.session user@new-vps:~/tcd/
+
+# on the new VPS:
+git clone <your-repo-url> tcd && cd tcd
+# place .env + the two .session files, then:
+docker compose up -d --build
+```
+
+No database migration (Turso stays), no file migration (Telegram stays). Repoint your domain to the
+new IP. The `compressed` videos are rebuilt on demand, so they don't need migrating.
+
+---
+
+## 8. Pros & caveats
+
+**Pros:** access from any device; "upload one file, server splits + sends + cleans up";
+resilient to drops (resumable chunks + per-part checkpoint); disk-light streaming split; portable
+(`docker compose up`); light bot (downloads via `copy_message`, no byte streaming); free download
+egress; in-browser video streaming with background compression to cut repeat-view bandwidth.
+
+**Caveats:**
+- 30 GB free-tier disk is tight for ~20 GB files (peak ~21.5 GB) — prefer 45–50 GB EBS.
+- 100 GB/month egress caps total upload volume (downloads don't count).
+- 1 GB RAM is tight → use `t3.small` or add swap.
+- Free Tier is time-limited → you'll migrate eventually (made easy in §7).
+- Download reassembly for **new** uploads is a plain concat, not `7z x` (older 7-Zip archives still
+  use `7z x`).
+- Uploads still traverse 2 hops (device→server→Telegram); the first hop depends on your link
+  (resumable mitigates it, doesn't remove it).
+- `worker.session` / `streamer.session` are full Telegram account credentials — never commit them
+  (already in `.gitignore` / `.dockerignore`).
+
+---
+
+## 9. Environment variables (summary)
+
+See [`.env.example`](../.env.example). Key ones for server mode:
+
+| Var | Used by | Note |
+|---|---|---|
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | all | metadata brain |
+| `BOT_TOKEN`, `STORAGE_CHANNEL_ID`, `OWNER_USER_ID` | bot, web | index / download / purge |
+| `TG_API_ID`, `TG_API_HASH` | watcher, streamer | Telethon (MTProto) |
+| `NEXT_PUBLIC_BOT_USERNAME` | web (build) | download deep link — inlined at build time |
+| `APP_PASSWORD` | web | dashboard login; empty = auth disabled |
+| `TELEGRAM_API_URL` | bot, web, streamer | local Bot API endpoint (compose sets `http://telegram-bot-api:8081`) |
+| `UPLOAD_STAGING_DIR` / `WORKER_OUT_DIR` | web, watcher | compose sets `/staging` + `/staging/_parts` |
+| `VIDEO_COMPRESS`, `VIDEO_CRF`, `VIDEO_PRESET`, `COMPRESSED_MAX_SIZE_GB` | streamer | background compression tuning |
+
+---
+
+## 10. Automatic deploys (CI/CD via GitHub Actions)
+
+- **CI** ([.github/workflows/ci.yml](../.github/workflows/ci.yml)) runs **on Pull Requests** to
+  `main`: web lint + typecheck + build, and a Python syntax check.
+- **CD** ([.github/workflows/cd.yml](../.github/workflows/cd.yml)) runs **on push/merge** to `main`:
+  it SSHes into the VPS, runs `git pull origin main`, `docker compose up -d --build`, and
+  `docker image prune -f`.
+
+> Direct pushes to `main` skip CI and go straight to deploy — so build/lint locally first, and keep
+> the VPS working tree clean (the deploy does `git pull`; uncommitted changes there block it).
+
+### A. GitHub repository secrets
+**Settings → Secrets and variables → Actions → Repository secrets:**
+1. `VPS_SSH_HOST` — public IP or DNS of the VPS.
+2. `VPS_SSH_USERNAME` — SSH user (`ubuntu` for Ubuntu, `ec2-user` for Amazon Linux).
+3. `VPS_SSH_KEY` — the full private key (`.pem` contents, including the `-----BEGIN/END-----` lines).
+4. `VPS_DEPLOY_PATH` — repo path on the VPS (e.g. `/home/ec2-user/tcd`).
+5. `VPS_SSH_PORT` *(optional)* — defaults to `22`.
+
+### B. Deploy key on the VPS (for `git pull` on a private repo)
+```bash
+ssh-keygen -t ed25519 -C "vps-deploy-key"   # press Enter through the prompts (no passphrase)
+cat ~/.ssh/id_ed25519.pub                    # add this at GitHub → repo → Settings → Deploy keys
+ssh -T git@github.com                        # accept the host fingerprint once
+```
+Read-only access is enough; do **not** tick "Allow write access".
+
+### C. Flow
+- PR to `main` → CI (build/lint/syntax). No deploy.
+- Push/merge to `main` → CD: SSH → `git pull` → `docker compose up -d --build` → prune old images.

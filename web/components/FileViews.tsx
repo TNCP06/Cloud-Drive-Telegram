@@ -107,25 +107,18 @@ export function FolderCard({
 }) {
   return (
     <div className="card folder" onClick={() => onOpen(folder.id)}>
-      <div className="thumb">
-        <div
-          style={{
-            width: "44px",
-            height: "44px",
-            background: "color-mix(in oklab, var(--accent) 9%, var(--card-2))",
-            display: "grid",
-            placeItems: "center",
-            borderRadius: "10px",
-          }}
-        >
-          <Icon name="folder" size={26} stroke={1.5} style={{ color: "var(--accent)" }} />
-        </div>
+      <div className="folder-ico">
+        <Icon name="folder" size={20} stroke={1.6} />
       </div>
-
+      <div className="folder-info">
+        <div className="fname" title={folder.name}>
+          {folder.name}
+        </div>
+        <div className="meta">Folder</div>
+      </div>
       <button
-        className="kebab"
+        className="folder-kebab"
         title="Actions"
-        style={{ left: "auto", right: "9px" }}
         onClick={(e) => {
           e.stopPropagation();
           onMenu(folder, e.currentTarget);
@@ -133,11 +126,6 @@ export function FolderCard({
       >
         <Icon name="kebab" size={15} />
       </button>
-
-      <div className="fname" title={folder.name}>
-        {folder.name}
-      </div>
-      <div className="meta">Folder</div>
     </div>
   );
 }

@@ -232,9 +232,12 @@ All in [`web/app/actions.ts`](../web/app/actions.ts), no Telegram involved:
 - `listTags` / `createTag` / `recolorTag` / `deleteTag`.
 - `renameTag` is merge-aware: renaming onto an existing name re-points `item_tags` to the
   existing tag and drops the duplicate.
-- Colour: `tags.color` stores a palette key (`sage`, `ochre`, …); empty string → derived
-  deterministically from the name via `tagColorKey()`. Tags created by the bot have no colour
-  and fall back to derivation.
+- Colour: `tags.color` stores a palette key (`sage`, `ochre`, …). The web now **persists a
+  concrete colour at creation** (`createTag`/`resolveTagId` write `tagColorKey(name)` when none is
+  chosen) and **pins** the derived colour before a rename, so a tag's colour never shifts on
+  rename/edit. `tagColorKey()` derives over a fixed 9-key set, so adding new palette options doesn't
+  reshuffle existing derived colours. Tags created by the **bot** still have empty colour and fall
+  back to on-read derivation until the web touches them.
 
 ---
 

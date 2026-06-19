@@ -50,19 +50,24 @@ export function Sidebar({
 }) {
   const [mediaOpen, setMediaOpen] = useState(true);
   const [showMoreTags, setShowMoreTags] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
 
-  const isMediaTag = (name: string) => name.toLowerCase() === "image" || name.toLowerCase() === "video";
-  const mediaTags = tags.filter((t) => isMediaTag(t.name));
-  const regularTags = tags.filter((t) => !isMediaTag(t.name));
+  // Type tags get their own collapsible group (kept in a fixed, intuitive order).
+  const SPECIAL_ORDER = ["image", "video", "archive"];
+  const isSpecialTag = (name: string) => SPECIAL_ORDER.includes(name.toLowerCase());
+  const mediaTags = tags
+    .filter((t) => isSpecialTag(t.name))
+    .sort(
+      (a, b) => SPECIAL_ORDER.indexOf(a.name.toLowerCase()) - SPECIAL_ORDER.indexOf(b.name.toLowerCase())
+    );
+  const regularTags = tags.filter((t) => !isSpecialTag(t.name));
 
+  // Sort regular tags by usage count (descending) — most-used first.
   const sortedRegularTags = [...regularTags]
     .sort((a, b) => (counts.tags[b.id] || 0) - (counts.tags[a.id] || 0));
 
-  const topRegularTags = sortedRegularTags.slice(0, 5)
-    .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
-
-  const remainingTags = sortedRegularTags.slice(5)
-    .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+  const topRegularTags = sortedRegularTags.slice(0, 5);
+  const remainingTags = sortedRegularTags.slice(5);
 
   return (
     <aside className="sidebar">
@@ -159,7 +164,7 @@ export function Sidebar({
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
                   <Icon name="video" size={18} className="ico" />
-                  <span>Media Tags</span>
+                  <span>Type Tags</span>
                 </div>
                 <Icon
                   name="chevdown"
@@ -209,7 +214,12 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="storage">
+      <button
+        className="storage"
+        type="button"
+        onClick={() => setStorageOpen(true)}
+        title="View storage breakdown"
+      >
         <div className="top">
           <div className="num">
             {storage.usedLabel.num}
@@ -231,7 +241,60 @@ export function Sidebar({
           <span style={{ flex: 1, background: "var(--line)" }}></span>
         </div>
         <TagLegend items={storage.legend} />
-      </div>
+      </button>
+
+      {storageOpen && <StorageDetail storage={storage} onClose={() => setStorageOpen(false)} />}
     </aside>
+  );
+}
+
+function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => void }) {
+  const segs = [...storage.segments].sort((a, b) => b.pct - a.pct);
+  return (
+    <div
+      className="overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="dialog" style={{ maxWidth: 420 }}>
+        <div className="dhead">
+          <div>
+            <h2>Storage</h2>
+            <p className="sub">
+              {storage.usedLabel.num} {storage.usedLabel.unit} used on {storage.capLabel}
+            </p>
+          </div>
+          <button className="iconbtn ghost" onClick={onClose} title="Close">
+            <Icon name="close" size={18} />
+          </button>
+        </div>
+        <div className="dbody">
+          <div className="meter" style={{ height: 10, marginBottom: 16 }}>
+            {storage.segments.map(
+              (s, i) =>
+                s.pct > 0.4 && (
+                  <span key={i} style={{ width: s.pct + "%", background: s.color }} title={s.label}></span>
+                )
+            )}
+            <span style={{ flex: 1, background: "var(--line)" }}></span>
+          </div>
+          <div className="storage-detail">
+            {segs.length === 0 && <div className="tagmgr-empty">No data yet.</div>}
+            {segs.map((s, i) => (
+              <div className="storage-detail-row" key={i}>
+                <span className="sd-dot" style={{ background: s.color }}></span>
+                <span className="sd-label">{s.label}</span>
+                <span className="sd-size">{s.sizeLabel}</span>
+                <span className="sd-pct">{s.pct < 0.1 ? "<0.1" : s.pct.toFixed(1)}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="dfoot">
+          <button className="btn" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
   );
 }

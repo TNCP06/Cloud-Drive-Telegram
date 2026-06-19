@@ -1,7 +1,9 @@
 import type { Kind } from "./types";
 
-// Palet warna tag — muted & earthy (dari desain Claude Design).
+// Tag colour palette — muted & earthy. The first 9 ("derivation set") are also used
+// for auto-deriving a colour from a name; the rest are extra options for manual picking.
 export const TAG_COLORS: Record<string, string> = {
+  // --- derivation set (do NOT reorder/remove: changing it reshuffles derived colours) ---
   sage: "#5E7A52",
   ochre: "#B08526",
   clay: "#B0573A",
@@ -11,15 +13,28 @@ export const TAG_COLORS: Record<string, string> = {
   rose: "#A65656",
   indigo: "#5A5F8A",
   moss: "#74762F",
+  // --- extra manual-pick options ---
+  forest: "#3F6B4A",
+  pine: "#2F6B5C",
+  olive: "#6E7335",
+  mustard: "#C29A33",
+  copper: "#A8623A",
+  brick: "#9C4636",
+  mauve: "#8C6A8E",
+  denim: "#41618C",
+  steel: "#506B72",
+  sand: "#9C7E55",
 };
 
-const COLOR_KEYS = Object.keys(TAG_COLORS);
+// Derivation uses only the original 9 keys so that adding new palette options above
+// never changes the colour auto-derived for an existing tag (keeps colours stable).
+const DERIVE_KEYS = ["sage", "ochre", "clay", "slate", "teal", "plum", "rose", "indigo", "moss"];
 
-/** Pemetaan deterministik nama tag → key warna (stabil antar render). */
+/** Deterministic name → colour key (stable across renders AND palette growth). */
 export function tagColorKey(name: string): string {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  return COLOR_KEYS[h % COLOR_KEYS.length];
+  return DERIVE_KEYS[h % DERIVE_KEYS.length];
 }
 
 // Metadata per kind: ikon (nama path di Icon), tint, label.

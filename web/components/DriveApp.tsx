@@ -398,19 +398,24 @@ export function DriveApp({
     };
     if (viewMode === "grid") {
       return (
+        <>
+        {currentFolders.length > 0 && (
+          <div className="grid folders">
+            {currentFolders.map((folder) => (
+              <FolderCard
+                key={`folder-${folder.id}`}
+                folder={folder}
+                onOpen={(id) => {
+                  if (isClickThrough()) return;
+                  setCurrentFolderId(id);
+                  setSelectedIds([]);
+                }}
+                onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
+              />
+            ))}
+          </div>
+        )}
         <div className="grid">
-          {currentFolders.map((folder) => (
-            <FolderCard
-              key={`folder-${folder.id}`}
-              folder={folder}
-              onOpen={(id) => {
-                if (isClickThrough()) return;
-                setCurrentFolderId(id);
-                setSelectedIds([]);
-              }}
-              onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
-            />
-          ))}
           {shown.map((item) => (
             <FileCard
               key={item.id}
@@ -438,6 +443,7 @@ export function DriveApp({
             />
           ))}
         </div>
+        </>
       );
     }
     return (

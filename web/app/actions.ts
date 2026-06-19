@@ -150,9 +150,10 @@ async function resolveTagId(name: string): Promise<number> {
     args: [n],
   });
   if (existing.rows.length) return Number(existing.rows[0].id);
+  // Persist a deterministic colour at creation so it stays stable across renames.
   await db.execute({
-    sql: "INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO NOTHING",
-    args: [n],
+    sql: "INSERT INTO tags (name, color) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
+    args: [n, tagColorKey(n)],
   });
   const rs = await db.execute({ sql: "SELECT id FROM tags WHERE name = ?", args: [n] });
   return Number(rs.rows[0].id);
@@ -189,9 +190,11 @@ export async function createTag(name: string, color = "") {
     refresh();
     return;
   }
+  // Persist a concrete colour at creation (chosen, or a deterministic one) so the
+  // colour is stable and never shifts later (e.g. on rename).
   await db.execute({
     sql: "INSERT INTO tags (name, color) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
-    args: [n, color],
+    args: [n, color || tagColorKey(n)],
   });
   refresh();
 }
@@ -222,6 +225,15 @@ export async function renameTag(id: number, name: string) {
     await db.execute({ sql: "DELETE FROM item_tags WHERE tag_id = ?", args: [id] });
     await db.execute({ sql: "DELETE FROM tags WHERE id = ?", args: [id] });
   } else {
+    // Pin the colour before renaming: if this tag has no explicit colour, lock in the
+    // one currently derived from the OLD name so the rename doesn't change its hue.
+    const cur = await db.execute({ sql: "SELECT name, color FROM tags WHERE id = ?", args: [id] });
+    if (cur.rows.length && !String(cur.rows[0].color ?? "").trim()) {
+      await db.execute({
+        sql: "UPDATE tags SET color = ? WHERE id = ?",
+        args: [tagColorKey(String(cur.rows[0].name)), id],
+      });
+    }
     await db.execute({ sql: "UPDATE tags SET name = ? WHERE id = ?", args: [n, id] });
   }
   refresh();
@@ -280,6 +292,29 @@ export async function enqueueUpload(input: {
     sql: "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size) VALUES (?, ?, ?, ?, ?)",
     args: [input.kind, title, input.tags.trim(), sourcePath, input.partSize || 1500],
   });
+  revalidatePath("/upload");
+}
+
+// Edit a queued upload job's metadata before it starts. Guarded to status='queued'
+// so a running/done job can't be mutated mid-flight (the watcher already read it).
+export async function updateUploadJob(
+  id: number,
+  input: { title: string; tags: string; partSize?: number }
+) {
+  const title = input.title.trim();
+  if (!title) throw new Error("Title cannot be empty.");
+  const tags = input.tags.trim();
+  if (typeof input.partSize === "number" && input.partSize > 0) {
+    await db.execute({
+      sql: "UPDATE upload_jobs SET title=?, tags=?, part_size=?, updated_at=datetime('now') WHERE id=? AND status='queued'",
+      args: [title, tags, input.partSize, id],
+    });
+  } else {
+    await db.execute({
+      sql: "UPDATE upload_jobs SET title=?, tags=?, updated_at=datetime('now') WHERE id=? AND status='queued'",
+      args: [title, tags, id],
+    });
+  }
   revalidatePath("/upload");
 }
 
