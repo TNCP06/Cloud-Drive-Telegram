@@ -8,18 +8,24 @@ approximate and will drift — treat function names as the stable anchor.
 
 ## `bot/` — Python (Telegram bridge)
 
-### `bot.py` — indexer + download server + purge (long-running, `python-telegram-bot`)
-Pure helpers (no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
+> **Module layout (bot.py was split for size):** `bot_config.py` (env, logging, Turso URL
+> rewrite), `tg_helpers.py` (pure helpers), `db_ops.py` (idempotent Turso ops), `indexing.py`
+> (channel indexing + thumbnail harvest + `index_bot_copy`). `bot.py` keeps the interactive
+> handlers + `main()` and **re-exports** the names `index_history.py` imports (`from bot import …`).
+> The streamer's background compression lives in `stream_compress.py`.
+
+### `bot.py` (+ `bot_config` / `tg_helpers` / `db_ops` / `indexing`) — indexer + download server + purge
+Pure helpers (`tg_helpers.py`, no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
 (`media` vs `archive`), `get_file_meta`, `derive_media_meta` (media caption fallback),
 `pick_thumb_file_id`, `encode_thumbnail` (raw image bytes → compact **WebP** base64 via
-Pillow, JPEG passthrough fallback), `process_next_in_queue` (helper to process the next queued file).
-Turso ops (idempotent): `upsert_item` (`set_title` guard for albums; preserves user-modified metadata on conflict), `upsert_part` (keyed on
-`channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**: reuses an existing tag that differs only in capitalization), `upsert_thumbnail`.
-`index_bot_copy`: indexes a channel post the **bot created itself** (`copy_message`/`copy_messages`)
+Pillow, JPEG passthrough fallback). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
+Turso ops (`db_ops.py`, idempotent): `upsert_item` (`set_title` guard for albums; preserves user-modified metadata on conflict), `upsert_part` (keyed on
+`channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**: reuses an existing tag that differs only in capitalization), `upsert_thumbnail`, `is_user_authorized`.
+`index_bot_copy` (`indexing.py`): indexes a channel post the **bot created itself** (`copy_message`/`copy_messages`)
 inline — Telegram sends no `channel_post` update for a bot's own messages, so `on_channel_post`
 never fires for Bot-Drop uploads; idempotent, stores `file_id=NULL` (streamer resolves on demand),
 harvests the thumbnail from the original private-chat message.
-Handlers: `on_channel_post` (index new and edited channel posts, Flow C), `harvest_thumbnail` (if the post has no thumbnail
+Handlers: `on_channel_post` (`indexing.py`; index new and edited channel posts, Flow C), `harvest_thumbnail` (if the post has no thumbnail
 yet — common for video, which Telegram generates asynchronously — it schedules
 `_deferred_harvest` instead of giving up), `_deferred_harvest` (background task: wait 60 s, then
 `forward_message` to owner chat to re-fetch the now-generated thumbnail, store it, delete the
@@ -70,10 +76,11 @@ using mtime LRU policy), `_ensure_chunk_stream` (fallback Telethon disk-or-downl
 `_init_part_meta` (Turso query → `meta.json` creation), `_prefetch_worker` (fallback background prefetch),
 `_get_tg_message` (in-memory message cache), `stream` (main route: parse Range, downloads via local Bot API
 and streams local file if active, else chunk-streams via Telethon).
-**Background video compression** (local Bot API mode): `_transcode_worker` (ffmpeg → smaller H.264 MP4 in
-the **persistent** `COMPRESSED_DIR`, keeps same resolution; drops the result + writes a `.skip` marker if it
-isn't ≥5% smaller), `_schedule_transcode` (fire-and-forget, dedup'd), `_serve_local_file_range`/`_parse_range`
-(byte-range serve from any local file), `_compressed_path`, `_evict_compressed_if_needed` (optional LRU cap).
+**Background video compression** (local Bot API mode) lives in **`stream_compress.py`**: `_transcode_worker`
+(ffmpeg → smaller H.264 MP4 in the **persistent** `COMPRESSED_DIR`, keeps same resolution; drops the result +
+writes a `.skip` marker if it isn't ≥5% smaller), `_schedule_transcode` (fire-and-forget, dedup'd),
+`_serve_local_file_range`/`_parse_range` (byte-range serve from any local file), `_compressed_path`,
+`_evict_compressed_if_needed` (optional LRU cap), `init_semaphore` (called from streamer's lifespan).
 `stream` serves the original on the first view (instant) while transcoding in the background; later views
 serve the compressed copy. The served variant is **pinned per playback** (`_serving_variant`: a fresh load /
 `bytes=0-` re-evaluates and prefers compressed once ready; seeks reuse the pin) so file size never changes
@@ -117,7 +124,10 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 - `gallery-cache.ts` — in-memory cache for `getGallery` results (`GalleryPart[]`). `icons.tsx` — SVG icons.
 
 ### `web/app/` — routes & server actions
-- `actions.ts` — **the metadata + control API** (all `"use server"`). Item: `toggleFavorite`,
+- `actions.ts` — re-export **barrel** for the server actions, now split by domain under
+  `app/actions/` (`items.ts`, `tags.ts`, `folders.ts`, `uploads.ts`, `thumbnails.ts`, plus
+  `_shared.ts` for `refresh`/`resolveTagId`). `@/app/actions` imports are unchanged. Inventory:
+  Item (`items.ts`): `toggleFavorite`,
   `softDelete`, `restore`, `purgeNow` (on-demand permanent delete of a trashed item — Telegram
   `deleteMessage` + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
   intentionally NOT changed on rename).
@@ -167,7 +177,9 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 ### `web/components/` — UI (client)
 - `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).
 - `DriveApp.tsx` — top-level app shell/state (largest component). Folders render in their own
-  compact `.grid.folders` above the file grid. `Sidebar.tsx` — nav/filters; regular tags sorted by
+  compact `.grid.folders` above the file grid. Its modals + empty state were extracted to
+  `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete`, `CreateFolderModal`, `RenameFolderModal`,
+  `MoveToFolderModal`, `EmptyState`). `Sidebar.tsx` — nav/filters; regular tags sorted by
   usage count (desc); a collapsible **Type Tags** group (Image/Video/**Archive**); the storage meter
   is a button that opens a `StorageDetail` breakdown popup.
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders. `FolderCard` is a **compact

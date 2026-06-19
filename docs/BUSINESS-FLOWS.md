@@ -46,7 +46,7 @@ the `upload_jobs` table.
 
 ---
 
-## A2. Upload from any device (server mode — "terima beres")
+## A2. Upload from any device (server mode — hands-off)
 
 The user uploads one file from a browser; the **server** stages it, splits it, and pushes it.
 No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPLOYMENT.md).

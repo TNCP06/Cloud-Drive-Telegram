@@ -1,9 +1,8 @@
 # Architecture — Telegram Cloud Drive
 
 > Single source of truth for **how the system actually works today** (the code, not the
-> design phase). For the original Indonesian design rationale see
-> [`../arsitektur-telegram-storage.md`](../arsitektur-telegram-storage.md); for the early
-> UI mockup see `web-cloud-drive-design/` (mockup only — not authoritative).
+> design phase). Pair with [`BUSINESS-FLOWS.md`](./BUSINESS-FLOWS.md) (operations),
+> [`CODE-MAP.md`](./CODE-MAP.md) (file/function map), and [`DEPLOYMENT.md`](./DEPLOYMENT.md).
 
 ---
 
@@ -26,7 +25,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 |---|---|---|---|
 | **Storage channel** | Telegram | — | Holds the actual file bytes (one message per part). Bot is admin. |
 | **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Turso; serve downloads via `copy_message`; daily trash purge; Bot Drop intake. |
-| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes; heartbeat. |
+| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. (Still writes a `watcher_heartbeat` row every 10 s, but the UI no longer surfaces it.) |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
 | **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Turso; runs automatically on watcher container startup. |
 | **Streamer** | Server/VPS (Docker) | `bot/streamer.py` | Video streaming: if local Bot API server is configured, downloads files on-the-fly to a shared disk cache and streams directly; else falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetch. |
