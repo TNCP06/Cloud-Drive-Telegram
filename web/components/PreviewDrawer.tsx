@@ -8,6 +8,7 @@ import { KINDS, TAG_COLORS } from "@/lib/kinds";
 import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import { getCachedGallery, loadGallery } from "@/lib/gallery-cache";
 import { TagPicker } from "./TagPicker";
+import { VideoPlayer } from "./VideoPlayer";
 import { reharvestThumbnail, uploadThumbnail } from "@/app/actions";
 import type { DriveFile, GalleryPart, Kind, Tag } from "@/lib/types";
 
@@ -104,7 +105,6 @@ export function PreviewDrawer({
   const [thumbBusy, setThumbBusy] = useState(false);
   const [thumbMsg, setThumbMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const detailsClosedTimeRef = useRef<number>(0);
   const closeDetails = () => {
     detailsClosedTimeRef.current = Date.now();
@@ -229,80 +229,17 @@ export function PreviewDrawer({
     }
   }, [activeIdx, last, hasNextFile, hasPrevFile, onNavigateFile]);
 
-  const handleVideoKey = useCallback((key: string) => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (key === "ArrowLeft") {
-      video.currentTime = Math.max(0, video.currentTime - 5);
-    } else if (key === "ArrowRight") {
-      const duration = video.duration;
-      const targetTime = video.currentTime + 5;
-      video.currentTime = isNaN(duration) ? targetTime : Math.min(duration, targetTime);
-    } else if (key === "f" || key === "F") {
-      if (document.fullscreenElement === video) {
-        document.exitFullscreen().catch(() => {});
-      } else {
-        video.requestFullscreen().catch(() => {});
-      }
-    } else if (key === "m" || key === "M") {
-      video.muted = !video.muted;
-    }
-  }, []);
-
-  // Auto-focus the video element when it mounts/changes so shortcuts work instantly.
-  useEffect(() => {
-    if (isPartStreamableVideo(activePart, item.kind) && videoRef.current) {
-      videoRef.current.focus();
-      try {
-        const savedVolume = localStorage.getItem("video-volume");
-        if (savedVolume !== null) {
-          videoRef.current.volume = Number(savedVolume);
-        }
-        const savedMuted = localStorage.getItem("video-muted");
-        if (savedMuted !== null) {
-          videoRef.current.muted = savedMuted === "true";
-        }
-      } catch {}
-    }
-  }, [activePart, item.kind, gallery]);
-
-  // Listen to keyboard shortcuts directly on the video element (intercepting and blocking both keydown/keyup events to prevent browser's native controls from double-triggering or seeking slowly)
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const handleNativeKey = (e: KeyboardEvent) => {
-      if (["ArrowLeft", "ArrowRight", "f", "F", "m", "M"].includes(e.key)) {
-        if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.shiftKey) {
-          return; // Let Shift + Arrow slide navigation bubble up
-        }
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.type === "keydown") {
-          handleVideoKey(e.key);
-        }
-      }
-    };
-
-    video.addEventListener("keydown", handleNativeKey, true);
-    video.addEventListener("keyup", handleNativeKey, true);
-    return () => {
-      video.removeEventListener("keydown", handleNativeKey, true);
-      video.removeEventListener("keyup", handleNativeKey, true);
-    };
-  }, [activePart, item.kind, gallery, handleVideoKey]);
-
-  // Keyboard: Esc closes (detail panel first if open); ←/→ navigates photos/files.
+  // Keyboard. Esc closes (detail panel first if open). For videos, Plyr owns the
+  // media shortcuts (←/→ seek 5s, f fullscreen, m mute, space play) — we only add
+  // Shift+←/→ to jump between parts/files. For non-video items, ←/→ navigates.
+  // Uses capture phase so Shift+arrows are intercepted before Plyr's global handler.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (detailsOnly) {
-          onClose();
-        } else if (showDetails && !editing) {
-          closeDetails();
-        } else {
-          onClose();
-        }
+        if (document.fullscreenElement) return; // let Plyr exit fullscreen first
+        if (detailsOnly) onClose();
+        else if (showDetails && !editing) closeDetails();
+        else onClose();
         return;
       }
       if (detailsOnly) return;
@@ -319,25 +256,24 @@ export function PreviewDrawer({
       }
 
       if (isPartStreamableVideo(activePart, item.kind)) {
-        if (["ArrowLeft", "ArrowRight", "f", "F", "m", "M"].includes(e.key)) {
-          if (e.key === "ArrowLeft" && e.shiftKey) {
-            go(-1);
-          } else if (e.key === "ArrowRight" && e.shiftKey) {
-            go(1);
-          } else {
-            e.preventDefault();
-            handleVideoKey(e.key);
-          }
-          return;
+        // Shift+arrow → navigate parts/files; plain arrows fall through to Plyr.
+        if (e.shiftKey && e.key === "ArrowLeft") {
+          e.preventDefault();
+          e.stopPropagation();
+          go(-1);
+        } else if (e.shiftKey && e.key === "ArrowRight") {
+          e.preventDefault();
+          e.stopPropagation();
+          go(1);
         }
-      } else {
-        if (e.key === "ArrowLeft") go(-1);
-        else if (e.key === "ArrowRight") go(1);
+        return;
       }
+      if (e.key === "ArrowLeft") go(-1);
+      else if (e.key === "ArrowRight") go(1);
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, showDetails, editing, go, item.kind, activePart, handleVideoKey, detailsOnly]);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [onClose, showDetails, editing, go, item.kind, activePart, detailsOnly]);
 
   const save = () => {
     if (!title.trim()) return;
@@ -353,24 +289,11 @@ export function PreviewDrawer({
           <div className={"viewer" + (multi ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
             <div className="viewer-stage" onClick={handleStageClick}>
               {isPartStreamableVideo(activePart, item.kind) ? (
-                <video
-                  ref={videoRef}
+                <VideoPlayer
                   key={activePart!.partId}
                   src={`/api/stream/${activePart!.partId}`}
                   poster={activePart!.thumb || undefined}
-                  controls
-                  autoPlay
-                  preload="metadata"
-                  tabIndex={0}
-                  onClick={(e) => e.stopPropagation()}
-                  onVolumeChange={(e) => {
-                    const video = e.currentTarget;
-                    try {
-                      localStorage.setItem("video-volume", String(video.volume));
-                      localStorage.setItem("video-muted", String(video.muted));
-                    } catch {}
-                  }}
-                  style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }}
+                  onRequestClose={onClose}
                 />
               ) : activePart?.thumb ? (
                 <Image src={activePart.thumb} alt={item.name} unoptimized width={0} height={0} sizes="100vw" onClick={(e) => e.stopPropagation()} style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />

@@ -655,7 +655,7 @@ button { font-family: inherit; }
 .viewer-stage {
   position: absolute; inset: 0; z-index: 1;
   display: flex; align-items: center; justify-content: center;
-  padding: 52px 16px 16px; cursor: zoom-out;
+  padding: 52px 16px 16px; cursor: pointer;
 }
 .viewer.has-nav .viewer-stage { padding-left: 60px; padding-right: 60px; }
 .viewer.has-strip .viewer-stage { padding-bottom: 88px; }
@@ -663,6 +663,24 @@ button { font-family: inherit; }
   max-width: 100%; max-height: 100%; min-width: 0; min-height: 0;
   object-fit: contain; border-radius: var(--r-sm); cursor: default;
 }
+
+/* Plyr video player. The player fills the entire stage from the first frame —
+   even while the stream is still loading — so it never collapses to a tiny box.
+   The frame is letterboxed inside via object-fit: contain; clicks on the dark
+   letterbox close the viewer, clicks on the frame play/pause (handled in JS).
+   cursor: pointer signals the closable area (the frame uses Plyr's cursors). */
+.viewer-video {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%; min-width: 0; min-height: 0;
+  cursor: pointer;
+}
+.viewer-video .plyr {
+  width: 100%; height: 100%;
+  border-radius: var(--r-sm);
+  --plyr-color-main: var(--accent);
+}
+.viewer-video .plyr video { object-fit: contain; background: transparent; }
+.viewer-video .plyr__video-wrapper { background: transparent; }
 
 /* Bar atas melayang di dalam foto: tombol kecil + judul */
 .viewer-top {

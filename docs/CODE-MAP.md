@@ -167,6 +167,7 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 
 ### `web/public/` — static assets
 - `sw.js` — **client-side Service Worker**. Intercepts video range requests, caches 2 MB chunks in IndexedDB (`video-cache-db`), reconstructs partial responses, and runs LRU cache eviction targeting a 4 GB limit.
+- `logo.png` — sidebar/brand logo. **Note:** `next.config.ts` uses `output: "standalone"`, which does **not** bundle `public/`; `web/Dockerfile` must `COPY .../public ./public` into the run stage or these assets 404 in production.
 
 ### `web/` — auth & config
 - `lib/auth.ts` — `AUTH_COOKIE`, `sha256Hex` (shared by edge middleware + actions).
@@ -185,7 +186,12 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders. `FolderCard` is a **compact
   horizontal tile** (icon + name, no big thumbnail) to avoid wasted space; `FolderRow` for list view.
   File cards keep checkboxes for multi-select, a star toggle, and a kebab action button.
-- `PreviewDrawer.tsx` — item detail + on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders a `<video>` element sourced from `/api/stream/{partId}` (styled using `maxWidth`/`maxHeight` to shrink-to-fit the player area immediately, allowing clicks on letterbox areas to trigger `onClose`). All action buttons are removed from this drawer's top bar (delegated entirely to the external card/row kebab menus). Supports keyboard shortcuts for video controls. Supports `detailsOnly` mode to render the metadata/edit panel as a standalone popup without the full-screen photo/video stage layer. `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
+  Relative timestamps (`fmtDate`/`trashDaysLeft`) render through a local **`ClientText`**
+  helper that emits nothing on the server + first client paint and the real string after
+  mount — they depend on the viewer's clock/timezone, so rendering them during SSR caused
+  React hydration error #418.
+- `PreviewDrawer.tsx` — item detail + on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders **`VideoPlayer.tsx`** (a **Plyr** player) sourced from `/api/stream/{partId}`. The drawer keeps only `Esc` (close) and `Shift+←/→` (jump between parts/files) — Plyr owns the media shortcuts (←/→ seek 5s via `seekTime`, `f` fullscreen, `m` mute, space play); the document keydown is capture-phase so `Shift+arrows` are intercepted before Plyr's global handler. All action buttons are removed from this drawer's top bar (delegated entirely to the external card/row kebab menus). Supports `detailsOnly` mode to render the metadata/edit panel as a standalone popup without the full-screen photo/video stage layer. `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
+- `VideoPlayer.tsx` — **Plyr** wrapper for the lightbox stage. Fills the whole `.viewer-stage` from the first frame (Plyr's wrapper/video are 100%×100%; the frame is letterboxed via `object-fit: contain`) so it never starts tiny while the stream loads. Plyr's `clickToPlay` is disabled and clicks are split by geometry: on the displayed (contain-fitted) frame → play/pause; on the letterbox → `onRequestClose` (skipped while fullscreen); on controls → Plyr. Poster dims (the data-URL thumbnail) seed the letterbox hit-test before the video reports its own size. Volume/mute are persisted to `localStorage` (`video-volume`/`video-muted`) and restored on `ready` — Plyr's own `storage` is off — so they never reset when switching videos.
 - `UploadManager.tsx` — **unified, queue-first** upload UI. Selecting files (multiple, or a whole
   **folder** via `webkitdirectory`) adds them to ONE queue as editable **ready** items (NOT uploading
   yet); you set Title/Tags per item, then **Start** runs the full pipeline in that same list:

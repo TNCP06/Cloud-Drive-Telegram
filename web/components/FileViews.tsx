@@ -7,6 +7,18 @@ import { KINDS, TAG_COLORS } from "@/lib/kinds";
 import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import type { DriveFile, Tag, Folder } from "@/lib/types";
 
+/* ---- Client-only text (timestamps) ----
+   Relative/localized timestamps (fmtDate/trashDaysLeft) depend on the viewer's
+   clock + timezone, so the server (UTC on the VPS) and the browser render
+   different strings → React hydration error #418. Render nothing on the server
+   and first client paint (identical → no mismatch), then the real value after
+   mount. */
+function ClientText({ render }: { render: () => string }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  return <span suppressHydrationWarning>{mounted ? render() : ""}</span>;
+}
+
 /* ---- Tag chip ---- */
 export function Chip({ tag, big }: { tag: Tag | undefined; big?: boolean }) {
   if (!tag) return null;
@@ -232,9 +244,14 @@ export function FileCard({
         {item.version ? item.family : item.name}
       </div>
       <div className="meta">
-        {item.trashed && item.deletedAt != null
-          ? `Permanently deleted in ${trashDaysLeft(item.deletedAt)} days`
-          : `${fmtSize(item.size)}${item.parts > 1 ? ` · ${item.parts} parts` : ""} · ${fmtDate(item.modified)}`}
+        {item.trashed && item.deletedAt != null ? (
+          <ClientText render={() => `Permanently deleted in ${trashDaysLeft(item.deletedAt!)} days`} />
+        ) : (
+          <>
+            {`${fmtSize(item.size)}${item.parts > 1 ? ` · ${item.parts} parts` : ""} · `}
+            <ClientText render={() => fmtDate(item.modified)} />
+          </>
+        )}
       </div>
       <VersionBadge item={item} versionCount={versionCount} onPickFamily={onPickFamily} />
       {itemTags.length > 0 && (
@@ -315,9 +332,13 @@ export function FileRow({
         </div>
       </div>
       <div className="col c-mod">
-        {item.trashed && item.deletedAt != null
-          ? `${trashDaysLeft(item.deletedAt)} days left`
-          : fmtDate(item.modified)}
+        <ClientText
+          render={() =>
+            item.trashed && item.deletedAt != null
+              ? `${trashDaysLeft(item.deletedAt)} days left`
+              : fmtDate(item.modified)
+          }
+        />
       </div>
       <div className="col c-size">{fmtSize(item.size)}</div>
       <div className="col c-kind hide-mob">{meta.label}</div>

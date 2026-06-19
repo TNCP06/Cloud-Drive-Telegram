@@ -26,5 +26,8 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
+# `output: standalone` does NOT bundle public/ — copy it so /logo.png, /sw.js,
+# and other static assets are served (otherwise they 404 in production).
+COPY --from=build /app/public ./public
 EXPOSE 3000
 CMD ["node", "server.js"]
