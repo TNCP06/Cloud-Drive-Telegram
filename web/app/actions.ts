@@ -129,21 +129,33 @@ export async function updateMetadata(
 
   await db.execute({ sql: "DELETE FROM item_tags WHERE item_id = ?", args: [id] });
   for (const name of names) {
-    await db.execute({
-      sql: "INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO NOTHING",
-      args: [name],
-    });
-    const rs = await db.execute({
-      sql: "SELECT id FROM tags WHERE name = ?",
-      args: [name],
-    });
+    const tagId = await resolveTagId(name);
     await db.execute({
       sql: "INSERT INTO item_tags (item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-      args: [id, Number(rs.rows[0].id)],
+      args: [id, tagId],
     });
   }
 
   refresh();
+}
+
+// Resolve a tag name to a tag id, matching case-insensitively so a name that
+// differs from an existing tag only in capitalization reuses that tag instead of
+// creating a duplicate ("game" → existing "Game"). Creates the tag (with the given
+// casing) only when no case-insensitive match exists.
+async function resolveTagId(name: string): Promise<number> {
+  const n = name.trim();
+  const existing = await db.execute({
+    sql: "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
+    args: [n],
+  });
+  if (existing.rows.length) return Number(existing.rows[0].id);
+  await db.execute({
+    sql: "INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO NOTHING",
+    args: [n],
+  });
+  const rs = await db.execute({ sql: "SELECT id FROM tags WHERE name = ?", args: [n] });
+  return Number(rs.rows[0].id);
 }
 
 // --- Category (tag) library management ---------------------------------------
@@ -168,6 +180,15 @@ export async function listTags(): Promise<Tag[]> {
 export async function createTag(name: string, color = "") {
   const n = name.trim();
   if (!n) throw new Error("Category name cannot be empty.");
+  // Don't create a near-duplicate that differs only in capitalization.
+  const existing = await db.execute({
+    sql: "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
+    args: [n],
+  });
+  if (existing.rows.length) {
+    refresh();
+    return;
+  }
   await db.execute({
     sql: "INSERT INTO tags (name, color) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
     args: [n, color],

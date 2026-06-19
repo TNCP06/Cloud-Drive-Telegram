@@ -17,6 +17,7 @@ import {
 } from "@/app/actions";
 import { FsBrowser } from "@/components/FsBrowser";
 import { FileUploader } from "@/components/FileUploader";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 type UploadMode = "device" | "laptop";
 
@@ -55,6 +56,11 @@ export function UploadManager({
   const [err, setErr] = useState<string | null>(null);
   const [browse, setBrowse] = useState(false);
   const [mode, setMode] = useState<UploadMode>("device");
+  const [showAllJobs, setShowAllJobs] = useState(false);
+
+  const JOBS_COLLAPSED = 6;
+  const visibleJobs = showAllJobs ? jobs : jobs.slice(0, JOBS_COLLAPSED);
+  const hiddenJobCount = jobs.length - visibleJobs.length;
 
   // Always poll so upload progress stay live (faster when there are active jobs).
   const hasActive = activeCount > 0;
@@ -87,6 +93,9 @@ export function UploadManager({
             Back
           </Link>
           <h1>Upload files</h1>
+          <div style={{ marginLeft: "auto" }}>
+            <ThemeToggle />
+          </div>
         </div>
 
 
@@ -218,17 +227,25 @@ export function UploadManager({
         {jobs.length === 0 ? (
           <div className="up-empty">No uploads queued.</div>
         ) : (
-          <div className="up-list">
-            {jobs.map((j) => (
-              <JobRow
-                key={j.id}
-                job={j}
-                onCancel={() => startTransition(() => cancelUpload(j.id))}
-                onStart={() => startTransition(() => startUpload(j.id))}
-                onRetry={() => startTransition(() => retryUpload(j.id))}
-              />
-            ))}
-          </div>
+          <>
+            <div className="up-list">
+              {visibleJobs.map((j) => (
+                <JobRow
+                  key={j.id}
+                  job={j}
+                  onCancel={() => startTransition(() => cancelUpload(j.id))}
+                  onStart={() => startTransition(() => startUpload(j.id))}
+                  onRetry={() => startTransition(() => retryUpload(j.id))}
+                />
+              ))}
+            </div>
+            {(hiddenJobCount > 0 || showAllJobs) && jobs.length > JOBS_COLLAPSED && (
+              <button className="up-expand" onClick={() => setShowAllJobs((v) => !v)}>
+                <Icon name={showAllJobs ? "chevup" : "chevdown"} size={15} />
+                {showAllJobs ? "Show less" : `Show ${hiddenJobCount} more`}
+              </button>
+            )}
+          </>
         )}
       </div>
 

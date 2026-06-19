@@ -9,6 +9,7 @@ import { Sidebar, type Counts, type Storage } from "./Sidebar";
 import { FileCard, FileRow, FolderCard, FolderRow, Menu, MenuItem } from "./FileViews";
 import { PreviewDrawer } from "./PreviewDrawer";
 import { TagManager } from "./TagManager";
+import { ThemeToggle } from "./ThemeToggle";
 import {
   toggleFavorite,
   softDelete,
@@ -643,6 +644,8 @@ export function DriveApp({
               <Icon name="rows" size={16} />
             </button>
           </div>
+
+          <ThemeToggle />
         </div>
 
         <div className="toolbar">

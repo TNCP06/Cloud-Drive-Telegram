@@ -84,7 +84,28 @@ def make_video_thumbnail(path: str) -> "str | None":
     return None
 
 
-async def _store_thumbnails(db, thumb_b64: str, channel_msg_ids: list):
+def _encode_webp(img_bytes: bytes) -> "tuple[str, str]":
+    """Re-encode raw image bytes to compact WebP base64 → (mime, base64).
+
+    Falls back to JPEG passthrough if Pillow is unavailable or decoding fails, so a
+    thumbnail is never lost. Mirrors bot.encode_thumbnail (kept local to avoid
+    importing bot.py, which requires BOT_TOKEN at import time).
+    """
+    try:
+        from PIL import Image
+        import io as _io
+
+        with Image.open(_io.BytesIO(img_bytes)) as img:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            out = _io.BytesIO()
+            img.save(out, format="WEBP", quality=80, method=6)
+            return "image/webp", base64.b64encode(out.getvalue()).decode("ascii")
+    except Exception:  # noqa: BLE001
+        return "image/jpeg", base64.b64encode(img_bytes).decode("ascii")
+
+
+async def _store_thumbnails(db, thumb_b64: str, thumb_mime: str, channel_msg_ids: list):
     """Background: store the ffmpeg thumbnail once the bot has indexed each part.
 
     Retries every 10 s for up to 70 s. Uses INSERT OR IGNORE so the bot's own
@@ -96,8 +117,8 @@ async def _store_thumbnails(db, thumb_b64: str, channel_msg_ids: list):
             try:
                 result = await db.execute(
                     "INSERT OR IGNORE INTO thumbnails (part_id, mime, data) "
-                    "SELECT id, 'image/jpeg', ? FROM parts WHERE channel_msg_id = ?",
-                    [thumb_b64, channel_msg_id],
+                    "SELECT id, ?, ? FROM parts WHERE channel_msg_id = ?",
+                    [thumb_mime, thumb_b64, channel_msg_id],
                 )
                 if getattr(result, "rows_affected", 0):
                     print(f"  [thumb] Stored ffmpeg thumbnail for channel_msg_id={channel_msg_id}")
@@ -287,10 +308,11 @@ async def process(client, db, channel, job):
         # ---- thumbnail (media only) --------------------------------------
         thumb_path = make_video_thumbnail(first_file) if kind == "media" else None
         thumb_b64 = None
+        thumb_mime = "image/webp"
         if thumb_path:
             try:
                 with open(thumb_path, "rb") as f:
-                    thumb_b64 = base64.b64encode(f.read()).decode("ascii")
+                    thumb_mime, thumb_b64 = _encode_webp(f.read())
                 print(f"  Thumbnail generated: {os.path.basename(thumb_path)}")
             except OSError:
                 thumb_path = None
@@ -348,7 +370,7 @@ async def process(client, db, channel, job):
         # Store ffmpeg thumbnail directly in Turso as a background task (non-blocking).
         # This is the fallback for when Telegram's async generation doesn't produce one.
         if thumb_b64 and uploaded_msg_ids:
-            asyncio.create_task(_store_thumbnails(db, thumb_b64, uploaded_msg_ids))
+            asyncio.create_task(_store_thumbnails(db, thumb_b64, thumb_mime, uploaded_msg_ids))
 
         state["pct"] = 100
         state["running"] = False

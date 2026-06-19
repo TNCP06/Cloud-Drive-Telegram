@@ -184,6 +184,27 @@ def pick_thumb_file_id(message) -> str | None:
     return None
 
 
+def encode_thumbnail(data_bytes: bytes) -> tuple[str, str]:
+    """Convert raw image bytes to a compact WebP base64 string → (mime, base64).
+
+    Telegram's built-in thumbnails are JPEG; re-encoding to WebP is ~25-35% smaller
+    at the same visual quality, shrinking the base64 blobs stored in Turso and shipped
+    to the browser. Falls back to JPEG passthrough if Pillow is unavailable or the
+    source can't be decoded — a thumbnail is never lost over an encoding issue.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data_bytes)) as img:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            out = io.BytesIO()
+            img.save(out, format="WEBP", quality=80, method=6)
+            return "image/webp", base64.b64encode(out.getvalue()).decode("ascii")
+    except Exception:  # noqa: BLE001
+        return "image/jpeg", base64.b64encode(data_bytes).decode("ascii")
+
+
 async def is_user_authorized(db, user_id: int) -> bool:
     if user_id == OWNER_USER_ID:
         return True
@@ -341,11 +362,22 @@ async def recompute_totals(db, item_id):
 
 
 async def sync_tags(db, item_id, tags):
-    """Ensure tags exist and are linked to the item (many-to-many)."""
+    """Ensure tags exist and are linked to the item (many-to-many).
+
+    Case-insensitive: a tag that differs from an existing one only in capitalization
+    reuses that tag instead of creating a duplicate (e.g. "game" → existing "Game").
+    """
     for name in tags:
-        await db.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", [name])
-        rs = await db.execute("SELECT id FROM tags WHERE name = ?", [name])
-        tag_id = rs.rows[0][0]
+        name = (name or "").strip()
+        if not name:
+            continue
+        rs = await db.execute("SELECT id FROM tags WHERE name = ? COLLATE NOCASE", [name])
+        if rs.rows:
+            tag_id = rs.rows[0][0]
+        else:
+            await db.execute("INSERT INTO tags (name) VALUES (?)", [name])
+            rs = await db.execute("SELECT id FROM tags WHERE name = ?", [name])
+            tag_id = rs.rows[0][0]
         await db.execute(
             "INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)",
             [item_id, tag_id],
@@ -478,8 +510,8 @@ async def _deferred_harvest(bot, db, part_id: int, channel_msg_id: int):
         if file_id:
             tg_file = await bot.get_file(file_id)
             data_bytes = await download_file_content(tg_file)
-            data_b64 = base64.b64encode(data_bytes).decode("ascii")
-            await upsert_thumbnail(db, part_id, "image/jpeg", data_b64)
+            mime, data_b64 = encode_thumbnail(data_bytes)
+            await upsert_thumbnail(db, part_id, mime, data_b64)
             log.info("Deferred thumbnail harvested for part_id=%s", part_id)
         else:
             log.info("Deferred harvest: still no thumbnail for part_id=%s (unsupported codec?)", part_id)
@@ -493,24 +525,65 @@ async def _deferred_harvest(bot, db, part_id: int, channel_msg_id: int):
                 pass
 
 
-async def harvest_thumbnail(context, db, part_id, message):
-    """Download Telegram's built-in thumbnail for ONE part → base64 → thumbnails table.
+async def harvest_thumbnail(context, db, part_id, message, channel_msg_id=None):
+    """Download Telegram's built-in thumbnail for ONE part → WebP base64 → thumbnails.
+
+    `message` supplies the thumbnail file_id; `channel_msg_id` is the message to
+    re-fetch on the deferred path (defaults to message.message_id, which is correct
+    when `message` is itself the channel post, but must be passed explicitly when the
+    thumbnail source is a private-chat message that was copied into the channel).
 
     If the thumbnail is not yet available (Telegram generates it asynchronously),
     schedules a deferred retry after 60 s.
     """
+    if channel_msg_id is None:
+        channel_msg_id = message.message_id
     file_id = pick_thumb_file_id(message)
     if not file_id:
         log.info("No thumbnail yet for part_id=%s — scheduling deferred harvest in 60 s", part_id)
         asyncio.create_task(
-            _deferred_harvest(context.bot, db, part_id, message.message_id)
+            _deferred_harvest(context.bot, db, part_id, channel_msg_id)
         )
         return
     tg_file = await context.bot.get_file(file_id)
     data_bytes = await download_file_content(tg_file)
-    data_b64 = base64.b64encode(data_bytes).decode("ascii")
-    # Telegram's built-in thumbnails are JPEG.
-    await upsert_thumbnail(db, part_id, "image/jpeg", data_b64)
+    mime, data_b64 = encode_thumbnail(data_bytes)
+    await upsert_thumbnail(db, part_id, mime, data_b64)
+
+
+async def index_bot_copy(
+    context, db, channel_msg_id, *, title, tags, part_number, total,
+    kind, slug, set_title=True, source_message=None,
+):
+    """Index a channel post the bot created itself via copy_message / copy_messages.
+
+    Telegram does NOT deliver a channel_post update for the bot's OWN messages, so
+    `on_channel_post` never fires for Bot-Drop uploads → they would never be indexed.
+    We index them inline here using the original private-chat message for metadata.
+
+    Idempotent (keyed on `channel_msg_id`), so if a real update ever did arrive it
+    would be a harmless no-op. `file_id` is stored NULL — the streamer resolves a
+    fresh, channel-scoped file_id on demand via forwarding (see streamer.py).
+    """
+    file_name, file_size = (None, 0)
+    if source_message is not None:
+        file_name, file_size = get_file_meta(source_message)
+
+    item_id = await upsert_item(db, slug, title, kind, total, set_title=set_title)
+    part_id = await upsert_part(
+        db, item_id, part_number, channel_msg_id, file_name, file_size or 0, file_id=None
+    )
+    await recompute_totals(db, item_id)
+    await sync_tags(db, item_id, tags)
+
+    if kind == "media":
+        if source_message is not None:
+            await harvest_thumbnail(context, db, part_id, source_message, channel_msg_id=channel_msg_id)
+        else:
+            asyncio.create_task(_deferred_harvest(context.bot, db, part_id, channel_msg_id))
+
+    log.info("Indexed (bot copy): %s [%s] part %s (msg=%s)", slug, kind, part_number, channel_msg_id)
+    return item_id
 
 
 # ---------------------------------------------------------------------------
@@ -1094,6 +1167,22 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=message.message_id,
                 caption=message.caption
             )
+            # The bot's own channel post is NOT echoed back as a channel_post update,
+            # so index it inline here instead of relying on on_channel_post.
+            try:
+                cid = copied_msg.message_id
+                if kind == "media":
+                    slug = f"{slugify(title)}-{cid}"
+                else:
+                    slug = slugify(title)
+                await index_bot_copy(
+                    context, db, cid,
+                    title=title, tags=caption_meta["tags"],
+                    part_number=part, total=total, kind=kind,
+                    slug=slug, set_title=True, source_message=message,
+                )
+            except Exception:  # noqa: BLE001 — indexing failure shouldn't hide upload success
+                log.exception("Inline index failed for direct-caption copy msg %s", copied_msg.message_id)
             await status_msg.edit_text(
                 f"🎉 <b>Success!</b>\n\n"
                 f"File has been successfully uploaded and indexed directly via caption contract.\n"
@@ -1117,6 +1206,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check if this belongs to the active upload flow (same media group)
         if message.media_group_id and active_upload.get("media_group_id") == message.media_group_id:
             active_upload["message_ids"].append(message.message_id)
+            active_upload.setdefault("messages", []).append(message)
             if file_size:
                 active_upload["file_size"] += file_size
             return
@@ -1129,6 +1219,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for item in context.user_data["upload_queue"]:
                 if item.get("media_group_id") == message.media_group_id:
                     item["message_ids"].append(message.message_id)
+                    item.setdefault("messages", []).append(message)
                     if file_size:
                         item["file_size"] += file_size
                     return
@@ -1136,6 +1227,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Otherwise, add it as a new item in the queue
         queue_item = {
             "message_ids": [message.message_id],
+            "messages": [message],
             "media_group_id": message.media_group_id,
             "chat_id": message.chat_id,
             "kind": kind,
@@ -1164,6 +1256,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["upload_file"] = {
         "message_ids": [msg_id],
+        "messages": [message],
         "media_group_id": message.media_group_id,
         "chat_id": chat_id,
         "kind": kind,
@@ -1260,6 +1353,9 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = upload_file["chat_id"]
     message_ids = upload_file["message_ids"]
+    src_messages = upload_file.get("messages") or []
+    kind = upload_file.get("kind", "media")
+    db = context.bot_data["db"]
     total_parts = len(message_ids)
 
     # Send status message
@@ -1277,6 +1373,17 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=message_ids[0],
                 caption=caption
             )
+            # Index inline: the bot's own channel post yields no channel_post update.
+            try:
+                cid = copied_msg.message_id
+                slug = f"{slugify(title)}-{cid}" if kind == "media" else slugify(title)
+                await index_bot_copy(
+                    context, db, cid, title=title, tags=tags,
+                    part_number=1, total=1, kind=kind, slug=slug,
+                    set_title=True, source_message=(src_messages[0] if src_messages else None),
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("Inline index failed for single bot upload")
         else:
             # Copy all messages as a media group to preserve their grouping in the channel
             copied_messages = await context.bot.copy_messages(
@@ -1292,6 +1399,21 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=first_copied_msg_id,
                 caption=caption
             )
+            # Index inline as ONE multi-part media album (no channel_post for bot posts).
+            # part_number = channel msg id (album ordering convention); slug is stable
+            # off the first part so all members group into a single item.
+            try:
+                album_slug = f"album-bot-{first_copied_msg_id}"
+                for idx, cm in enumerate(copied_messages):
+                    cid = cm.message_id
+                    src = src_messages[idx] if idx < len(src_messages) else None
+                    await index_bot_copy(
+                        context, db, cid, title=title, tags=tags,
+                        part_number=cid, total=total_parts, kind="media",
+                        slug=album_slug, set_title=(idx == 0), source_message=src,
+                    )
+            except Exception:  # noqa: BLE001
+                log.exception("Inline index failed for album bot upload")
 
         await status_msg.edit_text(
             f"🎉 <b>Success!</b>\n\n"

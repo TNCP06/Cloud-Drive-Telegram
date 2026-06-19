@@ -11,9 +11,14 @@ approximate and will drift — treat function names as the stable anchor.
 ### `bot.py` — indexer + download server + purge (long-running, `python-telegram-bot`)
 Pure helpers (no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
 (`media` vs `archive`), `get_file_meta`, `derive_media_meta` (media caption fallback),
-`pick_thumb_file_id`, `process_next_in_queue` (helper to process the next queued file).
+`pick_thumb_file_id`, `encode_thumbnail` (raw image bytes → compact **WebP** base64 via
+Pillow, JPEG passthrough fallback), `process_next_in_queue` (helper to process the next queued file).
 Turso ops (idempotent): `upsert_item` (`set_title` guard for albums; preserves user-modified metadata on conflict), `upsert_part` (keyed on
-`channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags`, `upsert_thumbnail`.
+`channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**: reuses an existing tag that differs only in capitalization), `upsert_thumbnail`.
+`index_bot_copy`: indexes a channel post the **bot created itself** (`copy_message`/`copy_messages`)
+inline — Telegram sends no `channel_post` update for a bot's own messages, so `on_channel_post`
+never fires for Bot-Drop uploads; idempotent, stores `file_id=NULL` (streamer resolves on demand),
+harvests the thumbnail from the original private-chat message.
 Handlers: `on_channel_post` (index new and edited channel posts, Flow C), `harvest_thumbnail` (if the post has no thumbnail
 yet — common for video, which Telegram generates asynchronously — it schedules
 `_deferred_harvest` instead of giving up), `_deferred_harvest` (background task: wait 60 s, then
@@ -65,15 +70,25 @@ using mtime LRU policy), `_ensure_chunk_stream` (fallback Telethon disk-or-downl
 `_init_part_meta` (Turso query → `meta.json` creation), `_prefetch_worker` (fallback background prefetch),
 `_get_tg_message` (in-memory message cache), `stream` (main route: parse Range, downloads via local Bot API
 and streams local file if active, else chunk-streams via Telethon).
+**Background video compression** (local Bot API mode): `_transcode_worker` (ffmpeg → smaller H.264 MP4 in
+the **persistent** `COMPRESSED_DIR`, keeps same resolution; drops the result + writes a `.skip` marker if it
+isn't ≥5% smaller), `_schedule_transcode` (fire-and-forget, dedup'd), `_serve_local_file_range`/`_parse_range`
+(byte-range serve from any local file), `_compressed_path`, `_evict_compressed_if_needed` (optional LRU cap).
+`stream` serves the original on the first view (instant) while transcoding in the background; later views
+serve the compressed copy. The served variant is **pinned per playback** (`_serving_variant`: a fresh load /
+`bytes=0-` re-evaluates and prefers compressed once ready; seeks reuse the pin) so file size never changes
+mid-session. Original lives in the evictable Bot API cache; the compressed copy is persistent.
 **Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `TURSO_*`, `BOT_TOKEN`, `TELEGRAM_API_URL`
-(enables local Bot API mode), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (used for cache limits).
+(enables local Bot API mode), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (cache limit),
+`COMPRESSED_DIR`, `VIDEO_COMPRESS` (1/0), `VIDEO_CRF`, `VIDEO_PRESET`, `VIDEO_MIN_COMPRESS_MB`,
+`VIDEO_TRANSCODE_CONCURRENCY`, `COMPRESSED_MAX_SIZE_GB` (0 = keep forever).
 
 
 ### Supporting scripts
 - `login.py` — one-time Telethon login → creates `worker.session` (or any custom session, e.g. `streamer.session` via CLI argument).
-- `schema.sql` — full Turso schema (run once). `migration-tags-color.sql` + `run-migration.py`
-  — adds `tags.color`. `migration-bot-heartbeat.sql` — adds legacy `bot_heartbeat` table.
-  `status.py` — quick DB status dump.
+- `schema.sql` — full Turso schema (run once; already includes `tags.color`). `run-migration.py`
+  — generic one-off SQL migration runner (`python run-migration.py <file.sql>`).
+  `migration-folders.sql` — the folders-feature migration. `status.py` — quick DB status dump.
 - `run-all.cmd` — start bot + watcher minimized (Windows). `uninstall-autostart.ps1` — Windows startup deregistration.
 - `Dockerfile` — shared image for bot + watcher (ffmpeg + p7zip). See root
   `docker-compose.yml` and [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the server/VPS deployment.
@@ -108,7 +123,10 @@ and streams local file if active, else chunk-streams via Telethon).
   intentionally NOT changed on rename).
   Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`.
   Bulk ops: `bulkToggleFavorite`, `bulkSoftDelete`, `bulkRestore`, `bulkPurgeNow`.
-  Tags: `listTags`, `createTag`, `recolorTag`, `renameTag` (merge-aware), `deleteTag`.
+  Tags: `listTags`, `createTag` (case-insensitive: won't create a capitalization-only
+  duplicate), `recolorTag`, `renameTag` (merge-aware), `deleteTag`. `resolveTagId` (internal):
+  maps a name to a tag id, reusing an existing tag that differs only in case; used by
+  `updateMetadata` so assigning "game" links to existing "Game" instead of forking a new tag.
   Gallery: `getGallery` (all parts' thumbnails on demand). Upload queue: `enqueueUpload`
   (local path), `cancelUpload`, `startUpload`, `retryUpload` (error→pending, keeps `parts_done`
   → resumes from checkpoint), `startAllUploads`, `clearFinishedUploads`. Process control:
@@ -123,7 +141,10 @@ and streams local file if active, else chunk-streams via Telethon).
   (shortcuts, drive letters, symlink/junction resolution, 3000-entry cap). Localhost-only by
   design — do not expose publicly.
 - `upload-bot/actions.ts` — `processBotDrop()`: Bot Drop finisher; `copyMessage` (HTTP Bot API)
-  from the bot PM into the channel with the contract caption.
+  from the bot PM into the channel with the contract caption, then **indexes the new post inline**
+  (`indexBotDrop` helper: forwards the post once to harvest metadata + thumbnail → upserts
+  item/part/tags/thumbnail) because the bot's own channel post produces no `channel_post` update.
+  Best-effort; `index_history.py` back-fills if it fails.
 - `api/upload/route.ts` — **resumable chunk receiver** (`nodejs` runtime). `GET` returns the
   bytes already staged (resume point); `POST ?offset=` appends a chunk, replies `409` with the
   real offset if out of sync. `api/upload/complete/route.ts` — verifies the staged file size,
@@ -148,13 +169,18 @@ and streams local file if active, else chunk-streams via Telethon).
 - `DriveApp.tsx` — top-level app shell/state (largest component). `Sidebar.tsx` — nav/filters.
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders (`FolderCard`/`FolderRow`) with checkboxes for multi-select, a star toggle, and a kebab action button (now ordered to stack correctly above thumbnails).
 - `PreviewDrawer.tsx` — item detail + on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders a `<video>` element sourced from `/api/stream/{partId}` (styled using `maxWidth`/`maxHeight` to shrink-to-fit the player area immediately, allowing clicks on letterbox areas to trigger `onClose`). All action buttons are removed from this drawer's top bar (delegated entirely to the external card/row kebab menus). Supports keyboard shortcuts for video controls. Supports `detailsOnly` mode to render the metadata/edit panel as a standalone popup without the full-screen photo/video stage layer. `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
-- `UploadManager.tsx` — upload queue UI + watcher/bot start/stop; **Source toggle**: "Upload
+- `UploadManager.tsx` — upload queue UI; **Source toggle**: "Upload
   from this device" (default → `FileUploader`) vs "Host path (advanced)" (`FsBrowser` + path).
+  The queue list collapses to the first 6 jobs with a **Show more / Show less** toggle.
   `FileUploader.tsx` — **resumable browser uploader** (16 MB chunks, auto-resume on drop via
-  server offset, progress/speed, Retry, Pause/Resume, and persistent state across page reload via
-  localStorage). Fallback token strips both `-` and `.` to satisfy
-  `TOKEN_RE` in `staging.ts`. `TagManager.tsx` / `TagPicker.tsx` — category library +
-  chip picker. `AppSkeleton.tsx` — loading skeleton.
+  server offset, progress/speed, Retry, Pause/Resume). Supports **single file** (rich view +
+  resume-after-refresh via localStorage), **multiple files** (uploaded sequentially, each its own
+  item, title from filename), and **folder upload** (`webkitdirectory`: each file's title becomes
+  its relative path so the bot recreates the folder tree — Telegram has no folders). Fallback token
+  strips both `-` and `.` to satisfy `TOKEN_RE` in `staging.ts`. `TagManager.tsx` / `TagPicker.tsx`
+  — category library + chip picker (picker dedupes existing tags case-insensitively).
+  `ThemeToggle.tsx` — light/dark switch (flips `data-theme` on `<html>`, persists to localStorage
+  `tcd_theme`; theme is applied pre-paint by an inline script in `layout.tsx`). `AppSkeleton.tsx` — loading skeleton.
 
 ---
 

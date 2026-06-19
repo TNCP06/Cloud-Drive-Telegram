@@ -79,8 +79,8 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
    a contract caption.
 2. **Bot** `on_channel_post` → `detect_kind()` = `media` → if caption invalid, `derive_media_meta()`
    fabricates a title (caption line → filename → date). Media is never rejected.
-3. Bot harvests Telegram's built-in thumbnail (`harvest_thumbnail()` → `get_file` → base64 →
-   `thumbnails`). If a local Telegram Bot API server is configured, the bot reads the local file directly from the shared volume (`telegram-bot-api-data`) instead of downloading it over HTTP.
+3. Bot harvests Telegram's built-in thumbnail (`harvest_thumbnail()` → `get_file` → `encode_thumbnail`
+   re-encodes to **WebP** → base64 → `thumbnails`). If a local Telegram Bot API server is configured, the bot reads the local file directly from the shared volume (`telegram-bot-api-data`) instead of downloading it over HTTP.
 4. Albums (multiple files sent together) merge into one multi-part item via `media_group_id`.
 
 ---
@@ -122,7 +122,13 @@ small API call. Alternatively, the user can complete the upload entirely within 
    - The user replies to the bot's message with a custom Title, or clicks/types `/skip` to use the auto-caption Title (derived from filename or media date).
    - The bot then asks for Tags. The user replies with comma-separated tags, or clicks/types `/skip` to skip/use auto-tags.
    - The bot compiles the caption `Title | 1/total | tags` and executes `copyMessage` (or `copyMessages` for albums) to copy the file(s) into the storage channel. For albums, the first message's caption in the channel is edited afterwards to set the caption contract.
-4. **Indexing**: The new channel post (or post edit) is indexed by Flow C like any other upload.
+4. **Indexing — inline, NOT via Flow C.** Telegram does **not** send a `channel_post` update for
+   a message the **bot itself** posted, so `on_channel_post` never fires for Bot-Drop copies. The
+   bot therefore indexes each copied post **inline** right after the copy via `index_bot_copy`
+   (single file or multi-part album), and the web finisher does the same via `processBotDrop`'s
+   `indexBotDrop`. Both harvest the thumbnail and are idempotent (keyed on `channel_msg_id`), so
+   a later `index_history.py` pass simply skips already-indexed messages. This is the fix for
+   "bot-sent files never appearing on the dashboard."
 
 ---
 
@@ -178,7 +184,16 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
 6. **Seek**:
    * In Local Bot API mode: Instantaneous (standard file seek to requested byte offset).
    * In Fallback mode: Browser sends `Range: bytes=<new-offset>-`. Streamer immediately cancels any active prefetch task for the current part and awaits its complete cancellation before downloading the new chunk.
-7. **Limitations:**
+7. **Background compression (local Bot API mode):** the first view streams the **original** from
+   the (evictable) Bot API cache so there's no extra wait, while a background `ffmpeg` job
+   transcodes a smaller, browser-playable H.264 copy into the **persistent** `COMPRESSED_DIR`
+   (same resolution → no visible quality loss; the size win is from efficient re-encoding).
+   Once ready, subsequent views serve the compressed copy (less VPS bandwidth). If the result
+   isn't ≥5% smaller it's discarded and a `.skip` marker prevents re-tries. The served variant is
+   **pinned per playback** so the file size never changes between a load and its seeks. Tunable via
+   `VIDEO_*` / `COMPRESSED_*` env (`VIDEO_COMPRESS=0` disables it). Fallback (non-local) mode does
+   not compress.
+8. **Limitations:**
    * Local Bot API Mode: Supports single-part and multi-part media, cold start buffer delay of ~5-15s to download the file from Telegram to the VPS (at full network speed, e.g. 50MB/s), subsequent seeks and repeat views are instant.
    * Fallback Mode: Strictly throttled to ~3Mbps by Telegram's remote MTProto interface.
 

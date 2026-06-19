@@ -83,8 +83,18 @@ services:
       PREFETCH_TIMEOUT_S: "90"           # stop prefetch after 90s idle
       STREAMER_SESSION: streamer
       TELEGRAM_API_URL: http://telegram-bot-api:8081
+      # --- background video compression (original stays in the evictable cache;
+      #     the smaller H.264 copy is written to the PERSISTENT /compressed volume) ---
+      COMPRESSED_DIR: /compressed
+      VIDEO_COMPRESS: "1"               # set 0 to disable transcoding entirely
+      VIDEO_CRF: "23"                   # 18=near-lossless … 28=smaller
+      VIDEO_PRESET: medium              # ffmpeg x264 speed/size tradeoff
+      VIDEO_MIN_COMPRESS_MB: "20"       # skip files smaller than this
+      VIDEO_TRANSCODE_CONCURRENCY: "1"  # parallel ffmpeg jobs (CPU-heavy)
+      COMPRESSED_MAX_SIZE_GB: "0"       # 0 = keep forever; >0 = LRU-cap the dir
     volumes:
       - cache:/cache                     # expendable — can be pruned anytime
+      - compressed:/compressed           # PERSISTENT — compressed videos live here
       - ./bot/streamer.session:/app/streamer.session
       - telegram-bot-api-data:/var/lib/telegram-bot-api
     restart: unless-stopped
@@ -92,5 +102,6 @@ services:
 volumes:
   staging:
   cache:         # video streaming cache — expendable, data lives in Telegram
+  compressed:    # compressed video copies — persistent (CPU-expensive to rebuild)
   telegram-bot-api-data:
 
