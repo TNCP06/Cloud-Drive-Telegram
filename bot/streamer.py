@@ -68,8 +68,9 @@ from stream_subtitles import (
     SUBTITLE_BACKFILL_IDLE_S,
     SUBTITLE_BACKFILL_START_DELAY_S,
     init_subtitle_semaphore,
-    schedule_subtitles,
     is_subtitled_done,
+    is_subtitle_partial,
+    partial_part_ids,
     run_subtitle_job,
     available_langs,
     subtitle_path,
@@ -821,8 +822,39 @@ def _start_prefetch(part_id: int, channel_msg_id: int,
 # ---------------------------------------------------------------------------
 # Retroactive subtitle backfill — slowly subtitle already-indexed videos
 # ---------------------------------------------------------------------------
+async def _fetch_part_row(part_id: int) -> dict | None:
+    """Look up one part's download metadata; returns None if it's gone or not a video file."""
+    rs = await db.execute(
+        "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id "
+        "FROM parts p JOIN items i ON i.id = p.item_id "
+        "WHERE p.id = ? AND i.deleted_at IS NULL",
+        [part_id],
+    )
+    for row in rs.rows:
+        ext = os.path.splitext(row[2] or "")[1].lower()
+        if ext not in MIME_MAP:
+            return None
+        return {
+            "part_id": int(row[0]),
+            "channel_msg_id": int(row[1]),
+            "file_name": row[2] or "",
+            "file_id": row[3],
+        }
+    return None
+
+
 async def _next_backfill_part() -> dict | None:
-    """Find one indexed video part with no subtitles yet (skips this-session failures)."""
+    """Pick the next part to subtitle. Repairs incomplete (`.partial`) videos first — re-running
+    only their missing chunks — then falls back to videos with no subtitles at all. Both skip
+    this-session failures (retried next restart)."""
+    # 1. Repair pass: resume any video left incomplete by an earlier partial-chunk failure.
+    for part_id in partial_part_ids():
+        if part_id in _backfill_failed or is_subtitled_done(part_id):
+            continue
+        part = await _fetch_part_row(part_id)
+        if part:
+            return part
+    # 2. Fresh pass: an indexed video with no subtitles yet.
     rs = await db.execute(
         "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id "
         "FROM parts p JOIN items i ON i.id = p.item_id "
@@ -878,6 +910,23 @@ async def _backfill_one(part: dict) -> None:
 
     try:
         await run_subtitle_job(db, part_id, path)
+        # The worker writes the `.done` marker only when a part is finalised (complete,
+        # no-speech, no-audio, or budget-exhausted). If it's still absent the part either
+        # fully failed or made PARTIAL progress (some chunks cached, a `.partial` marker
+        # left). Either way don't re-attempt it again THIS session — that avoids rapid
+        # re-downloads; it resumes (from its cached chunks) on the next restart/rescan.
+        if not is_subtitled_done(part_id):
+            _backfill_failed.add(part_id)
+            if is_subtitle_partial(part_id):
+                log.info(
+                    "Backfill: part %d partial — successful chunks cached; the missing "
+                    "ones are repaired on the next pass", part_id,
+                )
+            else:
+                log.warning(
+                    "Backfill: part %d produced no subtitles (transcription failed) — "
+                    "skipping for this session", part_id,
+                )
     finally:
         # Subtitle-only backfill: drop the downloaded original once subs are written.
         try:
@@ -899,6 +948,12 @@ async def _subtitle_backfill_loop() -> None:
         try:
             part = await _next_backfill_part()
             if part is None:
+                # Nothing fresh and no eligible partials right now. Before the idle nap,
+                # forget this-session failures for INCOMPLETE (.partial) videos so the next
+                # rescan re-attempts their missing chunks (the worker's attempt budget still
+                # caps total tries). Fully-failed parts stay skipped until the next restart.
+                for pid in partial_part_ids():
+                    _backfill_failed.discard(pid)
                 await asyncio.sleep(SUBTITLE_BACKFILL_IDLE_S)
                 continue
             log.info("Subtitle backfill: processing part %d (%s)", part["part_id"], part["file_name"])
@@ -1160,9 +1215,11 @@ async def stream(part_id: int, request: Request):
         # When it succeeds, reclaim the now-redundant original from the Bot-API cache.
         _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
 
-        # Kick off background subtitle generation (original + EN + ID). Falls back to the
-        # compressed copy if the compress job reclaims the original before extraction.
-        schedule_subtitles(db, part_id, file_path, fallback_path=str(comp_path))
+        # NOTE: subtitle generation is intentionally NOT triggered here on first view.
+        # It is driven purely by subtitle ABSENCE via the background backfill loop
+        # (_subtitle_backfill_loop), which subtitles any indexed video that has no
+        # subtitles yet — independent of whether it's ever watched. Keeping it off the
+        # streaming path means playback never competes with STT for the shared semaphore.
 
         return _serve_local_file_range(file_path, mime, request, range_header)
 

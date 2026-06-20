@@ -103,7 +103,7 @@ services:
       SUBTITLE_BACKFILL: "1"            # set 0 to only subtitle on-demand (no backfill)
       SUBTITLE_BACKFILL_INTERVAL_S: "0"     # extra pace between videos; 0 = back-to-back (3 keys handle Groq)
       SUBTITLE_BACKFILL_IDLE_S: "3600"      # re-scan interval when nothing is left to do
-      SUBTITLE_BACKFILL_START_DELAY_S: "120"  # wait after startup before the first backfill
+      SUBTITLE_BACKFILL_START_DELAY_S: "20"   # short settle window after startup before the first backfill
     volumes:
       - cache:/cache                     # expendable — can be pruned anytime
       - compressed:/compressed           # PERSISTENT — compressed videos live here

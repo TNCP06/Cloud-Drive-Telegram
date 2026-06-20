@@ -6,6 +6,9 @@ import Image from "next/image";
 import { Icon } from "@/lib/icons";
 import { unlockPrivate } from "@/app/actions";
 
+// Fixed-length PIN: typing the 6th digit auto-submits — no Enter / check tap needed.
+const PIN_LENGTH = 6;
+
 // Full-screen PIN gate for the Private space. A phone-style keypad you can also type
 // on. The PIN is validated server-side (unlockPrivate); on success we refresh so the
 // server /private route re-renders with the now-present unlock cookie.
@@ -20,7 +23,7 @@ export function PrivateLock() {
   const exit = () => router.push("/");
 
   const submit = (value: string) => {
-    if (!value || pending) return;
+    if (value.length !== PIN_LENGTH || pending) return;
     startTransition(async () => {
       const res = await unlockPrivate(value);
       if (res.ok) {
@@ -28,16 +31,27 @@ export function PrivateLock() {
       } else {
         setError(true);
         setPin("");
+        pinRef.current = "";
         setTimeout(() => setError(false), 600);
       }
     });
   };
 
+  // Append a digit; once the PIN is complete (PIN_LENGTH) it submits itself.
+  // pinRef is updated synchronously so rapid presses don't race the state update.
   const press = (d: string) => {
+    if (pending || pinRef.current.length >= PIN_LENGTH) return;
     setError(false);
-    setPin((p) => (p.length >= 12 ? p : p + d));
+    const next = pinRef.current + d;
+    pinRef.current = next;
+    setPin(next);
+    if (next.length === PIN_LENGTH) submit(next);
   };
-  const back = () => setPin((p) => p.slice(0, -1));
+  const back = () => {
+    const next = pinRef.current.slice(0, -1);
+    pinRef.current = next;
+    setPin(next);
+  };
 
   // Keyboard support: digits type, Backspace deletes, Enter submits, Esc exits.
   useEffect(() => {
@@ -76,10 +90,9 @@ export function PrivateLock() {
         <p className="pin-sub">Enter your PIN to continue</p>
 
         <div className="pin-dots">
-          {Array.from({ length: Math.max(pin.length, 0) }).map((_, i) => (
-            <span key={i} className="pin-dot filled" />
+          {Array.from({ length: PIN_LENGTH }).map((_, i) => (
+            <span key={i} className={"pin-dot" + (i < pin.length ? " filled" : "")} />
           ))}
-          {pin.length === 0 && <span className="pin-dot placeholder">•</span>}
         </div>
 
         <div className="pin-pad">
@@ -98,7 +111,7 @@ export function PrivateLock() {
             type="button"
             className="pin-key accent"
             onClick={() => submit(pin)}
-            disabled={pending || pin.length === 0}
+            disabled={pending || pin.length !== PIN_LENGTH}
             aria-label="Unlock"
           >
             <Icon name="check" size={22} />

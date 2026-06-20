@@ -1,18 +1,28 @@
 """Background subtitle generation for the streamer.
 
-After a video lands on disk (Local Bot API mode), an async job extracts the audio,
-transcribes it via Groq's free Whisper API (with automatic key + model failover on
-rate-limit), and translates the result into English + Indonesian. The three WebVTT
-tracks (original, en, id) are written to the PERSISTENT /subtitles volume and recorded
-in the `subtitles` Turso table so the web player can offer them as <track>s.
+Generation is ABSENCE-driven, not view-driven: the streamer's backfill loop finds any
+indexed video that has no subtitles yet, downloads it (Local Bot API mode), and runs a
+job that extracts the audio, transcribes it via Groq's free Whisper API (with automatic
+key + model failover on rate-limit), and translates the result into English + Indonesian.
+The three WebVTT tracks (original, en, id) are written to the PERSISTENT /subtitles volume
+and recorded in the `subtitles` Turso table so the web player can offer them as <track>s.
+(Playing a video does NOT trigger subtitle generation — it stays off the streaming path.)
 
-Design mirrors stream_compress.py: fire-and-forget, single-job concurrency, a `.done`
-marker so finished/failed parts aren't retried, and a never-evict persistent store
-(subtitles are cheap to keep, expensive to regenerate, and must survive while the
-video stays indexed).
+Design mirrors stream_compress.py: single-job concurrency, a `.done` marker so finished
+parts aren't retried, and a never-evict persistent store (subtitles are cheap to keep,
+expensive to regenerate, and must survive while the video stays indexed).
+
+Long videos split their audio into several time-sliced chunks, each transcribed
+independently and PER-CHUNK REPAIRABLE: a chunk that fails (e.g. a transient Groq 5xx) does
+not abort the whole video — the chunks that succeeded are cached (`part_{id}.chunks.json`),
+PARTIAL subtitles are written from them, and a `.partial` marker is left so a later backfill
+pass re-transcribes ONLY the missing chunks (resuming from the cache). Once every chunk is in
+the part is finalised with `.done` and the scaffolding is dropped; a chunk that keeps failing
+is given up on after SUBTITLE_MAX_REPAIR_ATTEMPTS, keeping whatever partial tracks exist.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -56,6 +66,12 @@ SUBTITLE_BACKFILL_INTERVAL_S = int(os.environ.get("SUBTITLE_BACKFILL_INTERVAL_S"
 SUBTITLE_BACKFILL_IDLE_S = int(os.environ.get("SUBTITLE_BACKFILL_IDLE_S", "3600"))
 # Wait this long after startup before the first backfill (let the service settle).
 SUBTITLE_BACKFILL_START_DELAY_S = int(os.environ.get("SUBTITLE_BACKFILL_START_DELAY_S", "120"))
+# Per-chunk repair: a video whose audio splits into several chunks transcribes each chunk
+# independently. If some chunks fail (e.g. a transient Groq 5xx), the successful chunks are
+# cached and a `.partial` marker is left so a later pass re-transcribes ONLY the missing
+# chunks. After this many total attempts a still-incomplete video is finalised with whatever
+# partial subtitles it has (so one permanently-bad chunk can't block it forever).
+SUBTITLE_MAX_REPAIR_ATTEMPTS = int(os.environ.get("SUBTITLE_MAX_REPAIR_ATTEMPTS", "4"))
 
 # Background bookkeeping
 _subtitling: set[int] = set()
@@ -97,6 +113,88 @@ def _safe_unlink(p: Path) -> None:
             p.unlink()
     except Exception:  # noqa: BLE001
         pass
+
+
+# --- Per-chunk repair state (chunk cache + .partial marker) -----------------
+def _chunks_cache_path(part_id: int) -> Path:
+    """JSON cache of successfully transcribed chunks (survives between repair attempts)."""
+    return SUBTITLES_DIR / f"part_{part_id}.chunks.json"
+
+
+def _partial_marker(part_id: int) -> Path:
+    """Present while a video is incomplete (some chunks still missing). Holds an attempt count."""
+    return SUBTITLES_DIR / f"part_{part_id}.partial"
+
+
+def _load_chunks_cache(part_id: int) -> dict:
+    p = _chunks_cache_path(part_id)
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("chunks"), dict):
+                return data
+        except Exception:  # noqa: BLE001
+            pass
+    return {"lang": "xx", "chunks": {}}
+
+
+def _save_chunks_cache(part_id: int, data: dict) -> None:
+    try:
+        _chunks_cache_path(part_id).write_text(json.dumps(data), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cleanup_chunk_state(part_id: int) -> None:
+    """Drop the per-chunk cache + partial marker (called once a part is finalised)."""
+    _safe_unlink(_chunks_cache_path(part_id))
+    _safe_unlink(_partial_marker(part_id))
+
+
+def partial_attempts(part_id: int) -> int:
+    p = _partial_marker(part_id)
+    if not p.exists():
+        return 0
+    try:
+        return int((p.read_text(encoding="utf-8").strip() or "0"))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def is_subtitle_partial(part_id: int) -> bool:
+    """True if this part has subtitles but is still incomplete (repairable)."""
+    return _partial_marker(part_id).exists()
+
+
+def partial_part_ids() -> list[int]:
+    """Part ids with a `.partial` marker (incomplete, repairable), oldest id first."""
+    if not SUBTITLES_DIR.exists():
+        return []
+    out = []
+    for f in SUBTITLES_DIR.glob("part_*.partial"):
+        m = re.match(r"part_(\d+)\.partial$", f.name)
+        if m:
+            out.append(int(m.group(1)))
+    return sorted(out)
+
+
+def _bump_partial(part_id: int) -> bool:
+    """Record one more repair attempt. If the budget is exhausted, finalise the part as
+    `.done` (keeping whatever partial tracks exist) and return True; otherwise refresh the
+    `.partial` marker and return False (eligible for another repair pass)."""
+    attempts = partial_attempts(part_id) + 1
+    if attempts >= SUBTITLE_MAX_REPAIR_ATTEMPTS:
+        try:
+            _done_marker(part_id).write_text("partial-giveup", encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        _cleanup_chunk_state(part_id)
+        return True
+    try:
+        _partial_marker(part_id).write_text(str(attempts), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    return False
 
 
 # Groq returns the language as an English word ("english", "indonesian", …).
@@ -216,36 +314,70 @@ async def _transcribe_chunk(client: httpx.AsyncClient, audio_path: Path) -> dict
     raise last_err or RuntimeError("All Groq keys/models failed")
 
 
-async def _transcribe_audio(src_path: str) -> tuple[list[dict], str]:
-    """Extract audio, transcribe every chunk, merge segments with time offsets.
+async def _transcribe_audio(part_id: int, src_path: str) -> tuple[list[dict], str, int, int]:
+    """Extract audio, transcribe each chunk (skipping ones already cached), merge segments.
 
-    Returns (segments, source_iso_lang). segments: [{start, end, text}].
+    Per-chunk resilient: a chunk that keeps failing (e.g. transient Groq 5xx) does NOT abort
+    the whole video — its slot is simply left missing and the chunks that DID succeed are
+    cached (`part_{id}.chunks.json`) so a later repair pass only re-transcribes the gaps.
+
+    Returns (segments, source_iso_lang, missing_chunks, total_chunks). segments carry absolute
+    timestamps (chunk index * CHUNK_SECONDS offset applied).
     """
     tmp = Path(tempfile.mkdtemp(prefix="subgen_"))
     try:
         chunks = await _extract_audio_chunks(src_path, tmp)
-        if not chunks:
-            raise RuntimeError("No audio chunks produced (video may have no audio track)")
+        total = len(chunks)
+        if total == 0:
+            # ffmpeg succeeded (rc 0) but produced no audio → the video has no audio track.
+            # A real ffmpeg failure (rc != 0) raises inside _extract_audio_chunks instead.
+            log.info("Subtitle: %s has no audio track — nothing to transcribe", src_path)
+            return [], "xx", 0, 0
 
-        all_segments: list[dict] = []
-        source_lang = "xx"
+        cache = _load_chunks_cache(part_id)
+        cached: dict = cache.get("chunks", {})           # {"<idx>": [ {start,end,text}, … ]}
+        source_lang = cache.get("lang", "xx")
+
         timeout = httpx.Timeout(180.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             for idx, chunk in enumerate(chunks):
-                offset = idx * SUBTITLE_CHUNK_SECONDS
-                result = await _transcribe_chunk(client, chunk)
-                if idx == 0:
+                key = str(idx)
+                if key in cached:
+                    continue  # already transcribed in an earlier attempt — keep it
+                try:
+                    result = await _transcribe_chunk(client, chunk)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Subtitle: part %d chunk %d failed (%s) — leaving for repair",
+                                part_id, idx, e)
+                    continue  # missing slot; a later pass retries just this chunk
+                if source_lang == "xx":
                     source_lang = _iso_from_groq_language(result.get("language"))
+                segs = []
                 for seg in result.get("segments", []) or []:
                     text = (seg.get("text") or "").strip()
                     if not text:
                         continue
-                    all_segments.append({
-                        "start": float(seg.get("start", 0.0)) + offset,
-                        "end": float(seg.get("end", 0.0)) + offset,
+                    segs.append({
+                        "start": float(seg.get("start", 0.0)),
+                        "end": float(seg.get("end", 0.0)),
                         "text": text,
                     })
-        return all_segments, source_lang
+                cached[key] = segs
+                # Persist after every chunk so progress survives a crash/restart mid-video.
+                _save_chunks_cache(part_id, {"lang": source_lang, "chunks": cached})
+
+        # Merge every cached chunk in order, applying each chunk's time offset.
+        all_segments: list[dict] = []
+        for idx in range(total):
+            offset = idx * SUBTITLE_CHUNK_SECONDS
+            for seg in cached.get(str(idx), []):
+                all_segments.append({
+                    "start": seg["start"] + offset,
+                    "end": seg["end"] + offset,
+                    "text": seg["text"],
+                })
+        missing = total - sum(1 for idx in range(total) if str(idx) in cached)
+        return all_segments, source_lang, missing, total
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -352,49 +484,70 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
 
             SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
             log.info("Subtitle: transcribing part %d …", part_id)
-            segments, source_lang = await _transcribe_audio(src_path)
+            segments, source_lang, missing, total = await _transcribe_audio(part_id, src_path)
+
+            if total == 0:
+                # No audio track at all → nothing will ever be produced. Permanent skip.
+                log.info("Subtitle: part %d has no audio — marking done", part_id)
+                _done_marker(part_id).write_text("no-audio")
+                _cleanup_chunk_state(part_id)
+                return
             if not segments:
-                log.info("Subtitle: no speech segments for part %d — marking done", part_id)
-                _done_marker(part_id).write_text("no-speech")
+                if missing == 0:
+                    # Fully transcribed but genuinely no speech → permanent skip.
+                    log.info("Subtitle: no speech segments for part %d — marking done", part_id)
+                    _done_marker(part_id).write_text("no-speech")
+                    _cleanup_chunk_state(part_id)
+                else:
+                    # Nothing usable yet AND some chunks still missing → leave for repair.
+                    finalized = _bump_partial(part_id)
+                    log.info("Subtitle: part %d — %d/%d chunks missing, no segments yet%s",
+                             part_id, missing, total,
+                             " (giving up)" if finalized else " — will repair later")
                 return
 
-            # Write the ORIGINAL track.
+            # Write/refresh the ORIGINAL track from all chunks transcribed so far.
             orig_lang = source_lang if source_lang != "xx" else "orig"
             subtitle_path(part_id, orig_lang).write_text(_build_vtt(segments), encoding="utf-8")
             await _record_subtitle(db, part_id, orig_lang)
-            log.info("Subtitle: part %d original track (%s) written", part_id, orig_lang)
 
-            # Translate to each target language (skip if it equals the source).
+            # (Re)translate to each target language from the current full set. A repair pass
+            # fills a once-missing chunk, so we always rebuild the translation rather than
+            # skip when the target file already exists.
             for target in SUBTITLE_TARGET_LANGS:
                 if target == source_lang:
                     continue
-                if subtitle_path(part_id, target).exists():
-                    continue
-                translated = await asyncio.to_thread(
-                    _translate_segments, segments, target, source_lang
-                )
+                # Best-effort: a translation failure must never abort finalisation (else a
+                # fully-transcribed video would be re-downloaded every restart just to retry
+                # the translation). Worst case the part keeps only its original-language track.
+                try:
+                    translated = await asyncio.to_thread(
+                        _translate_segments, segments, target, source_lang
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Subtitle: translate part %d → %s failed (%s) — leaving untranslated",
+                                part_id, target, e)
+                    translated = None
                 if translated:
                     subtitle_path(part_id, target).write_text(_build_vtt(translated), encoding="utf-8")
                     await _record_subtitle(db, part_id, target)
-                    log.info("Subtitle: part %d %s track written", part_id, target)
 
-            _done_marker(part_id).write_text("ok")
-            log.info("Subtitle: part %d complete (%s)", part_id, ", ".join(available_langs(part_id)))
+            if missing == 0:
+                # Every chunk transcribed → finished. Drop the repair scaffolding.
+                _done_marker(part_id).write_text("ok")
+                _cleanup_chunk_state(part_id)
+                log.info("Subtitle: part %d complete (%s)", part_id, ", ".join(available_langs(part_id)))
+            else:
+                # Some chunks still missing: the part now has PARTIAL subtitles. Keep the
+                # cache + .partial marker so a later pass repairs only the gaps.
+                finalized = _bump_partial(part_id)
+                log.info("Subtitle: part %d PARTIAL (%d/%d chunks missing) — wrote %s%s",
+                         part_id, missing, total, ", ".join(available_langs(part_id)),
+                         " (giving up, budget exhausted)" if finalized else " — will repair later")
     except Exception:  # noqa: BLE001
         log.exception("Subtitle worker failed for part %d", part_id)
     finally:
         _subtitling.discard(part_id)
-
-
-def schedule_subtitles(db, part_id: int, src_path: str, fallback_path: str | None = None) -> None:
-    """Fire-and-forget subtitle generation if not already done/queued."""
-    if not SUBTITLE_GEN or _subtitle_sem is None:
-        return
-    if part_id in _subtitling or _done_marker(part_id).exists():
-        return
-    if not GROQ_API_KEYS:
-        return
-    asyncio.create_task(_subtitle_worker(db, part_id, src_path, fallback_path))
 
 
 def is_subtitled_done(part_id: int) -> bool:

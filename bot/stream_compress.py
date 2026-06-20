@@ -162,7 +162,10 @@ async def _transcode_worker(part_id: int, src_path: str, on_success=None) -> Non
                 "ffmpeg", "-y", "-i", src_path,
                 "-c:v", "libx264", "-crf", str(VIDEO_CRF), "-preset", VIDEO_PRESET,
                 "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-                str(out_tmp),
+                # The temp output ends in `.tmp`, so ffmpeg can't infer the container
+                # from the extension — force the MP4 muxer explicitly or it fails with
+                # "Unable to choose an output format" (rc 234).
+                "-f", "mp4", str(out_tmp),
             ]
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE

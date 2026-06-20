@@ -90,18 +90,28 @@ in-progress stream's open fd keeps reading on Linux); the compressed copy is per
 **Background subtitle generation** (Groq Whisper STT) lives in **`stream_subtitles.py`**: `_extract_audio_chunks`
 (ffmpeg → time-sliced 16 kHz FLAC), `_transcribe_chunk`/`_transcribe_audio` (Groq `audio/transcriptions` with
 **key + model failover** on 429, segment offsets merged), `_translate_segments` (deep-translator → EN/ID,
-timestamps preserved), `_build_vtt`, `_subtitle_worker`/`schedule_subtitles` (fire-and-forget, dedup'd via a
+timestamps preserved), `_build_vtt`, `_subtitle_worker`/`run_subtitle_job` (single-job, dedup'd via a
 `.done` marker), writes WebVTT to the **persistent** `SUBTITLES_DIR` + a `subtitles` Turso row per lang.
-`streamer.py` exposes `GET /subtitles/{part_id}` (langs) and `GET /subtitles/{part_id}/{lang}` (VTT), and
-runs a **retroactive backfill** (`_subtitle_backfill_loop`/`_next_backfill_part`/`_backfill_one`): one
-already-indexed video at a time (back-to-back by default; `SUBTITLE_BACKFILL_INTERVAL_S` adds optional
-pace), downloads → subtitles → deletes the download; failures are skipped for the session.
+Subtitle generation is **absence-driven, NOT view-driven**: the streamer does *not* schedule subtitles when
+a video is played — it is produced solely by the background backfill loop, which subtitles any indexed video
+that has no subtitles yet (keeps playback off the shared STT semaphore). `streamer.py` exposes
+`GET /subtitles/{part_id}` (langs) and `GET /subtitles/{part_id}/{lang}` (VTT), and runs the
+**backfill** (`_subtitle_backfill_loop`/`_next_backfill_part`/`_fetch_part_row`/`_backfill_one`): one
+already-indexed video at a time (back-to-back by default; `SUBTITLE_BACKFILL_INTERVAL_S` adds optional pace),
+downloads → subtitles → deletes the download; **both** download **and** transcription failures are recorded
+(`_backfill_failed`) and skipped for the session — so one un-transcribable video can't wedge the loop and
+starve the rest. **Per-chunk repair:** a long video whose audio splits into several chunks transcribes each
+independently; failed chunks don't abort the rest — the successes are cached (`part_{id}.chunks.json`),
+**partial** subtitles are written, and a `.partial` marker (`partial_part_ids`/`_bump_partial`) makes
+`_next_backfill_part`'s **repair pass** re-run ONLY the missing chunks on a later pass (resuming from cache),
+until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised with whatever partial exists).
 **Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `TURSO_*`, `BOT_TOKEN`, `TELEGRAM_API_URL`
 (enables local Bot API mode), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (cache limit),
 `COMPRESSED_DIR`, `VIDEO_COMPRESS` (1/0), `VIDEO_CRF`, `VIDEO_PRESET`, `VIDEO_MIN_COMPRESS_MB`,
 `VIDEO_TRANSCODE_CONCURRENCY`, `COMPRESSED_MAX_SIZE_GB` (0 = keep forever), `SUBTITLE_GEN` (1/0),
 `SUBTITLES_DIR`, `GROQ_API_KEYS` (comma-separated), `GROQ_STT_MODELS`, `SUBTITLE_TARGET_LANGS`,
-`SUBTITLE_CHUNK_SECONDS`, `SUBTITLE_BACKFILL` (1/0), `SUBTITLE_BACKFILL_INTERVAL_S`.
+`SUBTITLE_CHUNK_SECONDS`, `SUBTITLE_BACKFILL` (1/0), `SUBTITLE_BACKFILL_INTERVAL_S`,
+`SUBTITLE_MAX_REPAIR_ATTEMPTS` (per-chunk repair budget, default 4).
 
 
 ### Supporting scripts
@@ -207,7 +217,8 @@ pace), downloads → subtitles → deletes the download; failures are skipped fo
   extracted to `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete`, `CreateFolderModal`,
   `RenameFolderModal`, `MoveToFolderModal`, `EmptyState`). `MoveToFolderModal` works for both items and
   folders and offers a cross-space destination (Move to Private / Move to Main drive). `PrivateLock.tsx` —
-  the phone-style PIN keypad (also keyboard-typable). `Sidebar.tsx` — nav/filters (the **brand is clickable
+  the phone-style PIN keypad (also keyboard-typable); fixed **6-digit** PIN that **auto-submits** the
+  moment the 6th digit is entered (no Enter / check tap needed). `Sidebar.tsx` — nav/filters (the **brand is clickable
   to exit** in the Private space); regular tags sorted by usage count (desc); a collapsible **Type Tags**
   group (Image/Video/**Archive**); the storage meter is a button that opens a `StorageDetail` breakdown popup.
   `VideoPlayer.tsx` (Plyr) loads generated subtitle `<track>`s (original + EN + ID) from `/api/subtitles`.
