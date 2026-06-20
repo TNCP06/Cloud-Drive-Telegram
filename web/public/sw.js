@@ -6,6 +6,11 @@ const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB chunks
 const MAX_CACHE_SIZE = 4 * 1024 * 1024 * 1024; // 4 GB in bytes
 const MAX_RESPONSE_CHUNKS = 2; // Max chunks returned in a single response to keep memory low
 
+// Parts whose cached size we've reconciled with the server in THIS SW lifetime.
+// The streamer may switch the served variant (original → compressed), changing the
+// total size; we re-validate once per part so stale chunks/size never leak through.
+const VALIDATED = new Set();
+
 // Helper to open IndexedDB
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -122,6 +127,23 @@ async function cleanUpCache() {
   }
 }
 
+// Delete every cached chunk belonging to a part (used when its size/variant changed).
+async function purgeChunksForPart(partId) {
+  const db = await openDB();
+  const allChunks = await new Promise((resolve, reject) => {
+    const tx = db.transaction('chunks', 'readonly');
+    const store = tx.objectStore('chunks');
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+  const tx = db.transaction('chunks', 'readwrite');
+  const store = tx.objectStore('chunks');
+  for (const c of allChunks) {
+    if (c.partId === partId) store.delete(c.id);
+  }
+}
+
 // Core fetch handler
 async function handleVideoRequest(request) {
   const url = new URL(request.url);
@@ -141,39 +163,38 @@ async function handleVideoRequest(request) {
   const range = parseRange(rangeHeader);
   let fileMeta = await getFromStore('files', partId).catch(() => null);
 
-  // If we don't have file size or content-type yet, fetch a minimal range first to retrieve them
-  if (!fileMeta) {
+  // Fetch the current size/content-type when we have no metadata yet, OR once per SW
+  // lifetime to reconcile against a possible variant switch (original → compressed).
+  // If the size changed, purge the now-stale chunks. (Chunks are ALSO namespaced by
+  // size below, so even a missed reconcile can never mix two variants' bytes.)
+  if (!fileMeta || !VALIDATED.has(partId)) {
     try {
-      console.log(`[SW Cache] Fetching metadata for partId: ${partId}`);
-      // Fetch a tiny range (0-1) to get headers
-      const res = await fetch(request.url, {
-        headers: { 'Range': 'bytes=0-1' }
-      });
-
+      const res = await fetch(request.url, { headers: { 'Range': 'bytes=0-1' } });
       if (res.status === 200 || res.status === 206) {
         const contentRange = res.headers.get('content-range');
-        const contentType = res.headers.get('content-type') || 'video/mp4';
+        const contentType =
+          res.headers.get('content-type') || (fileMeta && fileMeta.contentType) || 'video/mp4';
         let totalSize = 0;
-
         if (contentRange) {
           const parts = contentRange.split('/');
           totalSize = parseInt(parts[parts.length - 1], 10);
         } else {
           totalSize = parseInt(res.headers.get('content-length') || '0', 10);
         }
-
         if (totalSize > 0) {
-          fileMeta = {
-            partId,
-            size: totalSize,
-            contentType,
-            lastAccessed: Date.now()
-          };
-          await putInStore('files', fileMeta);
+          if (fileMeta && fileMeta.size !== totalSize) {
+            console.log(`[SW Cache] partId ${partId} size changed ${fileMeta.size} → ${totalSize}; purging stale chunks`);
+            await purgeChunksForPart(partId).catch(() => {});
+          }
+          if (!fileMeta || fileMeta.size !== totalSize || fileMeta.contentType !== contentType) {
+            fileMeta = { partId, size: totalSize, contentType, lastAccessed: Date.now() };
+            await putInStore('files', fileMeta);
+          }
         }
       }
+      VALIDATED.add(partId);
     } catch (err) {
-      console.error('[SW Cache] Failed to fetch metadata:', err);
+      console.error('[SW Cache] Metadata/validation fetch failed:', err);
     }
   }
 
@@ -209,7 +230,7 @@ async function handleVideoRequest(request) {
   const chunkBuffers = [];
 
   for (let i = startChunkIdx; i <= endChunkIdx; i++) {
-    const chunkId = `${partId}_chunk_${i}`;
+    const chunkId = `${partId}_${fileSize}_chunk_${i}`;
     let chunk = await getFromStore('chunks', chunkId).catch(() => null);
 
     if (!chunk) {

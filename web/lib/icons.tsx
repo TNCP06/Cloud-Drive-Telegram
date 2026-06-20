@@ -42,6 +42,9 @@ const PATHS: Record<string, string> = {
   drive: '<rect x="3.5" y="6.5" width="17" height="11" rx="2"/><path d="M6.5 14h7"/><circle cx="17" cy="14" r=".9" fill="currentColor" stroke="none"/>',
   edit: '<path d="M4 20h4l10.5-10.5a2 2 0 000-2.83l-1.17-1.17a2 2 0 00-2.83 0L4 16v4z"/><path d="M13.5 6.5l4 4"/>',
   refresh: '<path d="M4.5 12a7.5 7.5 0 107.5-7.5c-2.5 0-4.7 1.2-6 3M4.5 7.5v4h4"/>',
+  lock: '<rect x="4.5" y="10.5" width="15" height="9.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 018 0v3"/>',
+  unlock: '<rect x="4.5" y="10.5" width="15" height="9.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 017.7-1.5"/>',
+  backspace: '<path d="M9 5.5h9.5a1.5 1.5 0 011.5 1.5v10a1.5 1.5 0 01-1.5 1.5H9l-5.2-6a.8.8 0 010-1z"/><path d="M12.5 9.8l4 4.4M16.5 9.8l-4 4.4"/>',
 };
 
 export function Icon({

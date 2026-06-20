@@ -25,10 +25,10 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 |---|---|---|---|
 | **Storage channel** | Telegram | — | Holds the actual file bytes (one message per part). Bot is admin. |
 | **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Turso; serve downloads via `copy_message`; daily trash purge; Bot Drop intake. |
-| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. (Still writes a `watcher_heartbeat` row every 10 s, but the UI no longer surfaces it.) |
+| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
 | **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Turso; runs automatically on watcher container startup. |
-| **Streamer** | Server/VPS (Docker) | `bot/streamer.py` | Video streaming: if local Bot API server is configured, downloads files on-the-fly to a shared disk cache and streams directly; else falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetch. |
+| **Streamer** | Server/VPS (Docker) | `bot/streamer.py` (+ `stream_compress.py`, `stream_subtitles.py`) | Video streaming: if local Bot API server is configured, downloads files on-the-fly to a shared disk cache and streams directly; else falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetch. Also runs background **H.264 compression** (deletes the original once done) and background **subtitle generation** (Groq Whisper STT → original + EN + ID WebVTT). |
 | **Web dashboard** | Vercel (or localhost) | `web/` (Next.js 15) | Browse/search/edit/delete metadata; trigger download/upload; stream video; Bot Drop form. |
 | **Turso** | Cloud (free tier) | schema in `bot/schema.sql` | All metadata. Always-on, SQLite-compatible. |
 
@@ -43,10 +43,10 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 ```
                     ┌───────────────────────── Turso (libSQL) ─────────────────────────┐
                     │  folders · items · parts · tags · item_tags · thumbnails ·       │
-                    │  jobs · upload_jobs · watcher_heartbeat                          │
+                    │  jobs · upload_jobs · subtitles                                  │
                     └──▲───────────▲──────────────▲──────────────▲────────────▲─────────┘
-   read/write metadata │           │ index result │ claim job    │ heartbeat  │ read grid
-   (instant, no TG)    │           │              │ + progress   │            │
+   read/write metadata │           │ index result │ claim job    │ progress   │ read grid
+   (instant, no TG)    │           │              │              │            │
               ┌────────┴──────┐    │       ┌──────┴──────────────┴──┐   ┌─────┴────────┐
               │  Web (Next.js)│    │       │   watcher.py (laptop)   │   │ Web (Next.js)│
               │  server actions│   │       │   Telethon / MTProto    │   │  getDriveData│
@@ -127,6 +127,14 @@ These are load-bearing — break them and indexing/downloads break:
 - **Soft delete:** `items.deleted_at` set → vanishes from UI instantly; the real Telegram
   message survives until the bot's daily purge (>7 days), so restore is lossless. The Trash
   view can also purge a single item on demand via `purgeNow()` (irreversible).
+- **Private space partition:** `items.is_private` / `folders.is_private` (default 0) split the drive
+  into the public **Main** view and the PIN-gated **Private** view. `getDriveData(space)` filters by it,
+  so private rows (and their sizes/tags/analytics) never reach the Main page. Moving in/out toggles the
+  flag **without touching `updated_at`** (hiding is not a content change). The PIN lives only in env `PIN`;
+  the client only ever sees a `SHA-256` unlock cookie.
+- **Subtitles are kept while the video is indexed.** Generated WebVTT tracks live on the persistent
+  `/subtitles` volume with one `subtitles(part_id, lang)` row each; they are never auto-evicted (only a
+  hard-delete/purge of the item should remove them).
 - **Thumbnails are per-part** (`thumbnails.part_id`). An item's cover = thumbnail of the part
   with the smallest `channel_msg_id` (computed in `getDriveData()`); the full gallery loads
   on demand via `getGallery()`.

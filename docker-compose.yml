@@ -92,9 +92,22 @@ services:
       VIDEO_MIN_COMPRESS_MB: "20"       # skip files smaller than this
       VIDEO_TRANSCODE_CONCURRENCY: "1"  # parallel ffmpeg jobs (CPU-heavy)
       COMPRESSED_MAX_SIZE_GB: "0"       # 0 = keep forever; >0 = LRU-cap the dir
+      # --- background subtitle generation (Groq Whisper STT + translation) ---
+      SUBTITLE_GEN: "1"                 # set 0 to disable subtitle generation
+      SUBTITLES_DIR: /subtitles         # PERSISTENT — generated VTT tracks live here
+      GROQ_API_KEYS: ${GROQ_API_KEYS:-} # comma-separated Groq keys (rotated on 429)
+      GROQ_STT_MODELS: whisper-large-v3-turbo,whisper-large-v3
+      SUBTITLE_TARGET_LANGS: en,id      # translate every video into these (besides original)
+      SUBTITLE_CHUNK_SECONDS: "600"     # audio chunk length to stay under Groq's file cap
+      # --- retroactive backfill: slowly subtitle already-indexed videos (one at a time) ---
+      SUBTITLE_BACKFILL: "1"            # set 0 to only subtitle on-demand (no backfill)
+      SUBTITLE_BACKFILL_INTERVAL_S: "0"     # extra pace between videos; 0 = back-to-back (3 keys handle Groq)
+      SUBTITLE_BACKFILL_IDLE_S: "3600"      # re-scan interval when nothing is left to do
+      SUBTITLE_BACKFILL_START_DELAY_S: "120"  # wait after startup before the first backfill
     volumes:
       - cache:/cache                     # expendable — can be pruned anytime
       - compressed:/compressed           # PERSISTENT — compressed videos live here
+      - subtitles:/subtitles             # PERSISTENT — generated subtitle tracks live here
       - ./bot/streamer.session:/app/streamer.session
       - telegram-bot-api-data:/var/lib/telegram-bot-api
     restart: unless-stopped
@@ -103,5 +116,6 @@ volumes:
   staging:
   cache:         # video streaming cache — expendable, data lives in Telegram
   compressed:    # compressed video copies — persistent (CPU-expensive to rebuild)
+  subtitles:     # generated subtitle tracks — persistent (kept while video is indexed)
   telegram-bot-api-data:
 

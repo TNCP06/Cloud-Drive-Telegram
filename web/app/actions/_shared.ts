@@ -9,6 +9,7 @@ import { tagColorKey } from "@/lib/kinds";
 export function refresh() {
   revalidatePath("/");
   revalidatePath("/trash");
+  revalidatePath("/private");
 }
 
 // Resolve a tag name to a tag id, matching case-insensitively so a name that

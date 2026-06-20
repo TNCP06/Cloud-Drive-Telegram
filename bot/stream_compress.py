@@ -130,12 +130,16 @@ def _evict_compressed_if_needed() -> None:
         total -= sz
 
 
-async def _transcode_worker(part_id: int, src_path: str) -> None:
+async def _transcode_worker(part_id: int, src_path: str, on_success=None) -> None:
     """Transcode the original to a smaller browser-playable H.264 MP4 (persistent).
 
     Same resolution (no quality downscale) — the size win comes from efficient
     re-encoding. If the result isn't meaningfully smaller, drop it and leave a
     `.skip` marker so we keep serving the original and don't waste CPU retrying.
+
+    On a successful compress, `on_success(part_id, src_path)` is invoked so the
+    caller can reclaim the now-redundant original (fresh loads serve the compressed
+    copy from here on).
     """
     out_final = _compressed_path(part_id)
     out_tmp = Path(str(out_final) + ".tmp")
@@ -179,6 +183,13 @@ async def _transcode_worker(part_id: int, src_path: str) -> None:
                          part_id, src_size / 1048576, out_size / 1048576,
                          (1 - out_size / src_size) * 100)
                 _evict_compressed_if_needed()
+                # The original is now dead weight — every fresh load serves the
+                # compressed copy. Let the caller reclaim its disk space.
+                if on_success is not None:
+                    try:
+                        on_success(part_id, src_path)
+                    except Exception:  # noqa: BLE001
+                        log.exception("on_success hook failed for part %d", part_id)
             else:
                 _safe_unlink(out_tmp)
                 try:
@@ -193,7 +204,7 @@ async def _transcode_worker(part_id: int, src_path: str) -> None:
         _transcoding.discard(part_id)
 
 
-def _schedule_transcode(part_id: int, src_path: str) -> None:
+def _schedule_transcode(part_id: int, src_path: str, on_success=None) -> None:
     """Fire-and-forget a background transcode if one isn't already done/queued."""
     if not VIDEO_COMPRESS or _transcode_sem is None:
         return
@@ -201,4 +212,4 @@ def _schedule_transcode(part_id: int, src_path: str) -> None:
         return
     if _compressed_path(part_id).exists() or _compressed_skip_path(part_id).exists():
         return
-    asyncio.create_task(_transcode_worker(part_id, src_path))
+    asyncio.create_task(_transcode_worker(part_id, src_path, on_success))

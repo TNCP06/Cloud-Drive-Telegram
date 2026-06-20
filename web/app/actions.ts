@@ -5,3 +5,4 @@ export * from "./actions/tags";
 export * from "./actions/folders";
 export * from "./actions/uploads";
 export * from "./actions/thumbnails";
+export * from "./actions/private";

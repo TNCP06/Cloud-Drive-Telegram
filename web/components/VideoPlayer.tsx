@@ -21,6 +21,17 @@ function readSavedVolume(): { volume: number | null; muted: boolean | null } {
   }
 }
 
+// Human-readable labels for the captions menu. Falls back to the upper-cased code.
+const LANG_NAMES: Record<string, string> = {
+  en: "English", id: "Indonesian", orig: "Original", ms: "Malay", ja: "Japanese",
+  ko: "Korean", zh: "Chinese", es: "Spanish", fr: "French", de: "German",
+  pt: "Portuguese", ru: "Russian", ar: "Arabic", hi: "Hindi", th: "Thai",
+  vi: "Vietnamese", it: "Italian", nl: "Dutch", tr: "Turkish", tl: "Tagalog",
+};
+function langLabel(code: string): string {
+  return LANG_NAMES[code] || code.toUpperCase();
+}
+
 /**
  * Plyr-based video player for the lightbox stage.
  *
@@ -40,10 +51,12 @@ function readSavedVolume(): { volume: number | null; muted: boolean | null } {
 export function VideoPlayer({
   src,
   poster,
+  partId,
   onRequestClose,
 }: {
   src: string;
   poster?: string;
+  partId?: number;
   onRequestClose: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -80,11 +93,40 @@ export function VideoPlayer({
     (async () => {
       const PlyrCtor = (await import("plyr")).default;
       if (destroyed || !videoRef.current) return;
+
+      // Load generated subtitle tracks (original + EN + ID) and inject them BEFORE
+      // Plyr initialises so they show up in the captions (CC) menu.
+      if (partId) {
+        try {
+          const res = await fetch(`/api/subtitles/${partId}`);
+          if (!destroyed && res.ok) {
+            const data = await res.json();
+            const langs: string[] = Array.isArray(data?.langs) ? data.langs : [];
+            const vid = videoRef.current;
+            if (vid) {
+              for (const lang of langs) {
+                if (vid.querySelector(`track[srclang="${lang}"]`)) continue;
+                const track = document.createElement("track");
+                track.kind = "captions";
+                track.label = langLabel(lang);
+                track.srclang = lang;
+                track.src = `/api/subtitles/${partId}/${lang}`;
+                vid.appendChild(track);
+              }
+            }
+          }
+        } catch {
+          // No captions is fine — never block playback on subtitle loading.
+        }
+      }
+      if (destroyed || !videoRef.current) return;
+
       player = new PlyrCtor(videoRef.current, {
         seekTime: 5, // ←/→ seek by 5 seconds
         clickToPlay: false, // we split frame-click (play) vs letterbox-click (close)
         keyboard: { focused: true, global: true },
         storage: { enabled: false }, // we manage volume/mute persistence ourselves
+        captions: { active: false, language: "auto", update: true },
         controls: [
           "play-large",
           "play",
@@ -93,6 +135,7 @@ export function VideoPlayer({
           "duration",
           "mute",
           "volume",
+          "captions",
           "settings",
           "pip",
           "fullscreen",
@@ -125,7 +168,7 @@ export function VideoPlayer({
         player?.destroy();
       } catch {}
     };
-  }, [src]);
+  }, [src, partId]);
 
   const handleClick = (e: React.MouseEvent) => {
     // The player sits inside .viewer-stage (whose click closes the viewer); stop

@@ -6,13 +6,29 @@ import { parseTitle } from "./version";
 import type { DriveFile, Folder, Kind, Tag } from "./types";
 
 // Fetch and shape all drive data from Turso (used by the main page and /trash).
-export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[]; folders: Folder[] }> {
+//
+// `space` partitions the drive into the public Main view (is_private = 0) and the
+// PIN-gated Private view (is_private = 1). Items/folders are filtered by it, and the
+// tag list only includes tags still used by ≥1 item IN THIS SPACE — so a tag whose
+// last file moved to Private disappears from Main (and vice-versa). Private items are
+// never sent to the Main page, so their sizes/tags/analytics are hidden there for free.
+export async function getDriveData(
+  space: "main" | "private" = "main"
+): Promise<{ files: DriveFile[]; tags: Tag[]; folders: Folder[] }> {
+  const priv = space === "private" ? 1 : 0;
   const [itemsRs, tagsRs, itemTagsRs, thumbsRs, streamRs, foldersRs] = await Promise.all([
     db.execute(
-      "SELECT id, slug, title, kind, total_parts, total_size, is_favorite, date_added, updated_at, deleted_at, folder_id FROM items"
+      `SELECT id, slug, title, kind, total_parts, total_size, is_favorite, date_added, updated_at, deleted_at, folder_id FROM items WHERE is_private = ${priv}`
     ),
-    db.execute("SELECT id, name, color FROM tags ORDER BY name COLLATE NOCASE"),
-    db.execute("SELECT it.item_id AS item_id, it.tag_id AS tag_id FROM item_tags it"),
+    db.execute(
+      `SELECT id, name, color FROM tags
+       WHERE id IN (SELECT DISTINCT it.tag_id FROM item_tags it JOIN items i ON i.id = it.item_id WHERE i.is_private = ${priv})
+       ORDER BY name COLLATE NOCASE`
+    ),
+    db.execute(
+      `SELECT it.item_id AS item_id, it.tag_id AS tag_id FROM item_tags it
+       JOIN items i ON i.id = it.item_id WHERE i.is_private = ${priv}`
+    ),
     // Cover = thumbnail of the FIRST PART of each item (album = smallest channel_msg_id).
     // Full gallery is loaded on-demand in PreviewDrawer via getGallery().
     db.execute(
@@ -33,7 +49,7 @@ export async function getDriveData(): Promise<{ files: DriveFile[]; tags: Tag[];
        )
        SELECT item_id, part_id, file_name FROM first_part WHERE rn = 1`
     ),
-    db.execute("SELECT id, name, parent_id, created_at, updated_at FROM folders ORDER BY name COLLATE NOCASE"),
+    db.execute(`SELECT id, name, parent_id, created_at, updated_at FROM folders WHERE is_private = ${priv} ORDER BY name COLLATE NOCASE`),
   ]);
 
   const tags: Tag[] = tagsRs.rows.map((r) => {

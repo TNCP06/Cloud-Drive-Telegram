@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS folders (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
     parent_id  INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+    is_private INTEGER NOT NULL DEFAULT 0,        -- 1 = hidden in the PIN-gated Private space
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS items (
     total_parts  INTEGER NOT NULL DEFAULT 0,
     total_size   INTEGER NOT NULL DEFAULT 0,
     is_favorite  INTEGER NOT NULL DEFAULT 0,
+    is_private   INTEGER NOT NULL DEFAULT 0,      -- 1 = hidden in the PIN-gated Private space
     date_added   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
     deleted_at   TEXT,                           -- NULL = aktif; terisi = di sampah
@@ -91,11 +93,14 @@ CREATE TABLE IF NOT EXISTS upload_jobs (
     updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Heartbeat watcher: web pakai ini untuk menampilkan status "aktif/tidak aktif".
-CREATE TABLE IF NOT EXISTS watcher_heartbeat (
-    id        INTEGER PRIMARY KEY CHECK (id = 1),
-    last_seen TEXT NOT NULL,
-    status    TEXT                              -- idle | busy
+-- Generated subtitle tracks per part (original + translations). One row per language.
+-- The VTT files live on the streamer's persistent /subtitles volume; this table just
+-- tells the web player which languages are available. Kept while the video is indexed.
+CREATE TABLE IF NOT EXISTS subtitles (
+    part_id    INTEGER NOT NULL,
+    lang       TEXT NOT NULL,                  -- ISO-639-1 (en, id, …) or 'orig'
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (part_id, lang)
 );
 
 CREATE INDEX IF NOT EXISTS idx_upload_jobs_status ON upload_jobs(status);
@@ -104,3 +109,6 @@ CREATE INDEX IF NOT EXISTS idx_thumbnails_part ON thumbnails(part_id);
 CREATE INDEX IF NOT EXISTS idx_items_kind     ON items(kind);
 CREATE INDEX IF NOT EXISTS idx_items_deleted  ON items(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_items_favorite ON items(is_favorite) WHERE is_favorite = 1;
+CREATE INDEX IF NOT EXISTS idx_items_private  ON items(is_private);
+CREATE INDEX IF NOT EXISTS idx_folders_private ON folders(is_private);
+CREATE INDEX IF NOT EXISTS idx_subtitles_part ON subtitles(part_id);

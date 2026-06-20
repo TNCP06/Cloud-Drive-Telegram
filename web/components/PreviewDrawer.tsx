@@ -293,6 +293,7 @@ export function PreviewDrawer({
                   key={activePart!.partId}
                   src={`/api/stream/${activePart!.partId}`}
                   poster={activePart!.thumb || undefined}
+                  partId={activePart!.partId}
                   onRequestClose={onClose}
                 />
               ) : activePart?.thumb ? (

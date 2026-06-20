@@ -130,8 +130,8 @@ docker compose logs -f                   # confirm bot/watcher/streamer connect,
 Notes:
 - The local Bot API server (`telegram-bot-api`) and `TELEGRAM_API_URL=http://telegram-bot-api:8081`
   are already wired in `docker-compose.yml` — no manual setup.
-- The bot/watcher start/stop buttons and heartbeat were removed from the UI; processes are managed
-  by Compose (`restart: unless-stopped`).
+- The bot/watcher start/stop buttons were removed from the UI, and the watcher heartbeat
+  (`watcher_heartbeat`) was removed entirely; processes are managed by Compose (`restart: unless-stopped`).
 - For a domain + HTTPS, put **Caddy/Nginx** in front of the `web` service (port 3000). Large uploads
   must go through this server, never through a serverless host (small body limit).
 

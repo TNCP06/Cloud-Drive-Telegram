@@ -1158,3 +1158,62 @@ button { font-family: inherit; }
 .row:hover .row-check, .row-check.on { opacity: 1; color: var(--muted); }
 .row-check.on { color: var(--accent) !important; }
 
+/* ===========================================================================
+   Private space — clickable brand + PIN lock screen
+   =========================================================================== */
+.brand.brand-click { cursor: pointer; border-radius: 10px; transition: background .15s; }
+.brand.brand-click:hover { background: var(--card-2); }
+
+.pinlock {
+  position: fixed; inset: 0; z-index: 400;
+  display: grid; place-items: center;
+  background: var(--bg);
+  padding: 24px;
+}
+.pinbox {
+  width: 100%; max-width: 320px;
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center;
+}
+.pin-lockicon {
+  width: 56px; height: 56px; border-radius: 50%;
+  display: grid; place-items: center; margin: 8px 0 4px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.pin-title { font-size: 19px; font-weight: 600; margin: 4px 0 2px; }
+.pin-sub { font-size: 13px; color: var(--muted); margin-bottom: 18px; }
+.pin-dots { display: flex; gap: 10px; min-height: 16px; margin-bottom: 22px; align-items: center; }
+.pin-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--line-2); }
+.pin-dot.filled { background: var(--accent); }
+.pin-dot.placeholder { background: none; color: var(--faint); font-size: 22px; line-height: 11px; }
+.pin-pad {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  width: 100%; max-width: 260px;
+}
+.pin-key {
+  aspect-ratio: 1 / 1; border-radius: 50%;
+  border: 1px solid var(--line-2); background: var(--card);
+  color: var(--ink); font-size: 22px; font-weight: 500;
+  display: grid; place-items: center; cursor: pointer;
+  transition: background .12s, transform .05s;
+  -webkit-tap-highlight-color: transparent;
+}
+.pin-key:hover { background: var(--card-2); }
+.pin-key:active { transform: scale(0.94); }
+.pin-key:disabled { opacity: .5; cursor: default; }
+.pin-key.ghost { border-color: transparent; background: none; color: var(--muted); }
+.pin-key.accent { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pin-error { color: #B23A2E; font-size: 13px; margin-top: 16px; font-weight: 500; }
+.pin-cancel {
+  margin-top: 22px; background: none; border: 0; cursor: pointer;
+  color: var(--muted); font-size: 13.5px; display: inline-flex; align-items: center; gap: 6px;
+}
+.pin-cancel:hover { color: var(--ink); }
+.pinbox.shake { animation: pin-shake .5s; }
+@keyframes pin-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-5px); }
+  40%, 60% { transform: translateX(5px); }
+}
+

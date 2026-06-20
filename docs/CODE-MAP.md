@@ -51,7 +51,7 @@ Handles two job origins (`upload_jobs.origin`):
 window copy, 8 MB buffer), `make_video_thumbnail` (ffmpeg frame at 1 s → temp JPEG),
 `_store_thumbnails` (background: poll `parts` ~70 s, `INSERT OR IGNORE` thumbnail),
 `process` (build plan `list`/`stream` → upload each part, checkpoint after each, cleanup temp
-parts + staging dir on success), `resolve_channel`, `heartbeat` (10 s), `main` (poll loop, 5 s).
+parts + staging dir on success), `resolve_channel`, `main` (poll loop, 5 s).
 Writes `watcher.pid`. **`ffmpeg`** for media thumbnails; **7-Zip only for `local` archives**.
 Imports `normalize_tags, build_caption, safe_name, collect_parts` from `worker.py`.
 
@@ -84,11 +84,24 @@ writes a `.skip` marker if it isn't ≥5% smaller), `_schedule_transcode` (fire-
 `stream` serves the original on the first view (instant) while transcoding in the background; later views
 serve the compressed copy. The served variant is **pinned per playback** (`_serving_variant`: a fresh load /
 `bytes=0-` re-evaluates and prefers compressed once ready; seeks reuse the pin) so file size never changes
-mid-session. Original lives in the evictable Bot API cache; the compressed copy is persistent.
+mid-session. Once the compressed copy is written, `_transcode_worker` calls back into the streamer's
+`_reclaim_original_after_compress` to **delete the now-redundant original** from the Bot API cache (an
+in-progress stream's open fd keeps reading on Linux); the compressed copy is persistent.
+**Background subtitle generation** (Groq Whisper STT) lives in **`stream_subtitles.py`**: `_extract_audio_chunks`
+(ffmpeg → time-sliced 16 kHz FLAC), `_transcribe_chunk`/`_transcribe_audio` (Groq `audio/transcriptions` with
+**key + model failover** on 429, segment offsets merged), `_translate_segments` (deep-translator → EN/ID,
+timestamps preserved), `_build_vtt`, `_subtitle_worker`/`schedule_subtitles` (fire-and-forget, dedup'd via a
+`.done` marker), writes WebVTT to the **persistent** `SUBTITLES_DIR` + a `subtitles` Turso row per lang.
+`streamer.py` exposes `GET /subtitles/{part_id}` (langs) and `GET /subtitles/{part_id}/{lang}` (VTT), and
+runs a **retroactive backfill** (`_subtitle_backfill_loop`/`_next_backfill_part`/`_backfill_one`): one
+already-indexed video at a time (back-to-back by default; `SUBTITLE_BACKFILL_INTERVAL_S` adds optional
+pace), downloads → subtitles → deletes the download; failures are skipped for the session.
 **Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `TURSO_*`, `BOT_TOKEN`, `TELEGRAM_API_URL`
 (enables local Bot API mode), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (cache limit),
 `COMPRESSED_DIR`, `VIDEO_COMPRESS` (1/0), `VIDEO_CRF`, `VIDEO_PRESET`, `VIDEO_MIN_COMPRESS_MB`,
-`VIDEO_TRANSCODE_CONCURRENCY`, `COMPRESSED_MAX_SIZE_GB` (0 = keep forever).
+`VIDEO_TRANSCODE_CONCURRENCY`, `COMPRESSED_MAX_SIZE_GB` (0 = keep forever), `SUBTITLE_GEN` (1/0),
+`SUBTITLES_DIR`, `GROQ_API_KEYS` (comma-separated), `GROQ_STT_MODELS`, `SUBTITLE_TARGET_LANGS`,
+`SUBTITLE_CHUNK_SECONDS`, `SUBTITLE_BACKFILL` (1/0), `SUBTITLE_BACKFILL_INTERVAL_S`.
 
 
 ### Supporting scripts
@@ -112,8 +125,10 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 - `staging.ts` — shared resumable-upload staging paths. `STAGING_ROOT`
   (`UPLOAD_STAGING_DIR`, `/staging` in Docker), `jobDir(token)`, `stagedFilePath(token,name)`
   with strict token/path-traversal guards. Used by the upload API + the watcher reads the same dir.
-- `items.ts` — `getDriveData()`: the main read. One batched query set → shapes `DriveFile[]` +
-  `Tag[]`. Computes each item's **cover** thumbnail (first part by `channel_msg_id`), fetches
+- `items.ts` — `getDriveData(space = "main" | "private")`: the main read. One batched query set →
+  shapes `DriveFile[]` + `Tag[]`, **filtered by `is_private`** (Main = 0, Private = 1). The tag list
+  only includes tags still used by an item in that space, so a tag whose last file moved to Private
+  vanishes from Main. Computes each item's **cover** thumbnail (first part by `channel_msg_id`), fetches
   `firstPartId`/`fileName` for media items (for video streaming), and for archives, splits title
   into `family`/`version` via `parseTitle`.
 - `version.ts` — `parseTitle()`: split an archive title into `family` + `version` (e.g.
@@ -125,14 +140,18 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 
 ### `web/app/` — routes & server actions
 - `actions.ts` — re-export **barrel** for the server actions, now split by domain under
-  `app/actions/` (`items.ts`, `tags.ts`, `folders.ts`, `uploads.ts`, `thumbnails.ts`, plus
+  `app/actions/` (`items.ts`, `tags.ts`, `folders.ts`, `uploads.ts`, `thumbnails.ts`, `private.ts`, plus
   `_shared.ts` for `refresh`/`resolveTagId`). `@/app/actions` imports are unchanged. Inventory:
   Item (`items.ts`): `toggleFavorite`,
   `softDelete`, `restore`, `purgeNow` (on-demand permanent delete of a trashed item — Telegram
   `deleteMessage` + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
   intentionally NOT changed on rename).
-  Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`.
+  Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`,
+  `moveFolderToFolder` (reparent; rejects cycles into self/descendants).
   Bulk ops: `bulkToggleFavorite`, `bulkSoftDelete`, `bulkRestore`, `bulkPurgeNow`.
+  Private (`private.ts`): `isPrivateUnlocked`/`unlockPrivate`/`lockPrivate` (PIN cookie gate, env `PIN`),
+  `moveItemsPrivacy`/`moveFolderPrivacy` (toggle `is_private` between Main ⇄ Private; land at the
+  destination root; **never touch `updated_at`**; folder move cascades to all descendant folders + items).
   Tags: `listTags`, `createTag` (case-insensitive: won't create a capitalization-only
   duplicate), `recolorTag`, `renameTag` (merge-aware), `deleteTag`. `resolveTagId` (internal):
   maps a name to a tag id, reusing an existing tag that differs only in case; used by
@@ -162,11 +181,16 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 - `api/stream/[partId]/route.ts` — **streaming proxy** (`nodejs` runtime). Authenticates via
   cookie, then proxies `Range` requests to the streamer service (`STREAMER_URL`, default
   `http://streamer:8080`). Pipes the 206 response body back to the browser's `<video>` element (intercepted and cached by the client-side Service Worker).
-- `page.tsx` (main grid), `trash/page.tsx`, `upload/page.tsx`, `upload-bot/page.tsx`,
+- `api/subtitles/[partId]/route.ts` (lang list) + `api/subtitles/[partId]/[lang]/route.ts` (one WebVTT
+  track) — cookie-auth proxies to the streamer's `/subtitles/...` endpoints; the player loads these as
+  `<track>`s.
+- `page.tsx` (main grid), `private/page.tsx` (**PIN-gated Private space**: renders `PrivateLock` until the
+  unlock cookie is present, then `DriveApp space="private"` with `getDriveData("private")`),
+  `trash/page.tsx`, `upload/page.tsx`, `upload-bot/page.tsx`,
   `login/` (`page.tsx` + `actions.ts` + `LoginForm.tsx`). `loading.tsx`/`error.tsx` per route.
 
 ### `web/public/` — static assets
-- `sw.js` — **client-side Service Worker**. Intercepts video range requests, caches 2 MB chunks in IndexedDB (`video-cache-db`), reconstructs partial responses, and runs LRU cache eviction targeting a 4 GB limit.
+- `sw.js` — **client-side Service Worker**. Intercepts video range requests, caches 2 MB chunks in IndexedDB (`video-cache-db`), reconstructs partial responses, and runs LRU cache eviction targeting a 4 GB limit. **Validates the cached size against the server once per SW lifetime and namespaces chunk keys by size** (`partId_size_chunk_i`) so an original→compressed variant switch can't mix two variants' bytes (purges stale chunks on a size change).
 - `logo.png` — sidebar/brand logo. **Note:** `next.config.ts` uses `output: "standalone"`, which does **not** bundle `public/`; `web/Dockerfile` must `COPY .../public ./public` into the run stage or these assets 404 in production.
 
 ### `web/` — auth & config
@@ -177,12 +201,16 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 
 ### `web/components/` — UI (client)
 - `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).
-- `DriveApp.tsx` — top-level app shell/state (largest component). Folders render in their own
-  compact `.grid.folders` above the file grid. Its modals + empty state were extracted to
-  `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete`, `CreateFolderModal`, `RenameFolderModal`,
-  `MoveToFolderModal`, `EmptyState`). `Sidebar.tsx` — nav/filters; regular tags sorted by
-  usage count (desc); a collapsible **Type Tags** group (Image/Video/**Archive**); the storage meter
-  is a button that opens a `StorageDetail` breakdown popup.
+- `DriveApp.tsx` — top-level app shell/state (largest component). Takes a `space` prop ("main"|"private");
+  a navbar **lock/unlock** icon enters/exits the Private space (exit clears the PIN cookie via `lockPrivate`).
+  Folders render in their own compact `.grid.folders` above the file grid. Its modals + empty state were
+  extracted to `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete`, `CreateFolderModal`,
+  `RenameFolderModal`, `MoveToFolderModal`, `EmptyState`). `MoveToFolderModal` works for both items and
+  folders and offers a cross-space destination (Move to Private / Move to Main drive). `PrivateLock.tsx` —
+  the phone-style PIN keypad (also keyboard-typable). `Sidebar.tsx` — nav/filters (the **brand is clickable
+  to exit** in the Private space); regular tags sorted by usage count (desc); a collapsible **Type Tags**
+  group (Image/Video/**Archive**); the storage meter is a button that opens a `StorageDetail` breakdown popup.
+  `VideoPlayer.tsx` (Plyr) loads generated subtitle `<track>`s (original + EN + ID) from `/api/subtitles`.
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders. `FolderCard` is a **compact
   horizontal tile** (icon + name, no big thumbnail) to avoid wasted space; `FolderRow` for list view.
   File cards keep checkboxes for multi-select, a star toggle, and a kebab action button.
@@ -210,8 +238,7 @@ mid-session. Original lives in the evictable Bot API cache; the compressed copy 
 
 ## Cross-cutting conventions
 
-- **Web ↔ laptop is async via tables only.** `upload_jobs` (commands), `watcher_heartbeat`
-  (liveness). No direct RPC.
+- **Web ↔ laptop is async via tables only.** `upload_jobs` (commands + progress). No direct RPC.
 - **Idempotency keys:** `parts.channel_msg_id` (re-index safe + `copy_message` target),
   `items.slug` (multi-part grouping + download deep link; never re-written).
 - **Error surfacing:** the bot DMs `OWNER_USER_ID` on un-indexable game captions and on purge

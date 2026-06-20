@@ -58,6 +58,23 @@ from stream_compress import (
     _schedule_transcode,
 )
 
+# Background subtitle generation (Groq Whisper STT + translation) lives in its own module.
+from stream_subtitles import (
+    SUBTITLE_GEN,
+    SUBTITLES_DIR,
+    GROQ_API_KEYS,
+    SUBTITLE_BACKFILL,
+    SUBTITLE_BACKFILL_INTERVAL_S,
+    SUBTITLE_BACKFILL_IDLE_S,
+    SUBTITLE_BACKFILL_START_DELAY_S,
+    init_subtitle_semaphore,
+    schedule_subtitles,
+    is_subtitled_done,
+    run_subtitle_job,
+    available_langs,
+    subtitle_path,
+)
+
 # ---------------------------------------------------------------------------
 # In-memory log buffer for debugging
 # ---------------------------------------------------------------------------
@@ -157,6 +174,10 @@ _prefetch_tasks: dict[int, asyncio.Task] = {}
 
 # Keep track of active main play requests per channel_msg_id to prevent prefetch contention
 _active_downloads: dict[int, int] = defaultdict(int)
+
+# Retroactive subtitle backfill bookkeeping
+_backfill_task: "asyncio.Task | None" = None
+_backfill_failed: set[int] = set()  # part_ids that failed THIS session (retried next restart)
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +314,21 @@ def _evict_local_api_cache_if_needed(needed_bytes: int) -> None:
     for pid, path in list(_local_file_paths.items()):
         if not os.path.exists(path):
             _local_file_paths.pop(pid, None)
+
+
+def _reclaim_original_after_compress(part_id: int, src_path: str) -> None:
+    """Drop the now-redundant original from the Bot-API cache once a compressed copy exists.
+
+    Fresh loads serve the compressed copy from here on, so the original is dead weight.
+    On Linux an in-progress stream holding the file open keeps reading fine after unlink.
+    """
+    try:
+        if src_path and os.path.exists(src_path):
+            os.remove(src_path)
+            log.info("Reclaimed original for part %d after compression: %s", part_id, src_path)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Could not reclaim original for part %d: %s", part_id, e)
+    _local_file_paths.pop(part_id, None)
 
 
 async def download_via_local_bot_api(file_id: str) -> str:
@@ -783,13 +819,108 @@ def _start_prefetch(part_id: int, channel_msg_id: int,
 
 
 # ---------------------------------------------------------------------------
+# Retroactive subtitle backfill — slowly subtitle already-indexed videos
+# ---------------------------------------------------------------------------
+async def _next_backfill_part() -> dict | None:
+    """Find one indexed video part with no subtitles yet (skips this-session failures)."""
+    rs = await db.execute(
+        "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id "
+        "FROM parts p JOIN items i ON i.id = p.item_id "
+        "WHERE i.kind = 'media' AND i.deleted_at IS NULL "
+        "AND p.id NOT IN (SELECT part_id FROM subtitles) "
+        "ORDER BY p.id"
+    )
+    for row in rs.rows:
+        part_id = int(row[0])
+        if part_id in _backfill_failed:
+            continue
+        ext = os.path.splitext(row[2] or "")[1].lower()
+        if ext not in MIME_MAP:  # only real video files
+            continue
+        if is_subtitled_done(part_id):  # e.g. processed but no-speech (.done, no rows)
+            continue
+        return {
+            "part_id": part_id,
+            "channel_msg_id": int(row[1]),
+            "file_name": row[2] or "",
+            "file_id": row[3],
+        }
+    return None
+
+
+async def _backfill_one(part: dict) -> None:
+    """Download one video, generate its subtitles, then delete the download to reclaim disk."""
+    part_id = part["part_id"]
+    channel_msg_id = part["channel_msg_id"]
+    file_id = part.get("file_id")
+    path: str | None = None
+
+    async with _part_locks[(part_id, -1)]:
+        if not file_id:
+            try:
+                file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Backfill: cannot resolve file_id for part %d: %s", part_id, e)
+                _backfill_failed.add(part_id)
+                return
+        _evict_local_api_cache_if_needed(0)
+        try:
+            path = await download_via_local_bot_api(file_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Backfill: download failed for part %d (%s) — retrying with fresh file_id", part_id, e)
+            try:
+                file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
+                path = await download_via_local_bot_api(file_id)
+            except Exception as e2:  # noqa: BLE001
+                log.warning("Backfill: download failed for part %d: %s", part_id, e2)
+                _backfill_failed.add(part_id)
+                return
+
+    try:
+        await run_subtitle_job(db, part_id, path)
+    finally:
+        # Subtitle-only backfill: drop the downloaded original once subs are written.
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:  # noqa: BLE001
+            pass
+        _local_file_paths.pop(part_id, None)
+
+
+async def _subtitle_backfill_loop() -> None:
+    """Slowly subtitle already-indexed videos, one at a time, paced to respect API limits."""
+    if not (SUBTITLE_BACKFILL and SUBTITLE_GEN and GROQ_API_KEYS):
+        return
+    await asyncio.sleep(SUBTITLE_BACKFILL_START_DELAY_S)
+    pace = f"one every {SUBTITLE_BACKFILL_INTERVAL_S}s" if SUBTITLE_BACKFILL_INTERVAL_S > 0 else "back-to-back"
+    log.info("Subtitle backfill enabled — %s", pace)
+    while True:
+        try:
+            part = await _next_backfill_part()
+            if part is None:
+                await asyncio.sleep(SUBTITLE_BACKFILL_IDLE_S)
+                continue
+            log.info("Subtitle backfill: processing part %d (%s)", part["part_id"], part["file_name"])
+            await _backfill_one(part)
+        except asyncio.CancelledError:
+            break
+        except Exception:  # noqa: BLE001
+            log.exception("Subtitle backfill loop error")
+        # Optional extra pace between videos (0 = none; 3 Groq keys absorb rate limits).
+        if SUBTITLE_BACKFILL_INTERVAL_S > 0:
+            await asyncio.sleep(SUBTITLE_BACKFILL_INTERVAL_S)
+
+
+# ---------------------------------------------------------------------------
 # FastAPI lifespan
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global tg_client, db, channel
+    global tg_client, db, channel, _backfill_task
 
     init_semaphore()  # create the transcode concurrency semaphore in the running loop
+    init_subtitle_semaphore()  # create the subtitle concurrency semaphore in the running loop
 
     log.info("Starting streamer — connecting to Telegram and Turso…")
     tg_client = TelegramClient(SESSION, API_ID, API_HASH)
@@ -814,11 +945,26 @@ async def lifespan(_app: FastAPI):
                      COMPRESSED_DIR, VIDEO_CRF, VIDEO_PRESET)
         except Exception as e:  # noqa: BLE001
             log.warning("Could not create compressed dir %s: %s", COMPRESSED_DIR, e)
+    if SUBTITLE_GEN:
+        try:
+            SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
+            log.info("Subtitle generation enabled → persistent dir %s (%d Groq key(s))",
+                     SUBTITLES_DIR, len(GROQ_API_KEYS))
+            if not GROQ_API_KEYS:
+                log.warning("SUBTITLE_GEN on but GROQ_API_KEYS is empty — no subtitles will be made")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Could not create subtitles dir %s: %s", SUBTITLES_DIR, e)
+
+    # Kick off the slow retroactive subtitle backfill (one already-indexed video at a time).
+    if SUBTITLE_BACKFILL and SUBTITLE_GEN and GROQ_API_KEYS:
+        _backfill_task = asyncio.create_task(_subtitle_backfill_loop())
 
     yield  # --- app runs ---
 
     # Shutdown
     log.info("Shutting down streamer…")
+    if _backfill_task:
+        _backfill_task.cancel()
     for task in _prefetch_tasks.values():
         task.cancel()
     if db:
@@ -860,6 +1006,27 @@ async def get_tasks():
             "done": t.done()
         })
     return {"tasks": info}
+
+
+@app.get("/subtitles/{part_id}")
+async def list_subtitles(part_id: int):
+    """List the subtitle languages available on disk for a part."""
+    return {"part_id": part_id, "langs": available_langs(part_id)}
+
+
+@app.get("/subtitles/{part_id}/{lang}")
+async def get_subtitle(part_id: int, lang: str):
+    """Serve a WebVTT subtitle track. `lang` is validated against what's on disk."""
+    if lang not in available_langs(part_id):
+        return Response("Not found", status_code=404)
+    p = subtitle_path(part_id, lang)
+    if not p.exists():
+        return Response("Not found", status_code=404)
+    return Response(
+        p.read_text(encoding="utf-8"),
+        media_type="text/vtt",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 @app.get("/stream/{part_id}")
@@ -990,7 +1157,12 @@ async def stream(part_id: int, request: Request):
                         return Response(f"Failed to download file: {retry_err}", status_code=500)
 
         # Kick off background compression so subsequent views serve a smaller copy.
-        _schedule_transcode(part_id, file_path)
+        # When it succeeds, reclaim the now-redundant original from the Bot-API cache.
+        _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
+
+        # Kick off background subtitle generation (original + EN + ID). Falls back to the
+        # compressed copy if the compress job reclaims the original before extraction.
+        schedule_subtitles(db, part_id, file_path, fallback_path=str(comp_path))
 
         return _serve_local_file_range(file_path, mime, request, range_header)
 

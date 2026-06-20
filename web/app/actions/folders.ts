@@ -89,3 +89,20 @@ export async function moveItemsToFolder(itemIds: number[], folderId: number | nu
   }
   refresh();
 }
+
+// Reparent a folder into another folder (or the root). Rejects moving a folder into
+// itself or one of its own descendants, which would create a cycle.
+export async function moveFolderToFolder(folderId: number, targetParentId: number | null) {
+  if (targetParentId === folderId) throw new Error("Cannot move a folder into itself.");
+  if (targetParentId !== null) {
+    const { folderIds } = await getFolderItemsAndSubfolders(folderId);
+    if (folderIds.includes(targetParentId)) {
+      throw new Error("Cannot move a folder into one of its own subfolders.");
+    }
+  }
+  await db.execute({
+    sql: "UPDATE folders SET parent_id = ?, updated_at = datetime('now') WHERE id = ?",
+    args: [targetParentId, folderId],
+  });
+  refresh();
+}

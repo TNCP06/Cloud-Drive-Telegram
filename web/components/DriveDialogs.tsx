@@ -212,39 +212,75 @@ export function RenameFolderModal({
 
 export function MoveToFolderModal({
   folders,
+  space = "main",
+  mode = "item",
+  movingFolderId,
   onClose,
   onMove,
+  onMoveCrossSpace,
 }: {
   folders: Folder[];
+  space?: "main" | "private";
+  mode?: "item" | "folder";
+  movingFolderId?: number;
   onClose: () => void;
   onMove: (folderId: number | null) => void;
+  onMoveCrossSpace: () => void;
 }) {
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
 
+  // For folder moves, exclude the folder itself and all its descendants as targets.
+  const excluded = useMemo(() => {
+    const set = new Set<number>();
+    if (mode === "folder" && movingFolderId != null) {
+      const collect = (pid: number) => {
+        set.add(pid);
+        folders.filter((f) => f.parentId === pid).forEach((c) => collect(c.id));
+      };
+      collect(movingFolderId);
+    }
+    return set;
+  }, [mode, movingFolderId, folders]);
+
   const list = useMemo(() => {
     const folderList: { id: number | null; name: string; depth: number }[] = [
-      { id: null, name: "All files (Root)", depth: 0 }
+      { id: null, name: space === "private" ? "Private (Root)" : "All files (Root)", depth: 0 },
     ];
-
     const addChildren = (parentId: number | null, depth: number) => {
       const children = folders.filter((f) => f.parentId === parentId);
       for (const child of children) {
+        if (excluded.has(child.id)) continue;
         folderList.push({ id: child.id, name: child.name, depth });
         addChildren(child.id, depth + 1);
       }
     };
-
     addChildren(null, 1);
     return folderList;
-  }, [folders]);
+  }, [folders, excluded, space]);
+
+  const crossLabel = space === "main" ? "Move to Private" : "Move to Main drive";
+  const what = mode === "folder" ? "folder" : "items";
 
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="dialog" style={{ maxWidth: 400 }}>
         <div className="dhead">
-          <h2>Move items to folder</h2>
+          <h2>Move {what} to folder</h2>
         </div>
-        <div className="dbody" style={{ maxHeight: 300, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4, padding: "8px 0" }}>
+        <div className="dbody" style={{ maxHeight: 320, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4, padding: "8px 0" }}>
+          {/* Cross-space destination (Main ⇄ Private) */}
+          <button
+            className="btn subtle"
+            style={{
+              textAlign: "left", paddingLeft: 12, display: "flex", alignItems: "center", gap: 8,
+              border: "1px solid var(--line-2)", borderRadius: 6, width: "100%", marginBottom: 4,
+              color: "var(--accent)", fontWeight: 600,
+            }}
+            onClick={onMoveCrossSpace}
+          >
+            <Icon name={space === "main" ? "lock" : "unlock"} size={16} />
+            {crossLabel}
+          </button>
           {list.map((item) => (
             <button
               key={item.id === null ? "root" : item.id}

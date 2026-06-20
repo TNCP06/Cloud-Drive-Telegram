@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { Icon } from "@/lib/icons";
 import { fmtSize, relGroup } from "@/lib/format";
 import { TAG_COLORS } from "@/lib/kinds";
@@ -28,6 +29,10 @@ import {
   renameFolder,
   deleteFolder,
   moveItemsToFolder,
+  moveFolderToFolder,
+  moveItemsPrivacy,
+  moveFolderPrivacy,
+  lockPrivate,
   bulkToggleFavorite,
   bulkSoftDelete,
   bulkRestore,
@@ -70,12 +75,16 @@ export function DriveApp({
   tags,
   folders = [],
   initialView = "all",
+  space = "main",
 }: {
   files: DriveFile[];
   tags: Tag[];
   folders?: Folder[];
   initialView?: View;
+  space?: "main" | "private";
 }) {
+  const router = useRouter();
+  const isPrivate = space === "private";
   const [view, setView] = useState<View>(initialView);
   const [activeTag, setActiveTag] = useState<number | null>(null);
   const [query, setQuery] = useState("");
@@ -94,7 +103,17 @@ export function DriveApp({
   const [showCreateFolder, setShowCreateFolder] = useState(false);
   const [showRenameFolder, setShowRenameFolder] = useState<Folder | null>(null);
   const [moveTargetIds, setMoveTargetIds] = useState<number[]>([]);
+  const [moveFolderTarget, setMoveFolderTarget] = useState<Folder | null>(null);
   const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
+
+  // Private-space navigation: enter goes to the PIN-gated /private route; exit clears
+  // the unlock cookie (so the PIN is required again next time) and returns to Main.
+  const enterPrivate = () => router.push("/private");
+  const exitPrivate = () =>
+    startTransition(async () => {
+      await lockPrivate();
+      router.push("/");
+    });
 
   // Multi-select states
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -578,6 +597,8 @@ export function DriveApp({
         onNav={go}
         onTag={goTag}
         onManageTags={() => setManageTags(true)}
+        privateSpace={isPrivate}
+        onBrandClick={isPrivate ? exitPrivate : undefined}
       />
 
       <div className="main">
@@ -658,6 +679,15 @@ export function DriveApp({
               <Icon name="rows" size={16} />
             </button>
           </div>
+
+          <button
+            className="iconbtn ghost"
+            onClick={isPrivate ? exitPrivate : enterPrivate}
+            title={isPrivate ? "Exit Private space" : "Open Private space"}
+            aria-label={isPrivate ? "Exit Private space" : "Open Private space"}
+          >
+            <Icon name={isPrivate ? "unlock" : "lock"} size={19} />
+          </button>
 
           <ThemeToggle />
         </div>
@@ -873,6 +903,14 @@ export function DriveApp({
               }}
             />
             <MenuItem
+              icon="folder"
+              label="Move to..."
+              onClick={() => {
+                setMoveFolderTarget(folderMenu.folder);
+                closeFolderMenu();
+              }}
+            />
+            <MenuItem
               icon="trash"
               label="Delete"
               danger
@@ -1068,6 +1106,8 @@ export function DriveApp({
       {moveTargetIds.length > 0 && (
         <MoveToFolderModal
           folders={folders}
+          space={space}
+          mode="item"
           onClose={() => setMoveTargetIds([])}
           onMove={(targetFolderId) => {
             startTransition(async () => {
@@ -1075,6 +1115,39 @@ export function DriveApp({
               setSelectedIds([]);
             });
             setMoveTargetIds([]);
+          }}
+          onMoveCrossSpace={() => {
+            const ids = moveTargetIds;
+            startTransition(async () => {
+              await moveItemsPrivacy(ids, space === "main");
+              setSelectedIds([]);
+            });
+            setMoveTargetIds([]);
+          }}
+        />
+      )}
+
+      {/* Move Folder Modal (to another folder, or across Main ⇄ Private) */}
+      {moveFolderTarget && (
+        <MoveToFolderModal
+          folders={folders}
+          space={space}
+          mode="folder"
+          movingFolderId={moveFolderTarget.id}
+          onClose={() => setMoveFolderTarget(null)}
+          onMove={(targetFolderId) => {
+            const fid = moveFolderTarget.id;
+            startTransition(async () => {
+              await moveFolderToFolder(fid, targetFolderId);
+            });
+            setMoveFolderTarget(null);
+          }}
+          onMoveCrossSpace={() => {
+            const fid = moveFolderTarget.id;
+            startTransition(async () => {
+              await moveFolderPrivacy(fid, space === "main");
+            });
+            setMoveFolderTarget(null);
           }}
         />
       )}

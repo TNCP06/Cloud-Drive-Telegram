@@ -66,12 +66,6 @@ export interface UploadJob {
   updatedAt: number;
 }
 
-export interface WatcherStatus {
-  online: boolean;
-  status: "idle" | "busy" | null;
-  lastSeen: number | null;
-}
-
 export interface BotStatus {
   online: boolean;
   lastSeen: number | null;

@@ -39,6 +39,8 @@ export function Sidebar({
   onNav,
   onTag,
   onManageTags,
+  onBrandClick,
+  privateSpace = false,
 }: {
   view: string;
   tag: number | null;
@@ -48,6 +50,8 @@ export function Sidebar({
   onNav: (v: string) => void;
   onTag: (id: number) => void;
   onManageTags: () => void;
+  onBrandClick?: () => void;
+  privateSpace?: boolean;
 }) {
   const [mediaOpen, setMediaOpen] = useState(true);
   const [showMoreTags, setShowMoreTags] = useState(false);
@@ -72,13 +76,18 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="brand">
+      <div
+        className={"brand" + (onBrandClick ? " brand-click" : "")}
+        onClick={onBrandClick}
+        role={onBrandClick ? "button" : undefined}
+        title={onBrandClick ? "Back to main drive" : undefined}
+      >
         <div className="brand-mark">
           <Image src="/logo.png" alt="logo" width={52} height={33} unoptimized style={{ display: "block" }} />
         </div>
         <div>
-          <div className="brand-name">Vault</div>
-          <div className="brand-sub">Telegram Drive</div>
+          <div className="brand-name">{privateSpace ? "Private" : "Vault"}</div>
+          <div className="brand-sub">{privateSpace ? "Locked space" : "Telegram Drive"}</div>
         </div>
       </div>
 

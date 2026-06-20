@@ -414,41 +414,19 @@ async def resolve_channel(client):
     raise RuntimeError(f"Channel {STORAGE_CHANNEL_ID} is not accessible by this account.")
 
 
-async def heartbeat(db, state):
-    """Write a heartbeat to Turso every 10s so the web UI knows whether the watcher is active."""
-    while True:
-        try:
-            await db.execute(
-                "INSERT INTO watcher_heartbeat (id, last_seen, status) "
-                "VALUES (1, datetime('now'), ?) "
-                "ON CONFLICT(id) DO UPDATE SET last_seen=datetime('now'), status=excluded.status",
-                [state["status"]],
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        await asyncio.sleep(10)
-
-
 async def main():
     db = libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN)
-    state = {"status": "idle"}
     async with TelegramClient(SESSION, API_ID, API_HASH) as client:
         channel = await resolve_channel(client)
-        hb = asyncio.create_task(heartbeat(db, state))
         print(f"Watcher ready. Channel: {getattr(channel, 'title', channel)}")
         print(f"Split output: {OUT_DIR}")
         print("Polling upload_jobs… (Ctrl+C to stop)")
-        try:
-            while True:
-                job = await claim_next(db)
-                if job:
-                    state["status"] = "busy"
-                    await process(client, db, channel, job)
-                    state["status"] = "idle"
-                else:
-                    await asyncio.sleep(POLL_INTERVAL)
-        finally:
-            hb.cancel()
+        while True:
+            job = await claim_next(db)
+            if job:
+                await process(client, db, channel, job)
+            else:
+                await asyncio.sleep(POLL_INTERVAL)
 
 
 if __name__ == "__main__":

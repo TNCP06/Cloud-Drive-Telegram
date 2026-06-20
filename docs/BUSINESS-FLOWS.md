@@ -190,12 +190,61 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
    (same resolution → no visible quality loss; the size win is from efficient re-encoding).
    Once ready, subsequent views serve the compressed copy (less VPS bandwidth). If the result
    isn't ≥5% smaller it's discarded and a `.skip` marker prevents re-tries. The served variant is
-   **pinned per playback** so the file size never changes between a load and its seeks. Tunable via
+   **pinned per playback** so the file size never changes between a load and its seeks. **When the
+   compressed copy is written, the original is deleted from the Bot API cache** (it's dead weight —
+   fresh loads serve compressed; an in-progress stream's open fd keeps working on Linux). Tunable via
    `VIDEO_*` / `COMPRESSED_*` env (`VIDEO_COMPRESS=0` disables it). Fallback (non-local) mode does
    not compress.
+   * **Device cache caveat:** on HTTPS (e.g. Vercel) the Service Worker caches chunks per device. It
+     re-validates the file size once per SW lifetime and namespaces chunk keys by size, so the
+     original→compressed size change can't corrupt playback by mixing variants.
 8. **Limitations:**
    * Local Bot API Mode: Supports single-part and multi-part media, cold start buffer delay of ~5-15s to download the file from Telegram to the VPS (at full network speed, e.g. 50MB/s), subsequent seeks and repeat views are instant.
    * Fallback Mode: Strictly throttled to ~3Mbps by Telegram's remote MTProto interface.
+
+## E4. Automatic subtitle generation (background, Groq Whisper)
+
+After a video lands on disk (local Bot API mode, first view), the streamer fires a background job
+(`stream_subtitles.py`, separate from compression) **if subtitles don't already exist**:
+
+1. `ffmpeg` extracts the audio as time-sliced 16 kHz mono FLAC chunks (`SUBTITLE_CHUNK_SECONDS`,
+   default 600s) to stay under Groq's per-file cap.
+2. Each chunk is transcribed via Groq's **free Whisper API** (`whisper-large-v3-turbo`, falling back to
+   `whisper-large-v3`). Multiple `GROQ_API_KEYS` are **rotated on rate-limit (429)** for failover;
+   segment timestamps are offset per chunk and merged.
+3. The original-language track is written, then translated to **English + Indonesian** via
+   `deep-translator` (timestamps preserved; a target equal to the source language is skipped).
+4. WebVTT files are saved to the **persistent** `/subtitles` volume and a `subtitles` Turso row is
+   written per language; a `.done` marker prevents re-runs.
+
+The web player loads them as caption `<track>`s via `/api/subtitles/{partId}` + `/{lang}`. **Subtitle
+files are kept as long as the video is indexed** (the `/subtitles` volume is never auto-evicted).
+Disabled with `SUBTITLE_GEN=0` or an empty `GROQ_API_KEYS`.
+
+**Retroactive backfill (slow):** a background loop (`_subtitle_backfill_loop`) also subtitles
+**already-indexed** videos that predate this feature. It processes **one video at a time** (serialized by
+the same subtitle semaphore): picks an un-subtitled video part, downloads it via the local Bot API,
+generates subtitles, then **deletes the download** to reclaim disk (peak footprint = one video). By default
+it runs **back-to-back** (`SUBTITLE_BACKFILL_INTERVAL_S=0`) — the 3 rotating `GROQ_API_KEYS` absorb Groq
+rate limits and each video's own processing time provides natural spacing; set the interval >0 to add an
+extra pace if needed. A failed part is skipped for the rest of the session (retried after a restart) so one
+bad file can't block the queue. Toggle with `SUBTITLE_BACKFILL`.
+
+## E5. Private space (PIN-gated hiding)
+
+A parallel drive distinguished by `items.is_private` / `folders.is_private` (default 0 = Main):
+
+1. **Enter:** the navbar **lock icon** navigates to `/private`, which shows a phone-style **PIN keypad**
+   (`PrivateLock`, also keyboard-typable). The PIN is checked server-side against env `PIN`; on success a
+   session unlock cookie is set. **Exit** (the open-lock icon or clicking the sidebar **brand**) clears the
+   cookie, so a PIN is required on **every** entry.
+2. **Move in/out:** the **"Move to…"** action on files and folders offers a "Move to Private" /
+   "Move to Main drive" destination. Moving a folder cascades `is_private` to all descendant folders +
+   items. The move **does not change `updated_at`** (hiding isn't a content change).
+3. **Hiding:** `getDriveData("main")` only returns `is_private = 0` rows, so private items — and all their
+   sizes/tags/storage analytics — never reach the Main page. A tag whose last Main item moved to Private
+   disappears from the Main tag list (and appears in the Private one). Private data is fetched and rendered
+   **only after** the PIN cookie is present, so it never ships to the Main page.
 
 
 ---
@@ -243,7 +292,6 @@ All in [`web/app/actions.ts`](../web/app/actions.ts), no Telegram involved:
 
 ## H. Watcher lifecycle & control
 
-- **Heartbeat**: Watcher writes `watcher_heartbeat` every 10 s. While this table is still updated by the watcher, the frontend UI no longer displays these status indicators or heartbeats.
 - **Process control**: The web UI start/stop buttons for the bot and watcher have been completely removed. The processes are started manually (laptop mode) or managed as always-on compose services (Docker mode). The actions `startWatcher`, `stopWatcher`, `startBot`, and `stopBot` are no longer active in the web page.
 - **Startup Back-Indexing**: In Docker/server mode, the watcher service container automatically runs `index_history.py` before starting `watcher.py` on startup. This uses Telethon to back-index any channel messages/updates that occurred while the services were offline, keeping Turso synchronized.
 
