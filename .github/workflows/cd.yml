@@ -16,6 +16,9 @@ jobs:
           username: ${{ secrets.VPS_SSH_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_SSH_PORT || 22 }}
+          # The web image's `next build` alone takes ~9–10 min on the small 2-core VPS; the
+          # action's default command_timeout (10m) cut it off mid type-check. Give it headroom.
+          command_timeout: 30m
           script: |
             cd ${{ secrets.VPS_DEPLOY_PATH }}
             git pull origin main
