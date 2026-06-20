@@ -78,7 +78,9 @@ using mtime LRU policy), `_ensure_chunk_stream` (fallback Telethon disk-or-downl
 and streams local file if active, else chunk-streams via Telethon).
 **Background video compression** (local Bot API mode) lives in **`stream_compress.py`**: `_transcode_worker`
 (ffmpeg → smaller H.264 MP4 in the **persistent** `COMPRESSED_DIR`, keeps same resolution; drops the result +
-writes a `.skip` marker if it isn't ≥5% smaller), `_schedule_transcode` (fire-and-forget, dedup'd),
+writes a `.skip` marker if it isn't ≥5% smaller; runs under `nice -n 19` + optional `VIDEO_TRANSCODE_THREADS`
+cap, preset default `veryfast`, so it never starves streaming/STT on the small VPS),
+`_schedule_transcode` (fire-and-forget, dedup'd),
 `_serve_local_file_range`/`_parse_range` (byte-range serve from any local file), `_compressed_path`,
 `_evict_compressed_if_needed` (optional LRU cap), `init_semaphore` (called from streamer's lifespan).
 `stream` serves the original on the first view (instant) while transcoding in the background; later views
@@ -89,9 +91,17 @@ mid-session. Once the compressed copy is written, `_transcode_worker` calls back
 in-progress stream's open fd keeps reading on Linux); the compressed copy is persistent.
 **Background subtitle generation** (Groq Whisper STT) lives in **`stream_subtitles.py`**: `_extract_audio_chunks`
 (ffmpeg → time-sliced 16 kHz FLAC), `_transcribe_chunk`/`_transcribe_audio` (Groq `audio/transcriptions` with
-**key + model failover** on 429, segment offsets merged), `_translate_segments` (deep-translator → EN/ID,
-timestamps preserved), `_build_vtt`, `_subtitle_worker`/`run_subtitle_job` (single-job, dedup'd via a
-`.done` marker), writes WebVTT to the **persistent** `SUBTITLES_DIR` + a `subtitles` Turso row per lang.
+**key + model failover** on 429; chunks transcribed **CONCURRENTLY**, each on its own rotating key bounded by
+`SUBTITLE_CHUNK_CONCURRENCY`, with an **in-job retry/back-off** `SUBTITLE_CHUNK_RETRY_ATTEMPTS`/`_DELAY_S` so a
+transient blip is retried while the video is still on disk; segment offsets merged), `_translate_segments`
+(deep-translator → EN/ID, timestamps preserved; **always auto-detects source** and **never emits the original
+text as a translation** — a failed segment is dropped, an all-failed track returns None so it's left absent),
+`_build_vtt`/`_parse_vtt`/`_parse_ts` (VTT ↔ segments), `_subtitle_worker`/`run_subtitle_job` (single-job,
+dedup'd via a `.done` marker), writes WebVTT to the **persistent** `SUBTITLES_DIR` + a `subtitles` Turso row per
+lang. **`repair_translations_on_disk`** (run once at backfill start, gated by a `.tlok` marker per part) fixes
+videos whose translations failed under the old logic — re-translating straight from the on-disk original VTT
+(`_repair_one_translation`), so it needs **no video re-download**, only a few translate calls; it also recovers
+the case where the original text had leaked into the EN/ID files.
 Subtitle generation is **absence-driven, NOT view-driven**: the streamer does *not* schedule subtitles when
 a video is played — it is produced solely by the background backfill loop, which subtitles any indexed video
 that has no subtitles yet (keeps playback off the shared STT semaphore). `streamer.py` exposes
@@ -107,11 +117,13 @@ independently; failed chunks don't abort the rest — the successes are cached (
 until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised with whatever partial exists).
 **Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `TURSO_*`, `BOT_TOKEN`, `TELEGRAM_API_URL`
 (enables local Bot API mode), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (cache limit),
-`COMPRESSED_DIR`, `VIDEO_COMPRESS` (1/0), `VIDEO_CRF`, `VIDEO_PRESET`, `VIDEO_MIN_COMPRESS_MB`,
-`VIDEO_TRANSCODE_CONCURRENCY`, `COMPRESSED_MAX_SIZE_GB` (0 = keep forever), `SUBTITLE_GEN` (1/0),
+`COMPRESSED_DIR`, `VIDEO_COMPRESS` (1/0), `VIDEO_CRF`, `VIDEO_PRESET` (default `veryfast`),
+`VIDEO_MIN_COMPRESS_MB`, `VIDEO_TRANSCODE_CONCURRENCY`, `VIDEO_TRANSCODE_THREADS` (0 = auto),
+`COMPRESSED_MAX_SIZE_GB` (0 = keep forever), `SUBTITLE_GEN` (1/0),
 `SUBTITLES_DIR`, `GROQ_API_KEYS` (comma-separated), `GROQ_STT_MODELS`, `SUBTITLE_TARGET_LANGS`,
-`SUBTITLE_CHUNK_SECONDS`, `SUBTITLE_BACKFILL` (1/0), `SUBTITLE_BACKFILL_INTERVAL_S`,
-`SUBTITLE_MAX_REPAIR_ATTEMPTS` (per-chunk repair budget, default 4).
+`SUBTITLE_CHUNK_SECONDS`, `SUBTITLE_CHUNK_CONCURRENCY` (0 = #keys), `SUBTITLE_CHUNK_RETRY_ATTEMPTS`,
+`SUBTITLE_CHUNK_RETRY_DELAY_S`, `SUBTITLE_BACKFILL` (1/0), `SUBTITLE_BACKFILL_INTERVAL_S`,
+`SUBTITLE_MAX_REPAIR_ATTEMPTS` (cross-pass repair budget, default 4).
 
 
 ### Supporting scripts
@@ -222,6 +234,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   to exit** in the Private space); regular tags sorted by usage count (desc); a collapsible **Type Tags**
   group (Image/Video/**Archive**); the storage meter is a button that opens a `StorageDetail` breakdown popup.
   `VideoPlayer.tsx` (Plyr) loads generated subtitle `<track>`s (original + EN + ID) from `/api/subtitles`.
+  Volume/mute **and** the chosen caption language persist globally in `localStorage` (`subtitle-lang`, or
+  `"off"`): each new video auto-activates the saved language via `pickCaptionLang` with the fallback chain
+  **preferred → Indonesian → original**.
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders. `FolderCard` is a **compact
   horizontal tile** (icon + name, no big thumbnail) to avoid wasted space; `FolderRow` for list view.
   File cards keep checkboxes for multi-select, a star toggle, and a kebab action button.

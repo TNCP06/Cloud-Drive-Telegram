@@ -9,6 +9,7 @@ visual quality. Also hosts the local-file byte-range serving helper used for bot
 import asyncio
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from fastapi import Request
@@ -19,9 +20,15 @@ log = logging.getLogger("streamer")
 COMPRESSED_DIR = Path(os.environ.get("COMPRESSED_DIR", "/compressed"))
 VIDEO_COMPRESS = os.environ.get("VIDEO_COMPRESS", "1") not in ("0", "false", "False", "")
 VIDEO_CRF = os.environ.get("VIDEO_CRF", "23")              # 18=near-lossless … 28=smaller
-VIDEO_PRESET = os.environ.get("VIDEO_PRESET", "medium")    # ffmpeg x264 preset (speed/size)
+# x264 preset (speed/size). Default `veryfast`: on a tiny 2-core VPS `medium` pins both cores
+# for over an hour per large video; `veryfast` is ~3–4× faster for only ~10–15% larger output
+# (still a big bandwidth win) and keeps the box responsive. Raise to medium/slow on a beefier host.
+VIDEO_PRESET = os.environ.get("VIDEO_PRESET", "veryfast")
 VIDEO_MIN_COMPRESS_BYTES = int(os.environ.get("VIDEO_MIN_COMPRESS_MB", "20")) * 1048576
 VIDEO_TRANSCODE_CONCURRENCY = int(os.environ.get("VIDEO_TRANSCODE_CONCURRENCY", "1"))
+# Cap x264 worker threads (0 = ffmpeg auto = all cores). Set to 1–2 to guarantee a free core
+# for streaming/STT on a small box. We also `nice` the process so it always yields to them.
+VIDEO_TRANSCODE_THREADS = int(os.environ.get("VIDEO_TRANSCODE_THREADS", "0"))
 # 0 = keep compressed copies forever (persistent). >0 = LRU-cap the compressed dir.
 COMPRESSED_MAX_BYTES = int(os.environ.get("COMPRESSED_MAX_SIZE_GB", "0")) * 1073741824
 
@@ -162,11 +169,17 @@ async def _transcode_worker(part_id: int, src_path: str, on_success=None) -> Non
                 "ffmpeg", "-y", "-i", src_path,
                 "-c:v", "libx264", "-crf", str(VIDEO_CRF), "-preset", VIDEO_PRESET,
                 "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-                # The temp output ends in `.tmp`, so ffmpeg can't infer the container
-                # from the extension — force the MP4 muxer explicitly or it fails with
-                # "Unable to choose an output format" (rc 234).
-                "-f", "mp4", str(out_tmp),
             ]
+            if VIDEO_TRANSCODE_THREADS > 0:
+                cmd += ["-threads", str(VIDEO_TRANSCODE_THREADS)]
+            # The temp output ends in `.tmp`, so ffmpeg can't infer the container from the
+            # extension — force the MP4 muxer explicitly or it fails with "Unable to choose
+            # an output format" (rc 234).
+            cmd += ["-f", "mp4", str(out_tmp)]
+            # Run at the lowest CPU priority so a background transcode never starves live
+            # video streaming or subtitle STT on this small box (`nice` is a no-op if absent).
+            if shutil.which("nice"):
+                cmd = ["nice", "-n", "19", *cmd]
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
             )

@@ -12,8 +12,10 @@ Design mirrors stream_compress.py: single-job concurrency, a `.done` marker so f
 parts aren't retried, and a never-evict persistent store (subtitles are cheap to keep,
 expensive to regenerate, and must survive while the video stays indexed).
 
-Long videos split their audio into several time-sliced chunks, each transcribed
-independently and PER-CHUNK REPAIRABLE: a chunk that fails (e.g. a transient Groq 5xx) does
+Long videos split their audio into several time-sliced chunks transcribed CONCURRENTLY
+(each on a different rotating API key, bounded by SUBTITLE_CHUNK_CONCURRENCY) with an in-job
+retry/back-off so transient Groq blips are absorbed while the video is still on disk. Each chunk
+is also PER-CHUNK REPAIRABLE: a chunk that keeps failing (e.g. a persistent Groq 5xx) does
 not abort the whole video — the chunks that succeeded are cached (`part_{id}.chunks.json`),
 PARTIAL subtitles are written from them, and a `.partial` marker is left so a later backfill
 pass re-transcribes ONLY the missing chunks (resuming from the cache). Once every chunk is in
@@ -54,6 +56,17 @@ SUBTITLE_TARGET_LANGS = [l.strip() for l in os.environ.get(
 # Split audio into chunks of this many seconds to stay under Groq's per-file size cap
 # and to spread requests across keys. Each chunk is offset by index * CHUNK_SECONDS.
 SUBTITLE_CHUNK_SECONDS = int(os.environ.get("SUBTITLE_CHUNK_SECONDS", "600"))
+# Transcribe this many chunks CONCURRENTLY (each on a different rotating API key). Defaults to
+# the number of keys so a long video's chunks fan out across all free-tier keys at once instead
+# of one-at-a-time — finishing far faster and usually within the single download window (so the
+# expensive re-download-to-repair path is rarely needed). Capped at the key count to avoid
+# hammering one key with several parallel requests.
+SUBTITLE_CHUNK_CONCURRENCY = int(os.environ.get("SUBTITLE_CHUNK_CONCURRENCY", "0"))  # 0 = auto
+# In-job retry: while the video is still on disk, a chunk that hits a transient Groq error is
+# retried a few times (after a short back-off) BEFORE being left for the slow repair pass. This
+# absorbs brief Groq blips without re-downloading the whole video.
+SUBTITLE_CHUNK_RETRY_ATTEMPTS = int(os.environ.get("SUBTITLE_CHUNK_RETRY_ATTEMPTS", "3"))
+SUBTITLE_CHUNK_RETRY_DELAY_S = int(os.environ.get("SUBTITLE_CHUNK_RETRY_DELAY_S", "20"))
 # Skip videos shorter/smaller than this (audio extraction still cheap, but avoids noise).
 SUBTITLE_MIN_BYTES = int(os.environ.get("SUBTITLE_MIN_MB", "1")) * 1048576
 
@@ -243,6 +256,45 @@ def _build_vtt(segments: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _parse_ts(s: str) -> float:
+    """Parse a WebVTT/SRT timestamp (HH:MM:SS.mmm or MM:SS.mmm) → seconds."""
+    s = s.strip().replace(",", ".")
+    parts = s.split(":")
+    try:
+        if len(parts) == 3:
+            h, m, rest = parts
+        elif len(parts) == 2:
+            h, (m, rest) = "0", parts
+        else:
+            return 0.0
+        sec, _, ms = rest.partition(".")
+        return int(h) * 3600 + int(m) * 60 + int(sec) + int((ms or "0").ljust(3, "0")[:3]) / 1000.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _parse_vtt(path: Path) -> list[dict]:
+    """Read a WebVTT file back into [{start, end, text}] (inverse of _build_vtt)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        return []
+    segs: list[dict] = []
+    for block in re.split(r"\n\s*\n", text):
+        lines = [l for l in block.splitlines() if l.strip()]
+        ts_idx = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if ts_idx is None:
+            continue
+        m = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?[.,]\d+)\s*-->\s*(\d{1,2}:\d{2}(?::\d{2})?[.,]\d+)",
+                      lines[ts_idx])
+        if not m:
+            continue
+        body = " ".join(lines[ts_idx + 1:]).strip()
+        if body:
+            segs.append({"start": _parse_ts(m.group(1)), "end": _parse_ts(m.group(2)), "text": body})
+    return segs
+
+
 # ---------------------------------------------------------------------------
 # Audio extraction (ffmpeg) — one pass into time-sliced FLAC chunks
 # ---------------------------------------------------------------------------
@@ -271,21 +323,31 @@ async def _extract_audio_chunks(src_path: str, out_dir: Path) -> list[Path]:
 _key_index = 0
 
 
-def _key_order() -> list[str]:
-    """Return the keys starting at a rotating offset so load is spread across calls."""
+def _key_order(start: int | None = None) -> list[str]:
+    """Return the keys starting at an offset so load is spread across calls/chunks.
+
+    `start=None` uses a rotating global counter (sequential callers); pass an explicit offset
+    (e.g. the chunk index) so concurrent chunks each begin on a different key.
+    """
     global _key_index
     if not GROQ_API_KEYS:
         return []
-    start = _key_index % len(GROQ_API_KEYS)
-    _key_index += 1
+    if start is None:
+        start = _key_index
+        _key_index += 1
+    start %= len(GROQ_API_KEYS)
     return GROQ_API_KEYS[start:] + GROQ_API_KEYS[:start]
 
 
-async def _transcribe_chunk(client: httpx.AsyncClient, audio_path: Path) -> dict:
-    """POST one audio chunk to Groq, rotating keys on 429 and models on exhaustion."""
+async def _transcribe_chunk(client: httpx.AsyncClient, audio_path: Path, key_offset: int | None = None) -> dict:
+    """POST one audio chunk to Groq, rotating keys on 429 and models on exhaustion.
+
+    `key_offset` (the chunk index, when called concurrently) picks the starting key so parallel
+    chunks spread across the free-tier keys instead of all starting on the same one.
+    """
     last_err: Exception | None = None
     for model in GROQ_STT_MODELS:
-        for key in _key_order():
+        for key in _key_order(key_offset):
             try:
                 with open(audio_path, "rb") as fh:
                     files = {"file": (audio_path.name, fh, "audio/flac")}
@@ -336,35 +398,58 @@ async def _transcribe_audio(part_id: int, src_path: str) -> tuple[list[dict], st
 
         cache = _load_chunks_cache(part_id)
         cached: dict = cache.get("chunks", {})           # {"<idx>": [ {start,end,text}, … ]}
-        source_lang = cache.get("lang", "xx")
+        state = {"lang": cache.get("lang", "xx")}        # updated under `lock` by concurrent chunks
+
+        nkeys = len(GROQ_API_KEYS) or 1
+        concurrency = SUBTITLE_CHUNK_CONCURRENCY if SUBTITLE_CHUNK_CONCURRENCY > 0 else nkeys
+        concurrency = max(1, min(concurrency, nkeys, total))
+        sem = asyncio.Semaphore(concurrency)
+        lock = asyncio.Lock()
+
+        async def transcribe_one(client: httpx.AsyncClient, idx: int, chunk: Path) -> None:
+            if str(idx) in cached:
+                return  # already transcribed in an earlier attempt — keep it
+            result = None
+            last: Exception | None = None
+            for attempt in range(1, SUBTITLE_CHUNK_RETRY_ATTEMPTS + 1):
+                async with sem:  # bound concurrent Groq requests to the key count
+                    try:
+                        result = await _transcribe_chunk(client, chunk, key_offset=idx)
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        last = e
+                # back off OUTSIDE the semaphore so a sleeping retry frees its slot for others
+                if attempt < SUBTITLE_CHUNK_RETRY_ATTEMPTS:
+                    log.warning("Subtitle: part %d chunk %d attempt %d/%d failed (%s) — retry in %ds",
+                                part_id, idx, attempt, SUBTITLE_CHUNK_RETRY_ATTEMPTS, last,
+                                SUBTITLE_CHUNK_RETRY_DELAY_S)
+                    await asyncio.sleep(SUBTITLE_CHUNK_RETRY_DELAY_S)
+            if result is None:
+                log.warning("Subtitle: part %d chunk %d still failing after %d attempts (%s) "
+                            "— leaving for repair", part_id, idx, SUBTITLE_CHUNK_RETRY_ATTEMPTS, last)
+                return  # missing slot; a later pass retries just this chunk
+            segs = []
+            for seg in result.get("segments", []) or []:
+                text = (seg.get("text") or "").strip()
+                if not text:
+                    continue
+                segs.append({
+                    "start": float(seg.get("start", 0.0)),
+                    "end": float(seg.get("end", 0.0)),
+                    "text": text,
+                })
+            async with lock:
+                if state["lang"] == "xx":
+                    state["lang"] = _iso_from_groq_language(result.get("language"))
+                cached[str(idx)] = segs
+                # Persist after every chunk so progress survives a crash/restart mid-video.
+                _save_chunks_cache(part_id, {"lang": state["lang"], "chunks": cached})
 
         timeout = httpx.Timeout(180.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            for idx, chunk in enumerate(chunks):
-                key = str(idx)
-                if key in cached:
-                    continue  # already transcribed in an earlier attempt — keep it
-                try:
-                    result = await _transcribe_chunk(client, chunk)
-                except Exception as e:  # noqa: BLE001
-                    log.warning("Subtitle: part %d chunk %d failed (%s) — leaving for repair",
-                                part_id, idx, e)
-                    continue  # missing slot; a later pass retries just this chunk
-                if source_lang == "xx":
-                    source_lang = _iso_from_groq_language(result.get("language"))
-                segs = []
-                for seg in result.get("segments", []) or []:
-                    text = (seg.get("text") or "").strip()
-                    if not text:
-                        continue
-                    segs.append({
-                        "start": float(seg.get("start", 0.0)),
-                        "end": float(seg.get("end", 0.0)),
-                        "text": text,
-                    })
-                cached[key] = segs
-                # Persist after every chunk so progress survives a crash/restart mid-video.
-                _save_chunks_cache(part_id, {"lang": source_lang, "chunks": cached})
+            await asyncio.gather(*(transcribe_one(client, idx, chunk)
+                                   for idx, chunk in enumerate(chunks)))
+        source_lang = state["lang"]
 
         # Merge every cached chunk in order, applying each chunk's time offset.
         all_segments: list[dict] = []
@@ -385,23 +470,30 @@ async def _transcribe_audio(part_id: int, src_path: str) -> tuple[list[dict], st
 # ---------------------------------------------------------------------------
 # Translation (deep-translator → Google free endpoint), timestamps preserved
 # ---------------------------------------------------------------------------
-def _translate_segments(segments: list[dict], target: str, source: str) -> list[dict] | None:
+def _translate_segments(segments: list[dict], target: str, source: str | None = None) -> list[dict] | None:
     """Translate segment texts to `target`, keeping timestamps. Runs in a thread (blocking lib).
 
-    Batches segments by character budget and falls back to per-item on a count mismatch
-    so we never misalign text with timestamps. Returns None if the library is missing.
+    Returns None when the result isn't a usable translation (library missing, or essentially no
+    segment actually translated). Crucially it NEVER passes the original-language text through as
+    a "translation": a segment that fails to translate is DROPPED, not emitted verbatim — so we
+    can't end up with an EN/ID track that secretly contains the original language. `source` is
+    accepted for signature compatibility but ignored; we always auto-detect, because passing a
+    specific code (e.g. "zh") can be rejected by the translator and abort the whole track.
     """
+    if not segments:
+        return None
     try:
         from deep_translator import GoogleTranslator
     except Exception as e:  # noqa: BLE001
         log.warning("deep-translator not available (%s) — skipping %s track", e, target)
         return None
 
-    translator = GoogleTranslator(source=source if source not in ("xx", "") else "auto", target=target)
+    translator = GoogleTranslator(source="auto", target=target)
     SEP = "\n"
     CHAR_BUDGET = 3500
 
-    def translate_batch(texts: list[str]) -> list[str]:
+    def translate_batch(texts: list[str]) -> list[str | None]:
+        """Translate a batch → same-length list; a failed item is None (never the original)."""
         if not texts:
             return []
         joined = SEP.join(texts)
@@ -413,30 +505,48 @@ def _translate_segments(segments: list[dict], target: str, source: str) -> list[
                     return parts
         except Exception as e:  # noqa: BLE001
             log.warning("Batch translate to %s failed (%s) — per-item fallback", target, e)
-        out = []
+        out: list[str | None] = []
         for t in texts:
             try:
-                out.append(translator.translate(t) or t)
+                out.append(translator.translate(t) or None)
             except Exception:  # noqa: BLE001
-                out.append(t)
+                out.append(None)
         return out
 
     translated: list[dict] = []
+    ok = 0          # segments that produced a real translation
+    unchanged = 0   # of those, how many came back identical to the source text
+
+    def flush(group: list[dict]) -> None:
+        nonlocal ok, unchanged
+        if not group:
+            return
+        for b, nt in zip(group, translate_batch([g["text"] for g in group])):
+            if not nt or not nt.strip():
+                continue  # drop a failed segment — do NOT emit original-language text
+            ok += 1
+            if nt.strip() == b["text"].strip():
+                unchanged += 1
+            translated.append({"start": b["start"], "end": b["end"], "text": nt})
+
     batch: list[dict] = []
     batch_len = 0
     for seg in segments:
         t = seg["text"]
         if batch and batch_len + len(t) > CHAR_BUDGET:
-            texts = translate_batch([b["text"] for b in batch])
-            for b, nt in zip(batch, texts):
-                translated.append({"start": b["start"], "end": b["end"], "text": nt})
+            flush(batch)
             batch, batch_len = [], 0
         batch.append(seg)
         batch_len += len(t) + 1
-    if batch:
-        texts = translate_batch([b["text"] for b in batch])
-        for b, nt in zip(batch, texts):
-            translated.append({"start": b["start"], "end": b["end"], "text": nt})
+    flush(batch)
+
+    if ok == 0:
+        return None  # nothing translated → caller leaves the track absent
+    if ok > 1 and unchanged >= ok:
+        # Every segment echoed back unchanged → the language pair was a no-op/unsupported, i.e.
+        # this would just be the original text relabelled. Treat as a failed translation.
+        log.warning("Translate to %s left all %d segments unchanged — treating as failed", target, ok)
+        return None
     return translated
 
 
@@ -454,6 +564,110 @@ async def _record_subtitle(db, part_id: int, lang: str) -> None:
         )
     except Exception as e:  # noqa: BLE001
         log.warning("Could not record subtitle row part %d/%s: %s", part_id, lang, e)
+
+
+# ---------------------------------------------------------------------------
+# Translation repair (download-free): fix videos whose translations failed under the old
+# logic, straight from the on-disk original VTT — no video re-download, no Groq STT.
+# Fixes both "only the original track exists" and "EN/ID exist but contain the original text".
+# ---------------------------------------------------------------------------
+def _tl_repair_marker(part_id: int) -> Path:
+    """Present once a part has been through the (one-time) translation-repair pass."""
+    return SUBTITLES_DIR / f"part_{part_id}.tlok"
+
+
+def _part_ids_with_vtt() -> list[int]:
+    if not SUBTITLES_DIR.exists():
+        return []
+    ids = set()
+    for f in SUBTITLES_DIR.glob("part_*.*.vtt"):
+        m = re.match(r"part_(\d+)\.", f.name)
+        if m:
+            ids.add(int(m.group(1)))
+    return sorted(ids)
+
+
+async def _repair_one_translation(db, part_id: int) -> None:
+    langs = set(available_langs(part_id))
+    if not langs:
+        _tl_repair_marker(part_id).write_text("noop", encoding="utf-8")
+        return
+
+    # 1. Work out the source language + which VTT holds the ORIGINAL-language text.
+    src_lang = _load_chunks_cache(part_id).get("lang", "xx")
+    if src_lang in ("xx", ""):
+        non_target = [l for l in sorted(langs) if l not in SUBTITLE_TARGET_LANGS and l != "orig"]
+        src_lang = non_target[0] if non_target else ("orig" if "orig" in langs else "xx")
+
+    orig_file: Path | None = None
+    hidden = False  # original text leaked into the target files (symptom b, no real orig track)
+    if src_lang not in ("xx", "") and subtitle_path(part_id, src_lang).exists():
+        orig_file = subtitle_path(part_id, src_lang)
+    else:
+        # No standalone original track. If two+ target tracks are byte-identical they actually
+        # hold the original-language text → recover from one of them.
+        present = [t for t in SUBTITLE_TARGET_LANGS if subtitle_path(part_id, t).exists()]
+        if len(present) >= 2:
+            contents = {subtitle_path(part_id, t).read_text(encoding="utf-8") for t in present}
+            if len(contents) == 1:
+                orig_file, hidden = subtitle_path(part_id, present[0]), True
+                if src_lang in ("xx", ""):
+                    src_lang = "orig"
+
+    if orig_file is None:
+        _tl_repair_marker(part_id).write_text("noop", encoding="utf-8")  # looks genuinely fine
+        return
+
+    segments = _parse_vtt(orig_file)
+    if not segments:
+        _tl_repair_marker(part_id).write_text("noop", encoding="utf-8")
+        return
+
+    # If the original was hiding inside the target files, write the real original track now.
+    if hidden and src_lang not in ("xx", ""):
+        subtitle_path(part_id, src_lang).write_text(_build_vtt(segments), encoding="utf-8")
+        await _record_subtitle(db, part_id, src_lang)
+
+    orig_text = orig_file.read_text(encoding="utf-8")
+    repaired: list[str] = []
+    for target in SUBTITLE_TARGET_LANGS:
+        if target == src_lang:
+            continue
+        tpath = subtitle_path(part_id, target)
+        # Needs repair if missing, or its content is the original text (symptom b).
+        if not hidden and tpath.exists() and tpath.read_text(encoding="utf-8") != orig_text:
+            continue  # already a genuine, different translation — leave it
+        translated = await asyncio.to_thread(_translate_segments, segments, target, src_lang)
+        if translated:
+            tpath.write_text(_build_vtt(translated), encoding="utf-8")
+            await _record_subtitle(db, part_id, target)
+            repaired.append(target)
+
+    if repaired:
+        log.info("Translation repair: part %d re-translated %s from %s (on-disk, no download)",
+                 part_id, ", ".join(repaired), src_lang)
+    # A part with an original track but no done/partial marker and no chunk cache came from a
+    # fully-transcribed run that only failed at translation → it's complete now, finalise it.
+    if (not _done_marker(part_id).exists() and not _partial_marker(part_id).exists()
+            and not _chunks_cache_path(part_id).exists()):
+        _done_marker(part_id).write_text("ok", encoding="utf-8")
+    _tl_repair_marker(part_id).write_text("done", encoding="utf-8")
+
+
+async def repair_translations_on_disk(db) -> None:
+    """One-time, download-free repair of every part whose translations failed under the old
+    logic. Runs from the persistent /subtitles volume, so it costs nothing but a few Google
+    translate calls. Idempotent: each part is marked (`.tlok`) once handled."""
+    if not (SUBTITLE_GEN and SUBTITLES_DIR.exists()):
+        return
+    for part_id in _part_ids_with_vtt():
+        if _tl_repair_marker(part_id).exists():
+            continue
+        try:
+            await _repair_one_translation(db, part_id)
+        except Exception:  # noqa: BLE001
+            # Leave it unmarked so a transient translate failure is retried next restart.
+            log.exception("Translation repair failed for part %d", part_id)
 
 
 # ---------------------------------------------------------------------------

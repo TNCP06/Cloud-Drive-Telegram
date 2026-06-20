@@ -88,9 +88,10 @@ services:
       COMPRESSED_DIR: /compressed
       VIDEO_COMPRESS: "1"               # set 0 to disable transcoding entirely
       VIDEO_CRF: "23"                   # 18=near-lossless … 28=smaller
-      VIDEO_PRESET: medium              # ffmpeg x264 speed/size tradeoff
+      VIDEO_PRESET: veryfast            # x264 speed/size; veryfast keeps the 2-core box responsive (medium pins it for >1h)
       VIDEO_MIN_COMPRESS_MB: "20"       # skip files smaller than this
       VIDEO_TRANSCODE_CONCURRENCY: "1"  # parallel ffmpeg jobs (CPU-heavy)
+      VIDEO_TRANSCODE_THREADS: "0"      # 0 = ffmpeg auto (all cores); 1-2 = leave a core free. We also `nice` it.
       COMPRESSED_MAX_SIZE_GB: "0"       # 0 = keep forever; >0 = LRU-cap the dir
       # --- background subtitle generation (Groq Whisper STT + translation) ---
       SUBTITLE_GEN: "1"                 # set 0 to disable subtitle generation
@@ -99,6 +100,10 @@ services:
       GROQ_STT_MODELS: whisper-large-v3-turbo,whisper-large-v3
       SUBTITLE_TARGET_LANGS: en,id      # translate every video into these (besides original)
       SUBTITLE_CHUNK_SECONDS: "600"     # audio chunk length to stay under Groq's file cap
+      SUBTITLE_CHUNK_CONCURRENCY: "0"   # 0 = auto (= #keys): transcribe that many chunks at once, each on its own key
+      SUBTITLE_CHUNK_RETRY_ATTEMPTS: "3"    # in-job retries for a transient chunk failure (before leaving it for repair)
+      SUBTITLE_CHUNK_RETRY_DELAY_S: "20"    # back-off between those in-job retries
+      SUBTITLE_MAX_REPAIR_ATTEMPTS: "4"     # cross-pass repair budget before finalising a still-incomplete video
       # --- retroactive backfill: slowly subtitle already-indexed videos (one at a time) ---
       SUBTITLE_BACKFILL: "1"            # set 0 to only subtitle on-demand (no backfill)
       SUBTITLE_BACKFILL_INTERVAL_S: "0"     # extra pace between videos; 0 = back-to-back (3 keys handle Groq)

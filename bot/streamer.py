@@ -72,6 +72,7 @@ from stream_subtitles import (
     is_subtitle_partial,
     partial_part_ids,
     run_subtitle_job,
+    repair_translations_on_disk,
     available_langs,
     subtitle_path,
 )
@@ -942,6 +943,12 @@ async def _subtitle_backfill_loop() -> None:
     if not (SUBTITLE_BACKFILL and SUBTITLE_GEN and GROQ_API_KEYS):
         return
     await asyncio.sleep(SUBTITLE_BACKFILL_START_DELAY_S)
+    # First, a one-time download-free pass that repairs any video whose translations failed
+    # under the old logic (re-translates straight from the on-disk original VTT).
+    try:
+        await repair_translations_on_disk(db)
+    except Exception:  # noqa: BLE001
+        log.exception("Translation repair pass failed")
     pace = f"one every {SUBTITLE_BACKFILL_INTERVAL_S}s" if SUBTITLE_BACKFILL_INTERVAL_S > 0 else "back-to-back"
     log.info("Subtitle backfill enabled — %s", pace)
     while True:

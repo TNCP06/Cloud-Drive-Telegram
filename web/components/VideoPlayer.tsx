@@ -21,6 +21,30 @@ function readSavedVolume(): { volume: number | null; muted: boolean | null } {
   }
 }
 
+// Subtitle language is remembered globally (like volume) so the next video auto-enables the
+// same language. Stored value is a lang code, or "off" if the user turned captions off.
+const SUB_LANG_KEY = "subtitle-lang";
+function readSubPref(): string | null {
+  try {
+    return localStorage.getItem(SUB_LANG_KEY);
+  } catch {
+    return null;
+  }
+}
+function writeSubPref(v: string) {
+  try {
+    localStorage.setItem(SUB_LANG_KEY, v);
+  } catch {}
+}
+// Pick which caption language to activate for a video, given the user's saved preference and the
+// languages this video actually has: preferred → Indonesian → original (a non en/id track) → first.
+function pickCaptionLang(langs: string[], pref: string | null): string | null {
+  if (!langs.length || pref === "off") return null;
+  if (pref && langs.includes(pref)) return pref;
+  if (langs.includes("id")) return "id";
+  return langs.find((l) => l !== "en" && l !== "id") ?? langs[0];
+}
+
 // Human-readable labels for the captions menu. Falls back to the upper-cased code.
 const LANG_NAMES: Record<string, string> = {
   en: "English", id: "Indonesian", orig: "Original", ms: "Malay", ja: "Japanese",
@@ -96,15 +120,16 @@ export function VideoPlayer({
 
       // Load generated subtitle tracks (original + EN + ID) and inject them BEFORE
       // Plyr initialises so they show up in the captions (CC) menu.
+      let captionLangs: string[] = [];
       if (partId) {
         try {
           const res = await fetch(`/api/subtitles/${partId}`);
           if (!destroyed && res.ok) {
             const data = await res.json();
-            const langs: string[] = Array.isArray(data?.langs) ? data.langs : [];
+            captionLangs = Array.isArray(data?.langs) ? data.langs : [];
             const vid = videoRef.current;
             if (vid) {
-              for (const lang of langs) {
+              for (const lang of captionLangs) {
                 if (vid.querySelector(`track[srclang="${lang}"]`)) continue;
                 const track = document.createElement("track");
                 track.kind = "captions";
@@ -121,12 +146,15 @@ export function VideoPlayer({
       }
       if (destroyed || !videoRef.current) return;
 
+      // Decide which caption language to auto-activate from the saved global preference.
+      const chosenLang = pickCaptionLang(captionLangs, readSubPref());
+
       player = new PlyrCtor(videoRef.current, {
         seekTime: 5, // ←/→ seek by 5 seconds
         clickToPlay: false, // we split frame-click (play) vs letterbox-click (close)
         keyboard: { focused: true, global: true },
-        storage: { enabled: false }, // we manage volume/mute persistence ourselves
-        captions: { active: false, language: "auto", update: true },
+        storage: { enabled: false }, // we manage volume/mute + caption-lang persistence ourselves
+        captions: { active: chosenLang != null, language: chosenLang ?? "auto", update: true },
         controls: [
           "play-large",
           "play",
@@ -160,6 +188,17 @@ export function VideoPlayer({
           localStorage.setItem(MUTE_KEY, String(player.muted));
         } catch {}
       });
+
+      // Persist the chosen caption language (or "off") so the next video matches it. Plyr's
+      // currentTrack is the active caption index (-1 = off) into the tracks we appended.
+      const persistCaptionLang = () => {
+        if (!player) return;
+        const idx = player.currentTrack;
+        writeSubPref(idx != null && idx >= 0 && captionLangs[idx] ? captionLangs[idx] : "off");
+      };
+      player.on("languagechange", persistCaptionLang);
+      player.on("captionsenabled", persistCaptionLang);
+      player.on("captionsdisabled", persistCaptionLang);
     })();
 
     return () => {
