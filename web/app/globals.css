@@ -669,6 +669,11 @@ button { font-family: inherit; }
    The scrim sibling isn't part of the fullscreen element, so paint our own black backdrop. */
 .viewer:fullscreen { background: #000; }
 .viewer:-webkit-full-screen { background: #000; }
+/* In fullscreen the floating chrome auto-hides and floats OVER the media, so the stage doesn't
+   reserve any padding — otherwise the nav/strip padding leaves a visible margin around the media
+   (esp. video) even when the bottom box is collapsed. Zero it so media fills edge-to-edge. */
+.viewer:fullscreen .viewer-stage,
+.viewer:-webkit-full-screen .viewer-stage { padding: 0; }
 
 /* Plyr video player. The player fills the entire stage from the first frame —
    even while the stream is still loading — so it never collapses to a tiny box.
