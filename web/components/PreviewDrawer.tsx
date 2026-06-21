@@ -113,18 +113,29 @@ export function PreviewDrawer({
   const [thumbBusy, setThumbBusy] = useState(false);
   const [thumbMsg, setThumbMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<HTMLDivElement>(null);
   const activeThumbRef = useRef<HTMLButtonElement>(null);
   const closeDetails = () => setShowDetails(false);
   // Photo viewing affordances (mirror the PikPak bottom box: counter + filmstrip + rotate/fullscreen).
   const [rotation, setRotation] = useState(0);
   // The bottom box is shown by default; "collapse" hides its filmstrip (chevron or the "E" key).
   const [collapsed, setCollapsed] = useState(false);
+  // Fullscreen the WHOLE viewer (not just the media) so the title, controls and filmstrip stay
+  // visible in fullscreen — otherwise an expanded strip would vanish on entering fullscreen.
   const toggleFullscreen = () => {
-    const el = stageRef.current;
+    const el = viewerRef.current;
     if (!el) return;
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     else el.requestFullscreen?.().catch(() => {});
+  };
+  // Toggle native looping on the current <video> (the "P" shortcut), remembered for the next video.
+  const toggleVideoLoop = () => {
+    const video = document.querySelector<HTMLVideoElement>(".viewer-video video");
+    if (!video) return;
+    video.loop = !video.loop;
+    try {
+      localStorage.setItem("video-loop", String(video.loop));
+    } catch {}
   };
   // Initialise from cache — if the gallery was already loaded (or pre-fetched),
   // all photos appear instantly on first render without a cover flash.
@@ -290,6 +301,22 @@ export function PreviewDrawer({
         return;
       }
 
+      // "F" fullscreens an image (videos keep Plyr's own "f" fullscreen).
+      if ((e.key === "f" || e.key === "F") && isImageStage) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleFullscreen();
+        return;
+      }
+
+      // "P" toggles looping on the current video.
+      if ((e.key === "p" || e.key === "P") && isPartStreamableVideo(activePart, item.kind)) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleVideoLoop();
+        return;
+      }
+
       if (isPartStreamableVideo(activePart, item.kind)) {
         // Shift+arrow → navigate parts/files; plain arrows fall through to Plyr.
         if (e.shiftKey && e.key === "ArrowLeft") {
@@ -322,8 +349,8 @@ export function PreviewDrawer({
         <>
           {/* Backdrop is purely visual now — clicking it must NOT close the viewer. */}
           <div className="viewer-scrim"></div>
-          <div className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "")}>
-            <div className="viewer-stage" ref={stageRef}>
+          <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "")}>
+            <div className="viewer-stage">
               {isPartStreamableVideo(activePart, item.kind) ? (
                 <VideoPlayer
                   key={activePart!.partId}
@@ -332,7 +359,7 @@ export function PreviewDrawer({
                   partId={activePart!.partId}
                 />
               ) : activePart?.thumb ? (
-                <Image src={activePart.thumb} alt={item.name} unoptimized width={0} height={0} sizes="100vw" style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default", transform: rotation ? `rotate(${rotation}deg)` : undefined, transition: "transform .2s ease" }} />
+                <Image src={activePart.thumb} alt={item.name} unoptimized width={0} height={0} sizes="100vw" style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 0, cursor: "default", transform: rotation ? `rotate(${rotation}deg)` : undefined, transition: "transform .2s ease" }} />
               ) : (
                 <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />
               )}

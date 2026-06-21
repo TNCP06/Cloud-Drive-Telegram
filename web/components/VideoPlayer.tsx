@@ -21,6 +21,16 @@ function readSavedVolume(): { volume: number | null; muted: boolean | null } {
   }
 }
 
+// Looping is remembered globally (toggled by the "P" shortcut in the viewer) so the next video
+// keeps the same loop setting.
+function readLoopPref(): boolean {
+  try {
+    return localStorage.getItem("video-loop") === "true";
+  } catch {
+    return false;
+  }
+}
+
 // Subtitle language is remembered globally (like volume) so the next video auto-enables the
 // same language. Stored value is a lang code, or "off" if the user turned captions off.
 const SUB_LANG_KEY = "subtitle-lang";
@@ -175,6 +185,7 @@ export function VideoPlayer({
           if (volume !== null) player.volume = volume;
           if (muted !== null) player.muted = muted;
         }
+        if (videoRef.current) videoRef.current.loop = readLoopPref();
         videoRef.current?.focus();
       });
 
