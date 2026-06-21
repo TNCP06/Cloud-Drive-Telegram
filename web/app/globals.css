@@ -655,12 +655,12 @@ button { font-family: inherit; }
 .viewer-stage {
   position: absolute; inset: 0; z-index: 1;
   display: flex; align-items: center; justify-content: center;
-  /* Media is pulled flush to the very top (the title bar floats over it); the bottom is reserved
-     for the always-visible bottom box. */
-  padding: 0 16px 58px; cursor: default;
+  /* Media is pulled flush to the very top (title bar floats over it) AND flush to the bottom box —
+     no padding/gap on either edge. When the box is collapsed (no .has-bottom) the media fills fully. */
+  padding: 0 16px; cursor: default;
 }
 .viewer.has-nav .viewer-stage { padding-left: 60px; padding-right: 60px; }
-.viewer.has-strip .viewer-stage { padding-bottom: 134px; }
+.viewer.has-bottom .viewer-stage { padding-bottom: 54px; }
 .viewer-stage img {
   max-width: 100%; max-height: 100%; min-width: 0; min-height: 0;
   object-fit: contain; border-radius: var(--r-sm); cursor: default;
@@ -714,44 +714,45 @@ button { font-family: inherit; }
 .viewer-nav.prev { left: 14px; }
 .viewer-nav.next { right: 14px; }
 
+/* Kontrol mengambang di atas kotak bawah (seperti judul): counter + chevron collapse (tengah) dan
+   rotate/fullscreen (kanan). pointer-events dimatikan agar area kosong tak menghalangi media. */
+.viewer-floatbar {
+  position: absolute; left: 0; right: 0; z-index: 4;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  padding: 0 14px; pointer-events: none; transition: bottom .18s ease;
+}
+.viewer-floatbar > * { pointer-events: auto; }
+.viewer-floatcenter { justify-self: center; display: inline-flex; align-items: center; gap: 10px; }
+.viewer-botbtns { justify-self: end; display: flex; align-items: center; gap: 6px; }
+.viewer-count {
+  color: #fff; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+  padding: 3px 10px; border-radius: 99px; background: color-mix(in oklab, #000 48%, transparent);
+}
+
+/* Kotak bawah = filmstrip: bar SOLID full-bleed, tipis, tanpa margin, menempel ke media.
+   Selalu tampil (termasuk media tanpa parts); collapse menyembunyikannya → media membesar penuh. */
+.viewer-bottom {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  background: #0b0b0c;
+}
 .viewer-strip {
-  display: flex; gap: 8px; justify-content: center; flex-wrap: nowrap;
-  overflow-x: auto; padding: 2px 16px calc(12px + env(safe-area-inset-bottom));
+  display: flex; gap: 6px; justify-content: center; flex-wrap: nowrap;
+  overflow-x: auto; padding: 6px 12px;
 }
 .viewer-thumb {
-  position: relative; flex: none; width: 52px; height: 52px; padding: 0; border: 2px solid transparent;
-  border-radius: var(--r-md); overflow: hidden; cursor: pointer; opacity: .5;
-  background: color-mix(in oklab, #fff 10%, transparent); transition: opacity .14s ease, border-color .14s ease;
+  position: relative; flex: none; width: 42px; height: 42px; padding: 0; border: 2px solid transparent;
+  border-radius: var(--r-sm); overflow: hidden; cursor: pointer; opacity: .55;
+  background: #1a1a1c; transition: opacity .14s ease, border-color .14s ease;
 }
 .viewer-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .viewer-thumb:hover { opacity: .85; }
 .viewer-thumb.on { opacity: 1; border-color: #fff; }
-
-/* Kotak bawah: bar solid selebar layar yang SELALU tampil (tidak bergantung "parts").
-   Baris kontrol = pencacah + chevron collapse (tengah) & rotate/fullscreen (kanan);
-   filmstrip muncul di bawahnya dan bisa di-collapse (chevron / tombol "E"). */
-.viewer-bottom {
-  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
-  display: flex; flex-direction: column;
-  background: color-mix(in oklab, #000 70%, transparent);
-  backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
-  border-top: 1px solid color-mix(in oklab, #fff 10%, transparent);
-}
-.viewer-bottom-bar {
-  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
-  gap: 8px; padding: 9px 14px;
-}
-.viewer-bottom-side { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.viewer-bottom-center { justify-self: center; display: inline-flex; align-items: center; gap: 10px; }
-.viewer-botbtns { justify-self: end; justify-content: flex-end; }
-.viewer-count { color: #fff; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; opacity: .9; }
 /* panel detail tampil di atas lightbox */
 .viewer ~ .drawer-scrim { z-index: 170; }
 .viewer ~ .drawer { z-index: 180; }
 
 @media (max-width: 520px) {
   .viewer.has-nav .viewer-stage { padding-left: 44px; padding-right: 44px; }
-  .viewer.has-strip .viewer-stage { padding-bottom: 128px; }
   .viewer-nav { width: 38px; height: 38px; }
   .viewer-nav.prev { left: 8px; }
   .viewer-nav.next { right: 8px; }

@@ -213,11 +213,11 @@ export function PreviewDrawer({
     setGallery(null);
   }, [item.id, item.kind, item.parts]);
 
+  // Always ≥1 entry (the item itself when there's no multi-part gallery) so the bottom box's
+  // filmstrip stays consistent — and present — even for single/thumbless media.
   const partsList: GalleryPart[] = gallery && gallery.length > 0
     ? gallery
-    : item.thumb
-      ? [{ partId: item.firstPartId ?? 0, fileName: item.fileName, thumb: item.thumb }]
-      : [];
+    : [{ partId: item.firstPartId ?? 0, fileName: item.fileName, thumb: item.thumb }];
   const activePart = partsList[Math.min(activeIdx, partsList.length - 1)] as GalleryPart | undefined;
 
   // Items without images (archives/etc.) still display full-screen with a large
@@ -229,7 +229,6 @@ export function PreviewDrawer({
   const canNext = activeIdx < last || hasNextFile;
   // A still image on the stage gets the bottom-right rotate + fullscreen controls.
   const isImageStage = !!activePart?.thumb && !isPartStreamableVideo(activePart, item.kind);
-  const showStrip = multi && !collapsed;
 
   // Move to the next/previous part; if already at the edge, jump to the next file.
   const go = useCallback((delta: number) => {
@@ -308,7 +307,7 @@ export function PreviewDrawer({
         <>
           {/* Backdrop is purely visual now — clicking it must NOT close the viewer. */}
           <div className="viewer-scrim"></div>
-          <div className={"viewer has-bottom" + (showStrip ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
+          <div className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "")}>
             <div className="viewer-stage" ref={stageRef}>
               {isPartStreamableVideo(activePart, item.kind) ? (
                 <VideoPlayer
@@ -379,48 +378,49 @@ export function PreviewDrawer({
               </>
             )}
 
-            {/* Bottom box (PikPak-style) — a full-width solid bar that is ALWAYS visible. Its
-                control row holds the part counter + collapse chevron (center) and rotate/
-                fullscreen (right); the thumbnail filmstrip sits below it and collapses with the
-                chevron or the "E" key. */}
-            <div className="viewer-bottom">
-              <div className="viewer-bottom-bar">
-                <div className="viewer-bottom-side" />
-                <div className="viewer-bottom-center">
-                  {multi && (
-                    <span className="viewer-count">{Math.min(activeIdx, last) + 1} / {partsList.length}</span>
-                  )}
-                  <button
-                    className="viewer-iconbtn"
-                    onClick={() => setCollapsed((c) => !c)}
-                    title={collapsed ? "Expand (E)" : "Collapse (E)"}
-                  >
-                    <Icon name={collapsed ? "chevup" : "chevdown"} size={16} />
-                  </button>
-                </div>
-                <div className="viewer-bottom-side viewer-botbtns">
-                  {isImageStage && (
-                    <>
-                      <button
-                        className="viewer-iconbtn"
-                        onClick={() => setRotation((r) => (r + 90) % 360)}
-                        title="Rotate"
-                      >
-                        <Icon name="rotate" size={16} />
-                      </button>
-                      <button
-                        className="viewer-iconbtn"
-                        onClick={toggleFullscreen}
-                        title="Fullscreen"
-                      >
-                        <Icon name="expand" size={16} />
-                      </button>
-                    </>
-                  )}
-                </div>
+            {/* Floating controls over the media (like the title bar), just above the bottom box:
+                part counter + collapse chevron (center) and rotate/fullscreen (right). The collapse
+                chevron / "E" hides the box so the media grows to fill the freed space. */}
+            <div className="viewer-floatbar" style={{ bottom: collapsed ? 14 : 60 }}>
+              <div />
+              <div className="viewer-floatcenter">
+                {multi && (
+                  <span className="viewer-count">{Math.min(activeIdx, last) + 1} / {partsList.length}</span>
+                )}
+                <button
+                  className="viewer-iconbtn"
+                  onClick={() => setCollapsed((c) => !c)}
+                  title={collapsed ? "Expand (E)" : "Collapse (E)"}
+                >
+                  <Icon name={collapsed ? "chevup" : "chevdown"} size={16} />
+                </button>
               </div>
+              <div className="viewer-botbtns">
+                {isImageStage && (
+                  <>
+                    <button
+                      className="viewer-iconbtn"
+                      onClick={() => setRotation((r) => (r + 90) % 360)}
+                      title="Rotate"
+                    >
+                      <Icon name="rotate" size={16} />
+                    </button>
+                    <button
+                      className="viewer-iconbtn"
+                      onClick={toggleFullscreen}
+                      title="Fullscreen"
+                    >
+                      <Icon name="expand" size={16} />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
 
-              {showStrip && (
+            {/* Bottom box = a solid, full-bleed, thin filmstrip flush to the media. Always present
+                (even single media) unless collapsed, where it's removed so the media fills fully. */}
+            {!collapsed && (
+              <div className="viewer-bottom">
                 <div className="viewer-strip">
                   {partsList.map((part, i) => (
                     <button
@@ -439,8 +439,8 @@ export function PreviewDrawer({
                     </button>
                   ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </>
       )}
