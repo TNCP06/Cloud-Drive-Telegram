@@ -81,6 +81,8 @@ export function PreviewDrawer({
   onSave,
   onDownload,
   onToggleStar,
+  navFiles,
+  onJumpToFile,
   initialEditing = false,
   initialShowDetails = false,
   detailsOnly = false,
@@ -94,6 +96,8 @@ export function PreviewDrawer({
   onSave: (item: DriveFile, input: { title: string; kind: Kind; tags: string }) => void;
   onDownload?: () => void;
   onToggleStar?: () => void;
+  navFiles?: DriveFile[];
+  onJumpToFile?: (file: DriveFile) => void;
   initialEditing?: boolean;
   initialShowDetails?: boolean;
   detailsOnly?: boolean;
@@ -110,6 +114,7 @@ export function PreviewDrawer({
   const [thumbMsg, setThumbMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const activeThumbRef = useRef<HTMLButtonElement>(null);
   const closeDetails = () => setShowDetails(false);
   // Photo viewing affordances (mirror the PikPak bottom box: counter + filmstrip + rotate/fullscreen).
   const [rotation, setRotation] = useState(0);
@@ -144,6 +149,11 @@ export function PreviewDrawer({
   useEffect(() => {
     setRotation(0);
   }, [item.id, activeIdx]);
+
+  // Keep the active thumbnail scrolled into view as the current media changes.
+  useEffect(() => {
+    activeThumbRef.current?.scrollIntoView({ inline: "center", block: "nearest" });
+  }, [item.id, collapsed]);
 
   const onRefreshThumb = async () => {
     setThumbBusy(true);
@@ -222,13 +232,18 @@ export function PreviewDrawer({
 
   // Items without images (archives/etc.) still display full-screen with a large
   // icon + title + kebab; details appear when the kebab is pressed, same as for photos.
-  const multi = partsList.length > 1;
   const last = partsList.length - 1;
   // Navigation past a part boundary → jump to the neighbouring file in the list.
   const canPrev = activeIdx > 0 || hasPrevFile;
   const canNext = activeIdx < last || hasNextFile;
   // A still image on the stage gets the bottom-right rotate + fullscreen controls.
   const isImageStage = !!activePart?.thumb && !isPartStreamableVideo(activePart, item.kind);
+
+  // The bottom filmstrip lists the OTHER media in this view (siblings from the parent's nav list),
+  // each as one thumbnail titled by its own media name — clicking jumps straight to it. Falls back
+  // to just the current item when no list was provided.
+  const stripFiles: DriveFile[] = navFiles && navFiles.length > 0 ? navFiles : [item];
+  const mediaIndex = Math.max(0, stripFiles.findIndex((f) => f.id === item.id));
 
   // Move to the next/previous part; if already at the edge, jump to the next file.
   const go = useCallback((delta: number) => {
@@ -381,11 +396,11 @@ export function PreviewDrawer({
             {/* Floating controls over the media (like the title bar), just above the bottom box:
                 part counter + collapse chevron (center) and rotate/fullscreen (right). The collapse
                 chevron / "E" hides the box so the media grows to fill the freed space. */}
-            <div className="viewer-floatbar" style={{ bottom: collapsed ? 14 : 60 }}>
+            <div className="viewer-floatbar" style={{ bottom: collapsed ? 14 : 64 }}>
               <div />
               <div className="viewer-floatcenter">
-                {multi && (
-                  <span className="viewer-count">{Math.min(activeIdx, last) + 1} / {partsList.length}</span>
+                {stripFiles.length > 1 && (
+                  <span className="viewer-count">{mediaIndex + 1} / {stripFiles.length}</span>
                 )}
                 <button
                   className="viewer-iconbtn"
@@ -422,22 +437,26 @@ export function PreviewDrawer({
             {!collapsed && (
               <div className="viewer-bottom">
                 <div className="viewer-strip">
-                  {partsList.map((part, i) => (
-                    <button
-                      key={i}
-                      className={"viewer-thumb" + (i === activeIdx ? " on" : "")}
-                      onClick={() => setActiveIdx(i)}
-                      title={`Part ${i + 1}`}
-                    >
-                      {part.thumb ? (
-                        <Image src={part.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
-                      ) : (
-                        <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
-                          <Icon name={isPartStreamableVideo(part, item.kind) ? "video" : "file"} size={16} />
-                        </div>
-                      )}
-                    </button>
-                  ))}
+                  {stripFiles.map((f) => {
+                    const on = f.id === item.id;
+                    return (
+                      <button
+                        key={f.id}
+                        ref={on ? activeThumbRef : undefined}
+                        className={"viewer-thumb" + (on ? " on" : "")}
+                        onClick={() => { if (!on) onJumpToFile?.(f); }}
+                        title={f.version ? f.family : f.name}
+                      >
+                        {f.thumb ? (
+                          <Image src={f.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+                        ) : (
+                          <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
+                            <Icon name={KINDS[f.kind]?.icon || "file"} size={16} />
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}

@@ -935,6 +935,8 @@ export function DriveApp({
           hasPrevFile={hasPrevFile}
           hasNextFile={hasNextFile}
           onNavigateFile={navigatePreview}
+          navFiles={navList}
+          onJumpToFile={(f) => setPreviewId(f.id)}
           onClose={closePreview}
           onSave={(it, input) => {
             doSave(it, input);
