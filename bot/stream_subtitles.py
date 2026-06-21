@@ -618,26 +618,42 @@ async def _record_subtitle(db, part_id: int, lang: str) -> None:
 # logic, straight from the on-disk original VTT — no video re-download, no Groq STT.
 # Fixes both "only the original track exists" and "EN/ID exist but contain the original text".
 # ---------------------------------------------------------------------------
+# Bump when the repair LOGIC changes so every part is re-examined once under the new rules. v2
+# re-translates every target from the known source (v1 used Google auto-detect, which silently
+# echoed some content — e.g. Traditional Chinese — leaving target tracks partly untranslated).
+_TL_REPAIR_VERSION = "2"
+
+
 def _tl_repair_marker(part_id: int) -> Path:
-    """Records translation-repair progress. Holds `ok`/`noop` once finalised, else an attempt
-    count so a still-incomplete part is retried (up to SUBTITLE_TL_REPAIR_MAX) on later passes."""
+    """Records translation-repair progress as `<version>|<state>`. State holds `ok`/`noop` once
+    finalised, else an attempt count so a still-incomplete part is retried (≤ SUBTITLE_TL_REPAIR_MAX).
+    A marker from an older version is reprocessed (re-translated) under the current rules."""
     return SUBTITLES_DIR / f"part_{part_id}.tlok"
 
 
-def _tl_repair_state(part_id: int) -> str | int | None:
-    """None = never attempted; "ok"/"noop" = finalised (skip); int = attempts so far (retry)."""
+def _tl_repair_state(part_id: int) -> tuple[str | None, str | int] | None:
+    """None = never attempted; else (version, state) where state is "ok"/"noop"/int(attempts).
+    A legacy marker (no version, e.g. old "done"/"ok") returns version None → eligible to reprocess."""
     p = _tl_repair_marker(part_id)
     if not p.exists():
         return None
     try:
         txt = p.read_text(encoding="utf-8").strip()
     except Exception:  # noqa: BLE001
-        return 0
-    if txt in ("ok", "noop"):
-        return txt
-    if txt.isdigit():
-        return int(txt)
-    return 0  # legacy/unknown marker (e.g. old "done") → eligible to reprocess
+        return (None, 0)
+    ver, sep, rest = txt.partition("|")
+    if not sep:  # legacy unversioned marker → force reprocess under the current version
+        return (None, 0)
+    rest = rest.strip()
+    state: str | int = rest if rest in ("ok", "noop") else (int(rest) if rest.isdigit() else 0)
+    return (ver, state)
+
+
+def _write_tl_marker(part_id: int, state: str | int) -> None:
+    try:
+        _tl_repair_marker(part_id).write_text(f"{_TL_REPAIR_VERSION}|{state}", encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _expected_targets(src_lang: str) -> list[str]:
@@ -658,8 +674,17 @@ def _part_ids_with_vtt() -> list[int]:
 async def _repair_one_translation(db, part_id: int) -> None:
     langs = set(available_langs(part_id))
     if not langs:
-        _tl_repair_marker(part_id).write_text("noop", encoding="utf-8")
+        _write_tl_marker(part_id, "noop")
         return
+
+    # Under a NEW repair version, re-translate every target once (overwriting a track that an
+    # older version mistranslated/echoed); within the same version we only fill genuine gaps.
+    st = _tl_repair_state(part_id)
+    old_version = st[0] if st else None
+    attempts = st[1] if (st and isinstance(st[1], int)) else 0
+    force = old_version != _TL_REPAIR_VERSION
+    if force:
+        attempts = 0
 
     # 1. Work out the source language + which VTT holds the ORIGINAL-language text.
     src_lang = _load_chunks_cache(part_id).get("lang", "xx")
@@ -683,12 +708,12 @@ async def _repair_one_translation(db, part_id: int) -> None:
                     src_lang = "orig"
 
     if orig_file is None:
-        _tl_repair_marker(part_id).write_text("noop", encoding="utf-8")  # looks genuinely fine
+        _write_tl_marker(part_id, "noop")  # looks genuinely fine
         return
 
     segments = _parse_vtt(orig_file)
     if not segments:
-        _tl_repair_marker(part_id).write_text("noop", encoding="utf-8")
+        _write_tl_marker(part_id, "noop")
         return
 
     # If the original was hiding inside the target files, write the real original track now.
@@ -700,10 +725,12 @@ async def _repair_one_translation(db, part_id: int) -> None:
     repaired: list[str] = []
     for target in _expected_targets(src_lang):
         tpath = subtitle_path(part_id, target)
-        # Needs repair if missing, or its content is the original text (symptom b).
-        if not hidden and tpath.exists() and tpath.read_text(encoding="utf-8") != orig_text:
+        # On a version bump (`force`) re-translate every target — an older version may have
+        # written a track that's partly the original language. Otherwise only fill genuine gaps:
+        # a missing track, or one whose content is still the original text (symptom b).
+        if not force and not hidden and tpath.exists() and tpath.read_text(encoding="utf-8") != orig_text:
             continue  # already a genuine, different translation — leave it
-        translated = await _translate_track(segments, target, src_lang)  # retries on no-op/throttle
+        translated = await _translate_track(segments, target, src_lang)  # known source + retries
         if translated:
             tpath.write_text(_build_vtt(translated), encoding="utf-8")
             await _record_subtitle(db, part_id, target)
@@ -717,21 +744,18 @@ async def _repair_one_translation(db, part_id: int) -> None:
     # persistent Google throttle), bump the attempt count so a later pass retries it — until the
     # budget runs out — instead of marking it done and dropping the language forever.
     missing = [t for t in _expected_targets(src_lang) if not subtitle_path(part_id, t).exists()]
-    state = _tl_repair_state(part_id)
-    attempts = state if isinstance(state, int) else 0
     if not missing or attempts + 1 >= SUBTITLE_TL_REPAIR_MAX:
         # A part with an original track but no done/partial marker and no chunk cache came from a
         # fully-transcribed run that only failed at translation → it's complete now, finalise it.
         if (not _done_marker(part_id).exists() and not _partial_marker(part_id).exists()
                 and not _chunks_cache_path(part_id).exists()):
             _done_marker(part_id).write_text("ok", encoding="utf-8")
-        _tl_repair_marker(part_id).write_text("ok" if not missing else str(attempts + 1),
-                                               encoding="utf-8")
+        _write_tl_marker(part_id, "ok" if not missing else attempts + 1)
         if missing:
             log.warning("Translation repair: part %d giving up on %s after %d attempts",
                         part_id, ", ".join(missing), attempts + 1)
     else:
-        _tl_repair_marker(part_id).write_text(str(attempts + 1), encoding="utf-8")
+        _write_tl_marker(part_id, attempts + 1)
         log.info("Translation repair: part %d still missing %s — will retry next pass (attempt %d/%d)",
                  part_id, ", ".join(missing), attempts + 1, SUBTITLE_TL_REPAIR_MAX)
 
@@ -744,9 +768,13 @@ async def repair_translations_on_disk(db) -> None:
     if not (SUBTITLE_GEN and SUBTITLES_DIR.exists()):
         return
     for part_id in _part_ids_with_vtt():
-        state = _tl_repair_state(part_id)
-        if state in ("ok", "noop") or (isinstance(state, int) and state >= SUBTITLE_TL_REPAIR_MAX):
-            continue
+        st = _tl_repair_state(part_id)
+        if st is not None and st[0] == _TL_REPAIR_VERSION:
+            ver, state = st
+            # Finalised under the CURRENT version, or out of retries → skip. An older version is
+            # always reprocessed (re-translated under the new rules).
+            if state in ("ok", "noop") or (isinstance(state, int) and state >= SUBTITLE_TL_REPAIR_MAX):
+                continue
         try:
             await _repair_one_translation(db, part_id)
         except Exception:  # noqa: BLE001
