@@ -660,7 +660,7 @@ button { font-family: inherit; }
   padding: 0 16px; cursor: default;
 }
 .viewer.has-nav .viewer-stage { padding-left: 60px; padding-right: 60px; }
-.viewer.has-bottom .viewer-stage { padding-bottom: 58px; }
+.viewer.has-bottom .viewer-stage { padding-bottom: 85px; }
 .viewer-stage img {
   max-width: 100%; max-height: 100%; min-width: 0; min-height: 0;
   object-fit: contain; border-radius: 0; cursor: default;
@@ -693,7 +693,14 @@ button { font-family: inherit; }
   position: absolute; top: 0; left: 0; right: 0; z-index: 3;
   display: flex; align-items: center; gap: 10px; padding: 10px 12px;
   background: linear-gradient(to bottom, color-mix(in oklab, #000 50%, transparent), transparent);
+  transition: transform .25s ease, opacity .25s ease;
 }
+
+/* Auto-hide: slide the floating chrome out when the cursor leaves the window / idles in fullscreen. */
+.viewer.chrome-hidden { cursor: none; }
+.viewer.chrome-hidden .viewer-top { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+.viewer.chrome-hidden .viewer-floatbar { transform: translateY(150%); opacity: 0; pointer-events: none; }
+.viewer.chrome-hidden .viewer-nav { opacity: 0; pointer-events: none; }
 .viewer-name { flex: 1; min-width: 0; color: #fff; font-size: 13px; font-weight: 600; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .92; }
 .viewer-tools { flex: none; display: flex; align-items: center; gap: 6px; }
 .viewer-sep { flex: none; width: 1px; height: 20px; margin: 0 3px; background: color-mix(in oklab, #fff 24%, transparent); }
@@ -710,7 +717,7 @@ button { font-family: inherit; }
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 3;
   width: 42px; height: 42px; border: 0; border-radius: 99px; cursor: pointer;
   display: grid; place-items: center; color: #fff;
-  background: color-mix(in oklab, #000 35%, transparent); transition: background .14s ease;
+  background: color-mix(in oklab, #000 35%, transparent); transition: background .14s ease, opacity .25s ease;
 }
 .viewer-nav:hover { background: color-mix(in oklab, #000 60%, transparent); }
 .viewer-nav:disabled { opacity: .28; cursor: default; }
@@ -723,7 +730,7 @@ button { font-family: inherit; }
 .viewer-floatbar {
   position: absolute; left: 0; right: 0; z-index: 4;
   display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
-  padding: 0 14px; pointer-events: none; transition: bottom .18s ease;
+  padding: 0 14px; pointer-events: none; transition: bottom .18s ease, transform .25s ease, opacity .25s ease;
 }
 .viewer-floatbar > * { pointer-events: auto; }
 .viewer-floatcenter { justify-self: center; display: inline-flex; align-items: center; gap: 10px; }
@@ -744,7 +751,7 @@ button { font-family: inherit; }
   overflow-x: auto; padding: 0;
 }
 .viewer-thumb {
-  position: relative; flex: none; width: 58px; height: 58px; padding: 0; border: 2px solid transparent;
+  position: relative; flex: none; width: 85px; height: 85px; padding: 0; border: 2px solid transparent;
   border-radius: 0; overflow: hidden; cursor: pointer; opacity: .55;
   background: #1a1a1c; transition: opacity .14s ease, border-color .14s ease;
 }

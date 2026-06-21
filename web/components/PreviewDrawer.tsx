@@ -120,6 +120,9 @@ export function PreviewDrawer({
   const [rotation, setRotation] = useState(0);
   // The bottom box is shown by default; "collapse" hides its filmstrip (chevron or the "E" key).
   const [collapsed, setCollapsed] = useState(false);
+  // Floating chrome (title bar, control float-row, nav arrows) slides away when the cursor leaves
+  // the window, and — in fullscreen — after the mouse sits idle for a few seconds.
+  const [chromeHidden, setChromeHidden] = useState(false);
   // Fullscreen the WHOLE viewer (not just the media) so the title, controls and filmstrip stay
   // visible in fullscreen — otherwise an expanded strip would vanish on entering fullscreen.
   const toggleFullscreen = () => {
@@ -165,6 +168,32 @@ export function PreviewDrawer({
   useEffect(() => {
     activeThumbRef.current?.scrollIntoView({ inline: "center", block: "nearest" });
   }, [item.id, collapsed]);
+
+  // Auto-hide the floating chrome: hide when the cursor leaves the window; in fullscreen also hide
+  // after the mouse is idle a few seconds, revealing it again on any movement.
+  useEffect(() => {
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const clearIdle = () => { if (idle) { clearTimeout(idle); idle = undefined; } };
+    const onMove = () => {
+      setChromeHidden(false);
+      clearIdle();
+      if (document.fullscreenElement) idle = setTimeout(() => setChromeHidden(true), 2500);
+    };
+    const onOut = (e: MouseEvent) => { if (!e.relatedTarget) setChromeHidden(true); }; // left the window
+    const onOver = () => setChromeHidden(false);
+    const onFsChange = () => { clearIdle(); setChromeHidden(false); };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseout", onOut);
+    document.addEventListener("mouseover", onOver);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => {
+      clearIdle();
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseout", onOut);
+      document.removeEventListener("mouseover", onOver);
+      document.removeEventListener("fullscreenchange", onFsChange);
+    };
+  }, []);
 
   const onRefreshThumb = async () => {
     setThumbBusy(true);
@@ -250,11 +279,32 @@ export function PreviewDrawer({
   // A still image on the stage gets the bottom-right rotate + fullscreen controls.
   const isImageStage = !!activePart?.thumb && !isPartStreamableVideo(activePart, item.kind);
 
-  // The bottom filmstrip lists the OTHER media in this view (siblings from the parent's nav list),
-  // each as one thumbnail titled by its own media name — clicking jumps straight to it. Falls back
-  // to just the current item when no list was provided.
+  // The bottom filmstrip lists the OTHER media in this view (siblings from the parent's nav list).
+  // The CURRENTLY-OPEN item expands into its individual parts so an album's photos each show as a
+  // clickable thumb; every other item shows a single cover thumb. Clicking a part scrubs within the
+  // album; clicking another item jumps to it. Falls back to just the current item with no nav list.
   const stripFiles: DriveFile[] = navFiles && navFiles.length > 0 ? navFiles : [item];
-  const mediaIndex = Math.max(0, stripFiles.findIndex((f) => f.id === item.id));
+  const stripThumbs = stripFiles.flatMap((f) => {
+    if (f.id === item.id && gallery && gallery.length > 1) {
+      return gallery.map((part, i) => ({
+        key: `${f.id}:${i}`,
+        thumb: part.thumb,
+        title: item.version ? item.family : item.name,
+        active: i === activeIdx,
+        icon: isPartStreamableVideo(part, item.kind) ? "video" : "image",
+        onClick: () => setActiveIdx(i),
+      }));
+    }
+    return [{
+      key: `${f.id}`,
+      thumb: f.thumb,
+      title: f.version ? f.family : f.name,
+      active: f.id === item.id,
+      icon: KINDS[f.kind]?.icon || "file",
+      onClick: () => { if (f.id !== item.id) onJumpToFile?.(f); },
+    }];
+  });
+  const activeThumbIndex = Math.max(0, stripThumbs.findIndex((t) => t.active));
 
   // Move to the next/previous part; if already at the edge, jump to the next file.
   const go = useCallback((delta: number) => {
@@ -302,7 +352,8 @@ export function PreviewDrawer({
       }
 
       // "F" fullscreens an image (videos keep Plyr's own "f" fullscreen).
-      if ((e.key === "f" || e.key === "F") && isImageStage) {
+      const onImage = !!activePart?.thumb && !isPartStreamableVideo(activePart, item.kind);
+      if ((e.key === "f" || e.key === "F") && onImage) {
         e.preventDefault();
         e.stopPropagation();
         toggleFullscreen();
@@ -349,7 +400,7 @@ export function PreviewDrawer({
         <>
           {/* Backdrop is purely visual now — clicking it must NOT close the viewer. */}
           <div className="viewer-scrim"></div>
-          <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "")}>
+          <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "") + (chromeHidden ? " chrome-hidden" : "")}>
             <div className="viewer-stage">
               {isPartStreamableVideo(activePart, item.kind) ? (
                 <VideoPlayer
@@ -423,11 +474,11 @@ export function PreviewDrawer({
             {/* Floating controls over the media (like the title bar), just above the bottom box:
                 part counter + collapse chevron (center) and rotate/fullscreen (right). The collapse
                 chevron / "E" hides the box so the media grows to fill the freed space. */}
-            <div className="viewer-floatbar" style={{ bottom: collapsed ? 14 : 64 }}>
+            <div className="viewer-floatbar" style={{ bottom: collapsed ? 14 : 91 }}>
               <div />
               <div className="viewer-floatcenter">
-                {stripFiles.length > 1 && (
-                  <span className="viewer-count">{mediaIndex + 1} / {stripFiles.length}</span>
+                {stripThumbs.length > 1 && (
+                  <span className="viewer-count">{activeThumbIndex + 1} / {stripThumbs.length}</span>
                 )}
                 <button
                   className="viewer-iconbtn"
@@ -464,26 +515,23 @@ export function PreviewDrawer({
             {!collapsed && (
               <div className="viewer-bottom">
                 <div className="viewer-strip">
-                  {stripFiles.map((f) => {
-                    const on = f.id === item.id;
-                    return (
-                      <button
-                        key={f.id}
-                        ref={on ? activeThumbRef : undefined}
-                        className={"viewer-thumb" + (on ? " on" : "")}
-                        onClick={() => { if (!on) onJumpToFile?.(f); }}
-                        title={f.version ? f.family : f.name}
-                      >
-                        {f.thumb ? (
-                          <Image src={f.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
-                        ) : (
-                          <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
-                            <Icon name={KINDS[f.kind]?.icon || "file"} size={16} />
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })}
+                  {stripThumbs.map((t) => (
+                    <button
+                      key={t.key}
+                      ref={t.active ? activeThumbRef : undefined}
+                      className={"viewer-thumb" + (t.active ? " on" : "")}
+                      onClick={t.onClick}
+                      title={t.title}
+                    >
+                      {t.thumb ? (
+                        <Image src={t.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+                      ) : (
+                        <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
+                          <Icon name={t.icon} size={18} />
+                        </div>
+                      )}
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
