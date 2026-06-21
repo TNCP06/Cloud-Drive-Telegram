@@ -94,7 +94,9 @@ in-progress stream's open fd keeps reading on Linux); the compressed copy is per
 **key + model failover** on 429; chunks transcribed **CONCURRENTLY**, each on its own rotating key bounded by
 `SUBTITLE_CHUNK_CONCURRENCY`, with an **in-job retry/back-off** `SUBTITLE_CHUNK_RETRY_ATTEMPTS`/`_DELAY_S` so a
 transient blip is retried while the video is still on disk; segment offsets merged), `_translate_segments`
-(deep-translator → EN/ID, timestamps preserved; **always auto-detects source** and **never emits the original
+(deep-translator → EN/ID, timestamps preserved; uses the **known source language** mapped to a valid code
+via `_make_translator` — `zh`→`zh-CN` — because Google's auto-detect silently echoes some content untranslated
+(e.g. Traditional Chinese → English); **never emits the original
 text as a translation** — a failed segment is dropped, an all-failed/all-unchanged track returns None;
 `_translate_track` wraps it with retry/back-off so a transient Google no-op throttle doesn't drop a language),
 `_build_vtt`/`_parse_vtt`/`_parse_ts` (VTT ↔ segments), `_subtitle_worker`/`run_subtitle_job` (single-job,

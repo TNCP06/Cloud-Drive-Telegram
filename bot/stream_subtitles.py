@@ -480,25 +480,45 @@ async def _transcribe_audio(part_id: int, src_path: str) -> tuple[list[dict], st
 # ---------------------------------------------------------------------------
 # Translation (deep-translator → Google free endpoint), timestamps preserved
 # ---------------------------------------------------------------------------
+# Map our ISO source codes to the ones deep-translator's GoogleTranslator expects. It has no bare
+# "zh" — Chinese must be zh-CN/zh-TW. Anything not listed is passed through unchanged.
+_TRANSLATOR_SRC = {"zh": "zh-CN"}
+
+
+def _make_translator(target: str, source: str | None):
+    """Build a GoogleTranslator using the KNOWN source language when we have it. Auto-detect is a
+    trap here: Google silently echoes the input (no translation) for some content — e.g.
+    Traditional Chinese → English — so a wrong/auto source quietly drops the whole track. We pass
+    the real source (mapped to a valid code) and only fall back to auto if that code is rejected.
+    """
+    from deep_translator import GoogleTranslator
+    if source and source not in ("xx", "orig", "auto"):
+        code = _TRANSLATOR_SRC.get(source, source)
+        try:
+            return GoogleTranslator(source=code, target=target)
+        except Exception:  # noqa: BLE001 — unsupported code → fall back to auto-detect
+            pass
+    return GoogleTranslator(source="auto", target=target)
+
+
 def _translate_segments(segments: list[dict], target: str, source: str | None = None) -> list[dict] | None:
     """Translate segment texts to `target`, keeping timestamps. Runs in a thread (blocking lib).
 
     Returns None when the result isn't a usable translation (library missing, or essentially no
     segment actually translated). Crucially it NEVER passes the original-language text through as
     a "translation": a segment that fails to translate is DROPPED, not emitted verbatim — so we
-    can't end up with an EN/ID track that secretly contains the original language. `source` is
-    accepted for signature compatibility but ignored; we always auto-detect, because passing a
-    specific code (e.g. "zh") can be rejected by the translator and abort the whole track.
+    can't end up with an EN/ID track that secretly contains the original language. The `source`
+    language is used (not auto-detect) because auto silently no-ops on some content — see
+    `_make_translator`.
     """
     if not segments:
         return None
     try:
-        from deep_translator import GoogleTranslator
+        translator = _make_translator(target, source)
     except Exception as e:  # noqa: BLE001
         log.warning("deep-translator not available (%s) — skipping %s track", e, target)
         return None
 
-    translator = GoogleTranslator(source="auto", target=target)
     SEP = "\n"
     CHAR_BUDGET = 3500
 
