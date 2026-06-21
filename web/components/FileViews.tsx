@@ -3,7 +3,8 @@
 import Image from "next/image";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@/lib/icons";
-import { KINDS, TAG_COLORS } from "@/lib/kinds";
+import { TAG_COLORS } from "@/lib/kinds";
+import { fileTypeFor } from "@/lib/fileType";
 import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import type { DriveFile, Tag, Folder } from "@/lib/types";
 
@@ -48,20 +49,25 @@ function Star({ on, onClick, cls = "star", style }: { on: boolean; onClick: () =
   );
 }
 
-/* ---- Thumbnail tile (kind icon) ---- */
-function TypeTile({ kind, size = 40 }: { kind: DriveFile["kind"]; size?: number }) {
-  const meta = KINDS[kind] || { icon: "archive", tint: "#8A8068", label: kind || "Archive" };
+/* ---- Thumbnail tile (file-type icon + extension badge) ---- */
+function TypeTile({ item, size = 40 }: { item: DriveFile; size?: number }) {
+  const ft = fileTypeFor(item);
   return (
     <div
       style={{
         width: "100%",
         height: "100%",
-        background: `color-mix(in oklab, ${meta.tint} 9%, var(--card-2))`,
+        background: `color-mix(in oklab, ${ft.tint} 9%, var(--card-2))`,
         display: "grid",
         placeItems: "center",
       }}
     >
-      <Icon name={meta.icon} size={size} stroke={1.5} style={{ color: meta.tint }} />
+      <Icon name={ft.icon} size={size} stroke={1.5} style={{ color: ft.tint }} />
+      {ft.badge && (
+        <span className="type-badge" style={{ ["--c" as string]: ft.tint }}>
+          {ft.badge}
+        </span>
+      )}
     </div>
   );
 }
@@ -204,7 +210,7 @@ export function FileCard({
         {item.thumb ? (
           <Image src={item.thumb!} alt="" fill unoptimized style={{ objectFit: "cover" }} />
         ) : (
-          <TypeTile kind={item.kind} size={40} />
+          <TypeTile item={item} size={40} />
         )}
       </div>
 
@@ -282,7 +288,7 @@ export function FileRow({
   selected = false,
   onSelectToggle,
 }: ItemProps) {
-  const meta = KINDS[item.kind] || { icon: "archive", tint: "#8A8068", label: item.kind || "Archive" };
+  const ft = fileTypeFor(item);
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
     <div className={`row ${selected ? "sel" : ""}`} onClick={() => onOpen(item)}>
@@ -301,9 +307,9 @@ export function FileRow({
         )}
         <div
           className="ico-wrap"
-          style={{ background: `color-mix(in oklab, ${meta.tint} 12%, var(--card-2))` }}
+          style={{ background: `color-mix(in oklab, ${ft.tint} 12%, var(--card-2))` }}
         >
-          <Icon name={meta.icon} size={19} stroke={1.5} style={{ color: meta.tint }} />
+          <Icon name={ft.icon} size={19} stroke={1.5} style={{ color: ft.tint }} />
         </div>
         <div className="txt">
           <div className="t" title={item.name}>
@@ -341,7 +347,7 @@ export function FileRow({
         />
       </div>
       <div className="col c-size">{fmtSize(item.size)}</div>
-      <div className="col c-kind hide-mob">{meta.label}</div>
+      <div className="col c-kind hide-mob">{ft.label}</div>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 2 }}>
         {!item.trashed && <Star on={item.starred} onClick={() => onStar(item)} cls="rstar" />}
         <button

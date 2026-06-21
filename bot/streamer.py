@@ -146,10 +146,33 @@ PREFETCH_CHUNKS = PREFETCH_BUFFER // CHUNK_SIZE
 DOWNLOAD_REQUEST_SIZE = 1048576  # 1 MB — Telethon iter_download piece size
 
 MIME_MAP = {
+    # video
     ".mp4": "video/mp4", ".webm": "video/webm", ".m4v": "video/mp4",
     ".mov": "video/quicktime", ".mkv": "video/x-matroska",
     ".avi": "video/x-msvideo", ".flv": "video/x-flv",
     ".3gp": "video/3gpp", ".ts": "video/mp2t",
+    # images
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    ".svg": "image/svg+xml", ".avif": "image/avif",
+    # documents — correct Content-Type lets the browser preview them inline
+    # (PDF in an <iframe>; text fetched as text; office files fetched as bytes
+    # for client-side rendering via mammoth / SheetJS).
+    ".pdf": "application/pdf",
+    ".txt": "text/plain; charset=utf-8", ".log": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8", ".markdown": "text/markdown; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8", ".tsv": "text/tab-separated-values; charset=utf-8",
+    ".json": "application/json; charset=utf-8", ".xml": "application/xml; charset=utf-8",
+    ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".zip": "application/zip", ".rar": "application/vnd.rar",
+    ".7z": "application/x-7z-compressed", ".gz": "application/gzip",
+    ".tar": "application/x-tar",
 }
 
 # ---------------------------------------------------------------------------
@@ -1242,7 +1265,9 @@ async def stream(part_id: int, request: Request):
 
         # Kick off background compression so subsequent views serve a smaller copy.
         # When it succeeds, reclaim the now-redundant original from the Bot-API cache.
-        _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
+        # Videos only — documents/images must never be fed to ffmpeg.
+        if mime.startswith("video/"):
+            _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
 
         # NOTE: subtitle generation is intentionally NOT triggered here on first view.
         # It is driven purely by subtitle ABSENCE via the background backfill loop

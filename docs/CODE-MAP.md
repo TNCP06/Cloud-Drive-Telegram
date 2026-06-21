@@ -70,6 +70,10 @@ downloads files on-the-fly to a shared cache volume on the VPS disk using a loca
 server in `--local` mode (bypassing the 3Mbps download throttle) and streams directly to the browser.
 Otherwise, falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetching.
 
+`MIME_MAP`/`_mime_from_filename` now also cover **documents & images** (pdf, txt/md/csv, doc(x),
+xls(x), ppt(x), zip/7z/…, png/jpg/…) so the browser previews them inline with the correct
+`Content-Type` (default stays `video/mp4` for unknown extensions). Background **transcode is
+guarded to `mime.startswith("video/")`** so a previewed PDF/doc is never fed to ffmpeg.
 Key functions: `_turso_http_url` (libsql→https), `download_via_local_bot_api` (requests file download
 from local Bot API server), `_evict_local_api_cache_if_needed` (scans shared volume and deletes oldest files
 using mtime LRU policy), `_ensure_chunk_stream` (fallback Telethon disk-or-download),
@@ -165,13 +169,22 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   shapes `DriveFile[]` + `Tag[]`, **filtered by `is_private`** (Main = 0, Private = 1). The tag list
   only includes tags still used by an item in that space, so a tag whose last file moved to Private
   vanishes from Main. Sets each item's `thumb` to a **cover URL** `/api/thumb/{id}` when a cover
-  exists (no base64 in the payload), fetches `firstPartId`/`fileName` for media items (for video
-  streaming), and for archives, splits title into `family`/`version` via `parseTitle`. The shaped
+  exists (no base64 in the payload), fetches `firstPartId`/`fileName` for **every** item (media
+  uses it for video streaming; non-media uses the first part's `file_name` so `fileTypeFor` can
+  derive the document type + drive preview), and for archives, splits title into `family`/`version`
+  via `parseTitle`. The shaped
   result is wrapped in **`unstable_cache`** (30s window, tag `drive-<space>`) so repeat loads skip
   the six Turso queries; mutations bust it via `revalidateTag` (see `actions/_shared.ts` `refresh()`).
 - `version.ts` — `parseTitle()`: split an archive title into `family` + `version` (e.g.
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Archives only.
-- `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and kind metadata.
+- `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and coarse kind metadata
+  (`media`/`archive`).
+- `fileType.ts` — `fileTypeFor(item)` / `extOf(name)`: derives a **fine-grained file type**
+  (PDF/Word/Spreadsheet/Presentation/Archive/Code/Text/Image/Video/Audio) from the first part's
+  `file_name` extension (falls back to title, then coarse kind) — no schema change. Returns
+  `{ id, label, icon, tint, badge, preview }` where `preview` (`pdf|text|word|sheet|image|video|none`)
+  tells the viewer how to render the file inline; multi-part items are forced to `preview:"none"`.
+  Drives the per-type icon/colour/badge in the grid/list and the inline document preview.
 - `format.ts` — `sqliteToMs()` (SQLite datetime→epoch ms), byte/size formatting.
 - `uploads.ts` — `getUploadJobs()` — read helper for the `/upload` page.
 - `gallery-cache.ts` — in-memory cache for `getGallery` results (`GalleryPart[]`). `icons.tsx` — SVG icons.
@@ -260,11 +273,23 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders. `FolderCard` is a **compact
   horizontal tile** (icon + name, no big thumbnail) to avoid wasted space; `FolderRow` for list view.
   File cards keep checkboxes for multi-select, a star toggle, and a kebab action button.
+  Thumbless items render a **type-specific icon + colour** via `fileTypeFor` (PDF/Word/Excel/…)
+  with an extension **badge** (e.g. "PDF", "XLSX"); the list view's Type column shows the
+  fine-grained label.
   Relative timestamps (`fmtDate`/`trashDaysLeft`) render through a local **`ClientText`**
   helper that emits nothing on the server + first client paint and the real string after
   mount — they depend on the viewer's clock/timezone, so rendering them during SSR caused
   React hydration error #418.
-- `PreviewDrawer.tsx` — item detail + on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders **`VideoPlayer.tsx`** (a **Plyr** player) sourced from `/api/stream/{partId}`. The drawer keeps only `Esc` (close) and `Shift+←/→` (jump between parts/files) — Plyr owns the media shortcuts (←/→ seek 5s via `seekTime`, `f` fullscreen, `m` mute, space play); the document keydown is capture-phase so `Shift+arrows` are intercepted before Plyr's global handler. All action buttons are removed from this drawer's top bar (delegated entirely to the external card/row kebab menus). Supports `detailsOnly` mode to render the metadata/edit panel as a standalone popup without the full-screen photo/video stage layer. `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
+- `PreviewDrawer.tsx` — item detail + on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders **`VideoPlayer.tsx`** (a **Plyr** player) sourced from `/api/stream/{partId}`. The drawer keeps only `Esc` (close) and `Shift+←/→` (jump between parts/files) — Plyr owns the media shortcuts (←/→ seek 5s via `seekTime`, `f` fullscreen, `m` mute, space play); the document keydown is capture-phase so `Shift+arrows` are intercepted before Plyr's global handler. All action buttons are removed from this drawer's top bar (delegated entirely to the external card/row kebab menus). Supports `detailsOnly` mode to render the metadata/edit panel as a standalone popup without the full-screen photo/video stage layer. For non-media single-part files whose `fileTypeFor().preview` is `pdf|text|word|sheet`, the stage renders **`DocPreview.tsx`** instead of the static cover/icon. `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
+- `DocPreview.tsx` — inline document preview on the viewer stage. **PDF** → native `<iframe>`
+  pointed at `/api/stream/{partId}` (needs `application/pdf` from the streamer). **Text/code/markdown**
+  → fetched as text into a `<pre>`. **Word (.docx)** → `mammoth` (dynamically imported browser build
+  `mammoth/mammoth.browser.js`) → HTML "paper". **Spreadsheets (.xlsx/.xls/.csv/…)** → `xlsx` (SheetJS,
+  dynamically imported) → HTML table(s) with sheet tabs. All fetches send `Range: bytes=0-` to force
+  the streamer to return the **whole** file (a plain GET returns only the first chunk in Telethon
+  fallback mode). Size-capped (5 MB text / 30 MB office); anything else (incl. archives, multi-part)
+  falls back to a download button. Heavy libs are `import()`-ed so they only load when such a file is
+  opened. Ambient types for the mammoth browser entry live in `web/types/vendor.d.ts`.
 - `VideoPlayer.tsx` — **Plyr** wrapper for the lightbox stage. Fills the whole `.viewer-stage` from the first frame (Plyr's wrapper/video are 100%×100%; the frame is letterboxed via `object-fit: contain`) so it never starts tiny while the stream loads. Plyr's `clickToPlay` is disabled and clicks are split by geometry: on the displayed (contain-fitted) frame → play/pause; on the letterbox → `onRequestClose` (skipped while fullscreen); on controls → Plyr. Poster dims (the data-URL thumbnail) seed the letterbox hit-test before the video reports its own size. Volume/mute are persisted to `localStorage` (`video-volume`/`video-muted`) and restored on `ready` — Plyr's own `storage` is off — so they never reset when switching videos.
 - `UploadManager.tsx` — **unified, queue-first** upload UI. Selecting files (multiple, or a whole
   **folder** via `webkitdirectory`) adds them to ONE queue as editable **ready** items (NOT uploading

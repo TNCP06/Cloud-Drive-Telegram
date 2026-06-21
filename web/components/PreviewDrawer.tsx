@@ -5,10 +5,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/lib/icons";
 import { KINDS, TAG_COLORS } from "@/lib/kinds";
+import { fileTypeFor } from "@/lib/fileType";
 import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import { getCachedGallery, loadGallery } from "@/lib/gallery-cache";
 import { TagPicker } from "./TagPicker";
 import { VideoPlayer } from "./VideoPlayer";
+import { DocPreview } from "./DocPreview";
 import { reharvestThumbnail, uploadThumbnail } from "@/app/actions";
 import type { DriveFile, GalleryPart, Kind, Tag } from "@/lib/types";
 
@@ -103,7 +105,8 @@ export function PreviewDrawer({
   detailsOnly?: boolean;
 }) {
   const router = useRouter();
-  const meta = KINDS[item.kind] || { icon: "archive", tint: "#8A8068", label: item.kind || "Archive" };
+  // Fine-grained file type (PDF/Word/Excel/…) derived from the part's file name.
+  const ft = fileTypeFor(item);
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
 
   const [editing, setEditing] = useState(initialEditing);
@@ -306,9 +309,16 @@ export function PreviewDrawer({
   // Navigation past a part boundary → jump to the neighbouring file in the list.
   const canPrev = activeIdx > 0 || hasPrevFile;
   const canNext = activeIdx < last || hasNextFile;
-  // A still image on the stage gets rotate; both images and videos get a fullscreen control.
+  // A still image on the stage gets rotate; images, videos and docs get a fullscreen control.
   const isVideoStage = isPartStreamableVideo(activePart, item.kind);
-  const isImageStage = !!activePart?.thumb && !isVideoStage;
+  // Inline document preview (PDF/text/Word/Excel) — takes priority over a static cover
+  // thumbnail for non-media items so the interactive preview shows instead of a flat image.
+  const docPartId = activePart?.partId ?? item.firstPartId ?? 0;
+  const isDocStage =
+    item.kind !== "media" &&
+    docPartId > 0 &&
+    (ft.preview === "pdf" || ft.preview === "text" || ft.preview === "word" || ft.preview === "sheet");
+  const isImageStage = !!activePart?.thumb && !isVideoStage && !isDocStage;
 
   // The bottom filmstrip lists the OTHER media in this view (siblings from the parent's nav list).
   // The CURRENTLY-OPEN item expands into its individual parts so an album's photos each show as a
@@ -336,7 +346,7 @@ export function PreviewDrawer({
       thumb: f.thumb,
       title: f.version ? f.family : f.name,
       active: f.id === item.id,
-      icon: KINDS[f.kind]?.icon || "file",
+      icon: fileTypeFor(f).icon,
       onClick: () => { if (f.id !== item.id) onJumpToFile?.(f); },
     }];
   });
@@ -389,7 +399,7 @@ export function PreviewDrawer({
 
       // "F" fullscreens the whole viewer for images AND videos (we route video fullscreen through
       // the viewer too — Plyr's own fullscreen is disabled — so the strip/controls stay consistent).
-      const onMedia = isPartStreamableVideo(activePart, item.kind) || !!activePart?.thumb;
+      const onMedia = isPartStreamableVideo(activePart, item.kind) || !!activePart?.thumb || isDocStage;
       if ((e.key === "f" || e.key === "F") && onMedia) {
         e.preventDefault();
         e.stopPropagation();
@@ -423,7 +433,7 @@ export function PreviewDrawer({
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose, showDetails, editing, go, item.kind, activePart, detailsOnly]);
+  }, [onClose, showDetails, editing, go, item.kind, activePart, detailsOnly, isDocStage]);
 
   const save = () => {
     if (!title.trim()) return;
@@ -439,17 +449,25 @@ export function PreviewDrawer({
           <div className="viewer-scrim"></div>
           <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "") + (chromeHidden ? " chrome-hidden" : "")}>
             <div className="viewer-stage">
-              {isPartStreamableVideo(activePart, item.kind) ? (
+              {isVideoStage ? (
                 <VideoPlayer
                   key={activePart!.partId}
                   src={`/api/stream/${activePart!.partId}`}
                   poster={activePart!.thumb || undefined}
                   partId={activePart!.partId}
                 />
-              ) : activePart?.thumb ? (
-                <Image src={activePart.thumb} alt={item.name} unoptimized width={0} height={0} sizes="100vw" style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 0, cursor: "default", transform: rotation ? `rotate(${rotation}deg)` : undefined, transition: "transform .2s ease" }} />
+              ) : isDocStage ? (
+                <DocPreview
+                  key={docPartId}
+                  partId={docPartId}
+                  ft={ft}
+                  size={item.size}
+                  onDownload={onDownload}
+                />
+              ) : isImageStage ? (
+                <Image src={activePart!.thumb!} alt={item.name} unoptimized width={0} height={0} sizes="100vw" style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 0, cursor: "default", transform: rotation ? `rotate(${rotation}deg)` : undefined, transition: "transform .2s ease" }} />
               ) : (
-                <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />
+                <Icon name={ft.icon} size={120} stroke={1.2} style={{ color: ft.tint }} />
               )}
             </div>
 
@@ -535,7 +553,7 @@ export function PreviewDrawer({
                     <Icon name="rotate" size={16} />
                   </button>
                 )}
-                {(isImageStage || isVideoStage) && (
+                {(isImageStage || isVideoStage || isDocStage) && (
                   <button
                     className="viewer-iconbtn"
                     onClick={toggleFullscreen}
@@ -647,7 +665,7 @@ export function PreviewDrawer({
                     <h4>Details</h4>
                     <dl className="dv-meta">
                       <dt>Type</dt>
-                      <dd>{meta.label}</dd>
+                      <dd>{ft.label}</dd>
                       <dt>Size</dt>
                       <dd>{fmtSize(item.size)}</dd>
                       {item.parts > 1 && (

@@ -52,13 +52,14 @@ async function fetchDriveData(
       `SELECT DISTINCT p.item_id AS item_id
        FROM thumbnails t JOIN parts p ON p.id = t.part_id`
     ),
-    // First part info for streamable videos / media items (single or multi-part).
+    // First part info for EVERY item (single or multi-part). Media uses it for video
+    // streaming; non-media uses the first part's file_name to derive a fine-grained
+    // document type (PDF/Word/Excel/…) and to drive inline document preview.
     db.execute(
       `WITH first_part AS (
          SELECT p.item_id, p.id AS part_id, p.file_name,
                 ROW_NUMBER() OVER (PARTITION BY p.item_id ORDER BY p.channel_msg_id) AS rn
-         FROM parts p JOIN items i ON i.id = p.item_id
-         WHERE i.kind = 'media'
+         FROM parts p
        )
        SELECT item_id, part_id, file_name FROM first_part WHERE rn = 1`
     ),
