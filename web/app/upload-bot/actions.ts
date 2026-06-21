@@ -1,7 +1,7 @@
 "use server";
 
 import { db } from "@/lib/db";
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { readFileSync } from "node:fs";
 
 // Slug rules mirror bot/bot.py slugify(): NFKD-fold, drop non-word chars, lower,
@@ -171,6 +171,8 @@ async function indexBotDrop(
     }
 
     revalidatePath("/");
+    // The Bot-Drop just indexed a new item → bust the cached drive data so it appears at once.
+    revalidateTag("drive-main");
   } catch (err) {
     console.error("[indexBotDrop] failed:", err);
   } finally {

@@ -1,6 +1,6 @@
 import "server-only";
 import { db } from "@/lib/db";
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { tagColorKey } from "@/lib/kinds";
 
 // Internal helpers shared across the server-action modules. NOT a "use server"
@@ -10,6 +10,10 @@ export function refresh() {
   revalidatePath("/");
   revalidatePath("/trash");
   revalidatePath("/private");
+  // Bust the server-side drive-data cache (see lib/items.ts) so the mutation shows up at once,
+  // not after the 30s revalidate window. Both spaces: a move can shift an item across them.
+  revalidateTag("drive-main");
+  revalidateTag("drive-private");
 }
 
 // Resolve a tag name to a tag id, matching case-insensitively so a name that

@@ -1,9 +1,9 @@
 "use server";
 
 import { db } from "@/lib/db";
-import { revalidatePath } from "next/cache";
 import type { GalleryPart } from "@/lib/types";
 import { readFileSync } from "node:fs";
+import { refresh } from "./_shared";
 
 // Gallery: thumbnails for ALL parts of an item, ordered by album position (channel_msg_id).
 // Used by PreviewDrawer to show all photos/videos in an album. Loaded on-demand
@@ -144,7 +144,7 @@ export async function reharvestThumbnail(
     }
   }
 
-  if (harvested > 0) revalidatePath("/");
+  if (harvested > 0) refresh();
   return {
     ok: harvested > 0 || errors.length === 0,
     harvested,
@@ -179,6 +179,6 @@ export async function uploadThumbnail(
     });
     updated++;
   }
-  revalidatePath("/");
+  refresh();
   return { ok: true, updated };
 }

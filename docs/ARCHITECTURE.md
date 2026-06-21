@@ -137,7 +137,9 @@ These are load-bearing — break them and indexing/downloads break:
   `/subtitles` volume with one `subtitles(part_id, lang)` row each; they are never auto-evicted (only a
   hard-delete/purge of the item should remove them).
 - **Thumbnails are per-part** (`thumbnails.part_id`). An item's cover = thumbnail of the part
-  with the smallest `channel_msg_id` (computed in `getDriveData()`); the full gallery loads
+  with the smallest `channel_msg_id`. `getDriveData()` only ships **whether** a cover exists
+  (`thumb` = `/api/thumb/{itemId}` URL, or `null`) — the bytes are served lazily & HTTP-cached by
+  that endpoint, so the grid payload stays tiny regardless of library size. The full gallery loads
   on demand via `getGallery()`.
 - **Streamer Deadlock & Priority Invariants:** To avoid Telethon connection choking and deadlocks during concurrent browser seeks, main client playback requests always take absolute priority. Prefetch tasks for the same video are immediately cancelled and awaited (ensuring they release their Telegram locks) before a main playback request proceeds. Additionally, prefetch tasks are only scheduled to start *after* the main playback request successfully completes yielding its chunks, eliminating concurrent lock contention. Finally, the Next.js API proxy disables Keep-Alive (`Connection: close`) to force immediate Uvicorn request completion, ensuring completed chunks are promoted to cache on connection termination.
 - **Client-side Video Caching (Service Worker + IndexedDB):** Video requests to `/api/stream/*` are intercepted by the client's Service Worker (`web/public/sw.js`). Video chunks of 2 MB are stored locally in IndexedDB (`video-cache-db`). An LRU (Least Recently Used) policy automatically evicts older file caches once the total size exceeds 4 GB. This saves VPS bandwidth and allows instant seeking/playback of cached parts without hitting the VPS.

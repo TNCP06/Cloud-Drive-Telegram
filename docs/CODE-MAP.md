@@ -164,9 +164,11 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `items.ts` — `getDriveData(space = "main" | "private")`: the main read. One batched query set →
   shapes `DriveFile[]` + `Tag[]`, **filtered by `is_private`** (Main = 0, Private = 1). The tag list
   only includes tags still used by an item in that space, so a tag whose last file moved to Private
-  vanishes from Main. Computes each item's **cover** thumbnail (first part by `channel_msg_id`), fetches
-  `firstPartId`/`fileName` for media items (for video streaming), and for archives, splits title
-  into `family`/`version` via `parseTitle`.
+  vanishes from Main. Sets each item's `thumb` to a **cover URL** `/api/thumb/{id}` when a cover
+  exists (no base64 in the payload), fetches `firstPartId`/`fileName` for media items (for video
+  streaming), and for archives, splits title into `family`/`version` via `parseTitle`. The shaped
+  result is wrapped in **`unstable_cache`** (30s window, tag `drive-<space>`) so repeat loads skip
+  the six Turso queries; mutations bust it via `revalidateTag` (see `actions/_shared.ts` `refresh()`).
 - `version.ts` — `parseTitle()`: split an archive title into `family` + `version` (e.g.
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Archives only.
 - `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and kind metadata.
@@ -220,6 +222,10 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `api/subtitles/[partId]/route.ts` (lang list) + `api/subtitles/[partId]/[lang]/route.ts` (one WebVTT
   track) — cookie-auth proxies to the streamer's `/subtitles/...` endpoints; the player loads these as
   `<track>`s.
+- `api/thumb/[itemId]/route.ts` (`nodejs` runtime) — serves an item's **cover thumbnail** bytes
+  (first part by `channel_msg_id`) with `Cache-Control: public, max-age=600, stale-while-revalidate`.
+  Keeps the cover out of the main page payload so the grid stays light at any scale; auth is enforced
+  by middleware (path not excluded). The grid `<img>` lazy-loads → only on-screen covers are fetched.
 - `page.tsx` (main grid), `private/page.tsx` (**PIN-gated Private space**: renders `PrivateLock` until the
   unlock cookie is present, then `DriveApp space="private"` with `getDriveData("private")`),
   `trash/page.tsx`, `upload/page.tsx`, `upload-bot/page.tsx`,

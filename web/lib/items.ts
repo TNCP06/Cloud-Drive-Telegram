@@ -1,4 +1,5 @@
 import "server-only";
+import { unstable_cache } from "next/cache";
 import { db } from "./db";
 import { sqliteToMs } from "./format";
 import { tagColorKey } from "./kinds";
@@ -12,8 +13,22 @@ import type { DriveFile, Folder, Kind, Tag } from "./types";
 // tag list only includes tags still used by ≥1 item IN THIS SPACE — so a tag whose
 // last file moved to Private disappears from Main (and vice-versa). Private items are
 // never sent to the Main page, so their sizes/tags/analytics are hidden there for free.
-export async function getDriveData(
+//
+// The shaped result is cached server-side (`unstable_cache`, 30s window) so repeat loads and
+// navigations don't re-run these six Turso queries every request. Web mutations bust it instantly
+// via `revalidateTag("drive-<space>")` (see actions/_shared.ts); anything written by the bot shows
+// up within the window. Pages stay `force-dynamic` so the DB is never queried at build time.
+export function getDriveData(
   space: "main" | "private" = "main"
+): Promise<{ files: DriveFile[]; tags: Tag[]; folders: Folder[] }> {
+  return unstable_cache(() => fetchDriveData(space), ["drive-data", space], {
+    revalidate: 30,
+    tags: [`drive-${space}`],
+  })();
+}
+
+async function fetchDriveData(
+  space: "main" | "private"
 ): Promise<{ files: DriveFile[]; tags: Tag[]; folders: Folder[] }> {
   const priv = space === "private" ? 1 : 0;
   const [itemsRs, tagsRs, itemTagsRs, thumbsRs, streamRs, foldersRs] = await Promise.all([
@@ -29,15 +44,13 @@ export async function getDriveData(
       `SELECT it.item_id AS item_id, it.tag_id AS tag_id FROM item_tags it
        JOIN items i ON i.id = it.item_id WHERE i.is_private = ${priv}`
     ),
-    // Cover = thumbnail of the FIRST PART of each item (album = smallest channel_msg_id).
-    // Full gallery is loaded on-demand in PreviewDrawer via getGallery().
+    // Which items HAVE a cover thumbnail (first part = smallest channel_msg_id). We only fetch
+    // existence here, not the bytes: the cover image itself is served lazily & HTTP-cached via
+    // /api/thumb/[itemId], so the page payload stays tiny even with a huge library. The full
+    // gallery is loaded on-demand in PreviewDrawer via getGallery().
     db.execute(
-      `WITH cover AS (
-         SELECT p.item_id AS item_id, t.mime AS mime, t.data AS data,
-                ROW_NUMBER() OVER (PARTITION BY p.item_id ORDER BY p.channel_msg_id) AS rn
-         FROM thumbnails t JOIN parts p ON p.id = t.part_id
-       )
-       SELECT item_id, mime, data FROM cover WHERE rn = 1`
+      `SELECT DISTINCT p.item_id AS item_id
+       FROM thumbnails t JOIN parts p ON p.id = t.part_id`
     ),
     // First part info for streamable videos / media items (single or multi-part).
     db.execute(
@@ -69,9 +82,9 @@ export async function getDriveData(
     tagsByItem.set(itemId, list);
   }
 
-  const thumbByItem = new Map<number, string>();
+  const haveCover = new Set<number>();
   for (const r of thumbsRs.rows) {
-    thumbByItem.set(Number(r.item_id), `data:${String(r.mime)};base64,${String(r.data)}`);
+    haveCover.add(Number(r.item_id));
   }
 
   // Map item_id → { partId, fileName } for streamable single-part media.
@@ -107,7 +120,7 @@ export async function getDriveData(
       starred: Number(r.is_favorite) === 1,
       trashed: deletedAt != null,
       deletedAt,
-      thumb: thumbByItem.get(id) ?? null,
+      thumb: haveCover.has(id) ? `/api/thumb/${id}` : null,
       firstPartId: stream?.partId ?? null,
       fileName: stream?.fileName ?? null,
       family: tp.family,
