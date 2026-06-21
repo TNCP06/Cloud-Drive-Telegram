@@ -162,6 +162,7 @@ export function VideoPlayer({
         clickToPlay: false, // we split frame-click (play) vs letterbox-click (close)
         keyboard: { focused: true, global: true },
         storage: { enabled: false }, // we manage volume/mute + caption-lang persistence ourselves
+        fullscreen: { enabled: false }, // the viewer owns fullscreen (keeps the strip/controls visible)
         captions: { active: chosenLang != null, language: chosenLang ?? "auto", update: true },
         controls: [
           "play-large",
@@ -174,7 +175,9 @@ export function VideoPlayer({
           "captions",
           "settings",
           "pip",
-          "fullscreen",
+          // No "fullscreen" here: the viewer owns fullscreen (the ✕/strip/controls must stay
+          // visible and consistent), toggled by its own button or the "F" key. Plyr's own "f" is
+          // swallowed by the viewer's capture-phase key handler before Plyr can act on it.
         ],
         tooltips: { controls: true, seek: true },
       });

@@ -146,6 +146,11 @@ export function PreviewDrawer({
     item.kind === "media" && item.parts > 1 ? getCachedGallery(item.id) ?? null : null
   );
   const [activeIdx, setActiveIdx] = useState(0);
+  // Galleries for EVERY multi-part item in the nav list, so the filmstrip can show every photo as
+  // its own thumb even when the open item itself has no parts. Loaded once (cached) per session.
+  const [galMap, setGalMap] = useState<Record<number, GalleryPart[]>>({});
+  // When a strip thumb belongs to a DIFFERENT album, remember which part to land on after the jump.
+  const pendingPartRef = useRef<{ id: number; idx: number } | null>(null);
   // Detail panel is hidden behind the kebab button; photos show full-screen.
   const [showDetails, setShowDetails] = useState(initialEditing || initialShowDetails);
 
@@ -241,9 +246,12 @@ export function PreviewDrawer({
   };
 
   // Album gallery is loaded on-demand (only for multi-part media). The cover (item.thumb)
-  // shows instantly; the thumbnail strip appears after the fetch completes.
+  // shows instantly; the thumbnail strip appears after the fetch completes. When arriving via a
+  // strip thumb of a different album, land on that album's chosen part instead of the first.
   useEffect(() => {
-    setActiveIdx(0);
+    const pending = pendingPartRef.current;
+    pendingPartRef.current = null;
+    setActiveIdx(pending && pending.id === item.id ? pending.idx : 0);
     if (item.kind === "media" && item.parts > 1) {
       // Cache hit → render immediately without touching the database at all.
       const cached = getCachedGallery(item.id);
@@ -263,6 +271,28 @@ export function PreviewDrawer({
     setGallery(null);
   }, [item.id, item.kind, item.parts]);
 
+  // Pre-load galleries for EVERY multi-part item in the view so the strip can show each photo as a
+  // thumb — even while previewing a non-parts item. Cached + de-duped, so it's a one-off per session.
+  const navIdsKey = (navFiles ?? []).map((f) => f.id).join(",");
+  useEffect(() => {
+    const multis = (navFiles ?? []).filter((f) => f.kind === "media" && f.parts > 1);
+    const seed: Record<number, GalleryPart[]> = {};
+    for (const f of multis) {
+      const c = getCachedGallery(f.id);
+      if (c) seed[f.id] = c;
+    }
+    if (Object.keys(seed).length) setGalMap((m) => ({ ...m, ...seed }));
+    let alive = true;
+    for (const f of multis) {
+      if (getCachedGallery(f.id)) continue;
+      loadGallery(f.id)
+        .then((g) => { if (alive) setGalMap((m) => ({ ...m, [f.id]: g })); })
+        .catch(() => {});
+    }
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navIdsKey]);
+
   // Always ≥1 entry (the item itself when there's no multi-part gallery) so the bottom box's
   // filmstrip stays consistent — and present — even for single/thumbless media.
   const partsList: GalleryPart[] = gallery && gallery.length > 0
@@ -276,8 +306,9 @@ export function PreviewDrawer({
   // Navigation past a part boundary → jump to the neighbouring file in the list.
   const canPrev = activeIdx > 0 || hasPrevFile;
   const canNext = activeIdx < last || hasNextFile;
-  // A still image on the stage gets the bottom-right rotate + fullscreen controls.
-  const isImageStage = !!activePart?.thumb && !isPartStreamableVideo(activePart, item.kind);
+  // A still image on the stage gets rotate; both images and videos get a fullscreen control.
+  const isVideoStage = isPartStreamableVideo(activePart, item.kind);
+  const isImageStage = !!activePart?.thumb && !isVideoStage;
 
   // The bottom filmstrip lists the OTHER media in this view (siblings from the parent's nav list).
   // The CURRENTLY-OPEN item expands into its individual parts so an album's photos each show as a
@@ -285,14 +316,19 @@ export function PreviewDrawer({
   // album; clicking another item jumps to it. Falls back to just the current item with no nav list.
   const stripFiles: DriveFile[] = navFiles && navFiles.length > 0 ? navFiles : [item];
   const stripThumbs = stripFiles.flatMap((f) => {
-    if (f.id === item.id && gallery && gallery.length > 1) {
-      return gallery.map((part, i) => ({
+    // Prefer the freshly-loaded current gallery, else the pre-loaded map, to expand an album.
+    const parts = f.id === item.id ? gallery ?? galMap[f.id] : galMap[f.id];
+    if (f.parts > 1 && parts && parts.length > 1) {
+      return parts.map((part, i) => ({
         key: `${f.id}:${i}`,
         thumb: part.thumb,
-        title: item.version ? item.family : item.name,
-        active: i === activeIdx,
-        icon: isPartStreamableVideo(part, item.kind) ? "video" : "image",
-        onClick: () => setActiveIdx(i),
+        title: f.version ? f.family : f.name,
+        active: f.id === item.id && i === activeIdx,
+        icon: isPartStreamableVideo(part, f.kind) ? "video" : "image",
+        onClick:
+          f.id === item.id
+            ? () => setActiveIdx(i)
+            : () => { pendingPartRef.current = { id: f.id, idx: i }; onJumpToFile?.(f); },
       }));
     }
     return [{
@@ -351,9 +387,10 @@ export function PreviewDrawer({
         return;
       }
 
-      // "F" fullscreens an image (videos keep Plyr's own "f" fullscreen).
-      const onImage = !!activePart?.thumb && !isPartStreamableVideo(activePart, item.kind);
-      if ((e.key === "f" || e.key === "F") && onImage) {
+      // "F" fullscreens the whole viewer for images AND videos (we route video fullscreen through
+      // the viewer too — Plyr's own fullscreen is disabled — so the strip/controls stay consistent).
+      const onMedia = isPartStreamableVideo(activePart, item.kind) || !!activePart?.thumb;
+      if ((e.key === "f" || e.key === "F") && onMedia) {
         e.preventDefault();
         e.stopPropagation();
         toggleFullscreen();
@@ -490,22 +527,22 @@ export function PreviewDrawer({
               </div>
               <div className="viewer-botbtns">
                 {isImageStage && (
-                  <>
-                    <button
-                      className="viewer-iconbtn"
-                      onClick={() => setRotation((r) => (r + 90) % 360)}
-                      title="Rotate"
-                    >
-                      <Icon name="rotate" size={16} />
-                    </button>
-                    <button
-                      className="viewer-iconbtn"
-                      onClick={toggleFullscreen}
-                      title="Fullscreen"
-                    >
-                      <Icon name="expand" size={16} />
-                    </button>
-                  </>
+                  <button
+                    className="viewer-iconbtn"
+                    onClick={() => setRotation((r) => (r + 90) % 360)}
+                    title="Rotate"
+                  >
+                    <Icon name="rotate" size={16} />
+                  </button>
+                )}
+                {(isImageStage || isVideoStage) && (
+                  <button
+                    className="viewer-iconbtn"
+                    onClick={toggleFullscreen}
+                    title="Fullscreen (F)"
+                  >
+                    <Icon name="expand" size={16} />
+                  </button>
                 )}
               </div>
             </div>
