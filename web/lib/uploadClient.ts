@@ -33,7 +33,7 @@ export function newToken(): string {
 }
 
 export async function uploadResumable(
-  file: File,
+  file: Blob,
   name: string,
   token: string,
   opts: UploadOpts,

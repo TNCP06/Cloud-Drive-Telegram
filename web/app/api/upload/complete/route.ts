@@ -68,6 +68,17 @@ export async function POST(req: NextRequest) {
   }
   const tags = String(body.tags ?? "").trim();
 
+  // Idempotency: the staging dir is unique per token, so if a job already exists for
+  // it (e.g. the client retried complete after a reload), return that job instead of
+  // inserting a duplicate.
+  const existing = await db.execute({
+    sql: "SELECT id FROM upload_jobs WHERE source_path = ? LIMIT 1",
+    args: [dir],
+  });
+  if (existing.rows.length > 0) {
+    return NextResponse.json({ ok: true, jobId: Number(existing.rows[0].id) });
+  }
+
   const rs = await db.execute({
     sql:
       "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) " +

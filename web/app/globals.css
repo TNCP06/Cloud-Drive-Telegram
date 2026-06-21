@@ -944,6 +944,51 @@ button { font-family: inherit; }
 .up-job-time { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
 .up-pct { font-size: 13px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
 .btn.sm { padding: 4px 10px; font-size: 12.5px; }
+
+/* Floating upload progress panel (global, shown on any page except /upload) */
+.fup {
+  position: fixed; right: 22px; bottom: 22px; z-index: 240;
+  width: 340px; max-width: calc(100vw - 32px);
+  background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-lg);
+  box-shadow: var(--sh-3); overflow: hidden;
+  animation: slideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.fup-head {
+  display: flex; align-items: center; gap: 11px; width: 100%;
+  padding: 12px 14px; background: none; border: 0; cursor: pointer; text-align: left;
+}
+.fup-head:hover { background: var(--card-2); }
+.fup-head-ic { flex: none; display: grid; place-items: center; width: 18px; height: 18px; color: var(--accent); }
+.fup-head-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.fup-title { font-size: 13.5px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fup-sub { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fup-chev { flex: none; color: var(--faint); display: grid; place-items: center; }
+.fup-topbar { height: 3px; background: var(--line); overflow: hidden; }
+.fup-topbar > span { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+.fup-body { border-top: 1px solid var(--line); padding: 8px; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.fup-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: var(--r-md); }
+.fup-row:hover { background: var(--card-2); }
+.fup-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); }
+.fup-dot.st-uploading { background: var(--accent); animation: pulse 1s ease infinite; }
+.fup-dot.st-ready { background: var(--gold); }
+.fup-dot.st-done, .fup-dot.st-finalizing { background: #3C7A74; }
+.fup-dot.st-error { background: #B23A2E; }
+.fup-row-main { flex: 1; min-width: 0; }
+.fup-row-name { font-size: 12.5px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fup-row-bar { height: 4px; border-radius: 99px; background: var(--line); overflow: hidden; margin: 5px 0 3px; }
+.fup-row-bar > span { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+.fup-row-meta { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.fup-row-btn {
+  flex: none; width: 26px; height: 26px; display: grid; place-items: center;
+  background: none; border: 0; border-radius: 7px; color: var(--muted); cursor: pointer;
+}
+.fup-row-btn:hover { background: var(--card); color: var(--ink); }
+.fup-clear {
+  display: inline-flex; align-items: center; gap: 6px; align-self: center;
+  margin: 4px auto 2px; padding: 6px 12px; border-radius: 99px; cursor: pointer;
+  border: 1px solid var(--line-2); background: var(--card); color: var(--muted); font-size: 12px; font-weight: 500;
+}
+.fup-clear:hover { border-color: var(--line-strong); color: var(--ink); background: var(--card-2); }
 /* link Upload di sidebar */
 .nav-item.link { text-decoration: none; }
 

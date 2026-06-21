@@ -191,6 +191,11 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   Drives the per-type icon/colour/badge in the grid/list and the inline document preview.
 - `format.ts` — `sqliteToMs()` (SQLite datetime→epoch ms), byte/size formatting.
 - `uploads.ts` — `getUploadJobs()` — read helper for the `/upload` page.
+- `uploadDb.ts` — **client-side IndexedDB** persistence for the upload queue (`tcd-upload-db`).
+  Stores each picked File's bytes + metadata (`putUpload`/`getAllUploads`/`deleteUpload`/
+  `markUploadErrored`) so a page refresh **resumes** in-flight uploads instead of forcing a
+  re-pick; records are deleted on handoff/remove so the blob only lives there while uploading.
+  Best-effort (quota errors degrade to in-memory only).
 - `gallery-cache.ts` — in-memory cache for `getGallery` results (`GalleryPart[]`). `icons.tsx` — SVG icons.
 
 ### `web/app/` — routes & server actions
@@ -232,7 +237,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `api/upload/route.ts` — **resumable chunk receiver** (`nodejs` runtime). `GET` returns the
   bytes already staged (resume point); `POST ?offset=` appends a chunk, replies `409` with the
   real offset if out of sync. `api/upload/complete/route.ts` — verifies the staged file size,
-  then inserts an `upload_jobs` row (`origin='upload'`, `cleanup_source=1`).
+  then inserts an `upload_jobs` row (`origin='upload'`, `cleanup_source=1`). **Idempotent**:
+  if a job already exists for the staging dir (`source_path`) it returns that `jobId` instead of
+  inserting a duplicate, so a client retrying `complete` after a reload can't double-queue.
 - `api/stream/[partId]/route.ts` — **streaming proxy** (`nodejs` runtime). Authenticates via
   cookie, then proxies `Range` requests to the streamer service (`STREAMER_URL`, default
   `http://streamer:8080`). Pipes the 206 response body back to the browser's `<video>` element (intercepted and cached by the client-side Service Worker).
@@ -295,16 +302,30 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   falls back to a download button. Heavy libs are `import()`-ed so they only load when such a file is
   opened. Ambient types for the mammoth browser entry live in `web/types/vendor.d.ts`.
 - `VideoPlayer.tsx` — **Plyr** wrapper for the lightbox stage. Fills the whole `.viewer-stage` from the first frame (Plyr's wrapper/video are 100%×100%; the frame is letterboxed via `object-fit: contain`) so it never starts tiny while the stream loads. Plyr's `clickToPlay` is disabled and clicks are split by geometry: on the displayed (contain-fitted) frame → play/pause; on the letterbox → `onRequestClose` (skipped while fullscreen); on controls → Plyr. Poster dims (the data-URL thumbnail) seed the letterbox hit-test before the video reports its own size. Volume/mute are persisted to `localStorage` (`video-volume`/`video-muted`) and restored on `ready` — Plyr's own `storage` is off — so they never reset when switching videos.
-- `UploadManager.tsx` — **unified, queue-first** upload UI. Selecting files (multiple, or a whole
-  **folder** via `webkitdirectory`) adds them to ONE queue as editable **ready** items (NOT uploading
-  yet); you set Title/Tags per item, then **Start** runs the full pipeline in that same list:
-  browser→VPS (client progress) → the watcher job (VPS→Telegram) appears and takes over. Folder files
-  carry their relative path as the title so the bot recreates nested folders. Type toggle is **Media
-  (left) / Archive (right)**; a type tag (**Image/Video/Archive**) is auto-added per file. Queued
-  (not-yet-started) jobs have an **Edit** button (`updateUploadJob`). **Source toggle**: device
-  (default) vs "Host path (advanced)" (`FsBrowser` + `enqueueUpload`). The list collapses to ~6 rows
-  with **Show more / Show less**. The resumable engine lives in `lib/uploadClient.ts`
-  (`uploadResumable` 16 MB chunks + server-offset resume; `autoTypeTag`, `withTag`, `newToken`).
+- `UploadProvider.tsx` — **global upload context** mounted in `app/layout.tsx` so the client-side
+  upload queue + runner live above the page tree and **survive client-side navigation**. Holds the
+  `LocalItem[]` queue (ref + force-render), the sequential runner (`runQueue`, was in `UploadManager`),
+  `pauseRun`/`cancelRun`, `addFiles`/`removeLocal`/`updateLocal`/`clearDone`, and `speed`. Persists
+  each item to IndexedDB (`lib/uploadDb.ts`) on add/edit and, on first mount, **rehydrates + auto-resumes**
+  any in-flight uploads (the refresh-safety fix). On handoff (browser→VPS done) it deletes the persisted
+  blob, marks the item `done`, and calls `startUpload(jobId)`. `useUpload()` is the consumer hook.
+- `FloatingUploadPanel.tsx` — **global floating upload monitor** (also mounted in `app/layout.tsx`),
+  hidden on `/upload` (the full manager is there) and when the queue is empty. Reads `useUpload()` to
+  show overall progress + speed on any page; **expand/collapse** lists each file with per-item stage
+  (uploading %/queued/done/failed), retry/remove, and a "Clear completed" action. Styled with the app's
+  `--card`/`--sh-3` surface (`.fup*` classes in `globals.css`).
+- `UploadManager.tsx` — **unified, queue-first** upload UI on `/upload`; now **consumes `UploadProvider`**
+  via `useUpload()` for the queue + runner (the local queue state/runner moved out of this component).
+  Selecting files (multiple, or a whole **folder** via `webkitdirectory`) adds them to ONE queue as
+  editable **ready** items (NOT uploading yet); you set Title/Tags per item, then **Start** runs the
+  full pipeline in that same list: browser→VPS (client progress) → the watcher job (VPS→Telegram)
+  appears and takes over. Folder files carry their relative path as the title so the bot recreates
+  nested folders. Type toggle is **Media (left) / Archive (right)**; a type tag (**Image/Video/Archive**)
+  is auto-added per file. Queued (not-yet-started) jobs have an **Edit** button (`updateUploadJob`).
+  **Source toggle**: device (default) vs "Host path (advanced)" (`FsBrowser` + `enqueueUpload`). The
+  list collapses to ~6 rows with **Show more / Show less**. The resumable engine lives in
+  `lib/uploadClient.ts` (`uploadResumable` 16 MB chunks + server-offset resume; `autoTypeTag`,
+  `withTag`, `newToken`).
   `TagManager.tsx` / `TagPicker.tsx` — category library + chip picker (picker dedupes existing tags case-insensitively).
   `ThemeToggle.tsx` — light/dark switch (flips `data-theme` on `<html>`, persists to localStorage
   `tcd_theme`; theme is applied pre-paint by an inline script in `layout.tsx`). `AppSkeleton.tsx` — loading skeleton.

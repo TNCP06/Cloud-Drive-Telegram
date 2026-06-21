@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Hanken_Grotesk, Instrument_Serif } from "next/font/google";
 import "./globals.css";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
+import { UploadProvider } from "@/components/UploadProvider";
+import { FloatingUploadPanel } from "@/components/FloatingUploadPanel";
 
 const hanken = Hanken_Grotesk({
   subsets: ["latin"],
@@ -33,7 +35,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <ServiceWorkerRegister />
-        {children}
+        <UploadProvider>
+          {children}
+          <FloatingUploadPanel />
+        </UploadProvider>
       </body>
     </html>
   );

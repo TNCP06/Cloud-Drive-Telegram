@@ -993,8 +993,9 @@ export function DriveApp({
         />
       )}
 
-      {/* Multi-select Floating Selection Toolbar */}
-      {selectedIds.length > 0 && (
+      {/* Multi-select Floating Selection Toolbar — hidden while a preview/viewer
+          is open so it doesn't float over the fullscreen stage. */}
+      {selectedIds.length > 0 && !previewItem && (
         <div className="selection-toolbar">
           <div className="sel-count">{selectedIds.length} selected</div>
           <div className="sel-actions">

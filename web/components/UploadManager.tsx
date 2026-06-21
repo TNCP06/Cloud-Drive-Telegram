@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Icon } from "@/lib/icons";
@@ -18,13 +18,7 @@ import {
 } from "@/app/actions";
 import { FsBrowser } from "@/components/FsBrowser";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import {
-  uploadResumable,
-  newToken,
-  autoTypeTag,
-  withTag,
-  type UploadCtl,
-} from "@/lib/uploadClient";
+import { useUpload, type LocalItem } from "@/components/UploadProvider";
 
 type UploadMode = "device" | "laptop";
 
@@ -37,31 +31,9 @@ const STATUS_LABEL: Record<UploadStatus, string> = {
   canceled: "Canceled",
 };
 
-const stripExt = (s: string) => s.replace(/\.[^.]+$/, "");
 function deriveTitle(p: string): string {
   const base = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
   return base.replace(/-pc$/i, "").replace(/[-_]+/g, " ").trim();
-}
-
-// A file selected in the browser but not yet (fully) uploaded to the VPS. Lives only
-// in the client until it's staged + a watcher job is created (then the job takes over).
-type LocalStage = "ready" | "uploading" | "finalizing" | "error";
-interface LocalItem {
-  id: string;
-  file: File;
-  kind: Kind;
-  title: string;
-  tags: string;
-  partSize: number;
-  name: string;
-  size: number;
-  token: string;
-  tokenKey: string;
-  stage: LocalStage;
-  sent: number;
-  error?: string;
-  jobId?: number;
-  handedOff?: boolean;
 }
 
 export function UploadManager({
@@ -85,27 +57,24 @@ export function UploadManager({
   const [err, setErr] = useState<string | null>(null);
   const [showAllJobs, setShowAllJobs] = useState(false);
 
-  // --- local upload queue (controlled via ref so the async runner sees fresh state) ---
-  const itemsRef = useRef<LocalItem[]>([]);
-  const [, force] = useState(0);
-  const rerender = () => force((x) => x + 1);
-  const setItems = (fn: (prev: LocalItem[]) => LocalItem[]) => {
-    itemsRef.current = fn(itemsRef.current);
-    rerender();
-  };
-  const items = itemsRef.current;
-  const updateLocal = (id: string, patch: Partial<LocalItem>) =>
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  // --- global upload queue (runs in UploadProvider so it survives navigation &
+  //     refresh; the floating panel reads the same state on other pages) ---
+  const {
+    items,
+    speed,
+    readyCount,
+    uploadingNow,
+    addFiles: addFilesCtx,
+    runQueue,
+    pauseRun,
+    cancelRun,
+    removeLocal,
+    updateLocal,
+  } = useUpload();
 
-  // runner control
-  const runningRef = useRef(false);
-  const cancelRef = useRef(false);
-  const pauseRef = useRef(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const [speed, setSpeed] = useState(0);
+  const addFiles = (files: File[], folder: boolean) =>
+    addFilesCtx(files, folder, { kind, title, tags, partSize });
 
-  const readyCount = items.filter((i) => i.stage === "ready").length;
-  const uploadingNow = items.some((i) => i.stage === "uploading");
   const queuedJobCount = jobs.filter((j) => j.status === "queued").length;
   const activeCount =
     jobs.filter((j) => j.status === "pending" || j.status === "running").length +
@@ -117,121 +86,9 @@ export function UploadManager({
     return () => clearInterval(t);
   }, [hasActive, router]);
 
-  // --- add selected files to the queue (NOT uploading yet) ----------------
-  const addFiles = (files: File[], folder: boolean) => {
-    if (!files.length) return;
-    const additions: LocalItem[] = files.map((f) => {
-      const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
-      const itTitle = folder
-        ? stripExt(rel)
-        : files.length === 1 && title.trim()
-        ? title.trim()
-        : stripExt(f.name);
-      const itTags = withTag(tags, autoTypeTag(f.name, kind));
-      const tokenKey = `tcd_up_${folder ? rel : f.name}:${f.size}:${f.lastModified}`;
-      let token = localStorage.getItem(tokenKey);
-      if (!token) {
-        token = newToken();
-        localStorage.setItem(tokenKey, token);
-      }
-      return {
-        id: token,
-        file: f,
-        kind,
-        title: itTitle,
-        tags: itTags,
-        partSize,
-        name: f.name,
-        size: f.size,
-        token,
-        tokenKey,
-        stage: "ready",
-        sent: 0,
-      };
-    });
-    setItems((prev) => [...prev, ...additions]);
-  };
-
-  // --- the upload runner: process ready items sequentially ----------------
-  const runQueue = async () => {
-    if (runningRef.current) return;
-    runningRef.current = true;
-    cancelRef.current = false;
-    pauseRef.current = false;
-    const ctl: UploadCtl = {
-      get cancel() {
-        return cancelRef.current;
-      },
-      get pause() {
-        return pauseRef.current;
-      },
-      setAbort: (a) => {
-        abortRef.current = a;
-      },
-    };
-    try {
-      while (!cancelRef.current && !pauseRef.current) {
-        const next = itemsRef.current.find((i) => i.stage === "ready");
-        if (!next) break;
-        updateLocal(next.id, { stage: "uploading", error: undefined, sent: 0 });
-        const res = await uploadResumable(
-          next.file,
-          next.name,
-          next.token,
-          { kind: next.kind, title: next.title, tags: next.tags, partSize: next.partSize },
-          (sent, sp) => {
-            updateLocal(next.id, { sent });
-            if (sp) setSpeed(sp);
-          },
-          ctl
-        );
-        if (res.status === "paused") {
-          updateLocal(next.id, { stage: "ready" });
-          break;
-        }
-        if (res.status === "canceled") {
-          updateLocal(next.id, { stage: "ready" });
-          break;
-        }
-        if (res.status === "done") {
-          localStorage.removeItem(next.tokenKey);
-          updateLocal(next.id, { stage: "finalizing", jobId: res.jobId, handedOff: true });
-          // One click → full pipeline: immediately release the watcher job.
-          if (res.jobId) {
-            try {
-              await startUpload(res.jobId);
-            } catch {
-              /* the per-job Start button remains as a fallback */
-            }
-          }
-          router.refresh();
-        } else {
-          updateLocal(next.id, { stage: "error", error: res.error });
-        }
-      }
-    } finally {
-      runningRef.current = false;
-      setSpeed(0);
-    }
-  };
-
   const startAll = () => {
-    pauseRef.current = false;
     runQueue();
     if (queuedJobCount > 0) startTransition(() => startAllUploads());
-  };
-  const pauseRun = () => {
-    pauseRef.current = true;
-    abortRef.current?.abort();
-  };
-  const cancelRun = () => {
-    cancelRef.current = true;
-    abortRef.current?.abort();
-  };
-  const removeLocal = (id: string) => {
-    const it = itemsRef.current.find((i) => i.id === id);
-    if (it) localStorage.removeItem(it.tokenKey);
-    setItems((prev) => prev.filter((i) => i.id !== id));
   };
 
   // --- host-path (laptop) enqueue ----------------------------------------
@@ -444,10 +301,7 @@ export function UploadManager({
                   tags={allTags}
                   speed={speed}
                   onEdit={(patch) => updateLocal(it.id, patch)}
-                  onStart={() => {
-                    pauseRef.current = false;
-                    runQueue();
-                  }}
+                  onStart={() => runQueue()}
                   onRemove={() => removeLocal(it.id)}
                 />
               ))}
@@ -512,7 +366,7 @@ function LocalRow({
   const badge =
     item.stage === "ready" ? "Ready"
     : item.stage === "uploading" ? "Uploading → VPS"
-    : item.stage === "finalizing" ? "Queuing"
+    : item.stage === "finalizing" || item.stage === "done" ? "Queuing"
     : "Failed";
   const badgeClass =
     item.stage === "error" ? "st-error" : item.stage === "ready" ? "st-queued" : "st-running";
@@ -565,7 +419,7 @@ function LocalRow({
         {item.stage === "error" && (
           <button className="btn primary sm" onClick={onStart}>Retry</button>
         )}
-        {item.stage === "finalizing" && <span className="spinner sm" />}
+        {(item.stage === "finalizing" || item.stage === "done") && <span className="spinner sm" />}
       </div>
     </div>
   );
