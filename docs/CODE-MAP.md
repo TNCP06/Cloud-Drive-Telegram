@@ -95,13 +95,15 @@ in-progress stream's open fd keeps reading on Linux); the compressed copy is per
 `SUBTITLE_CHUNK_CONCURRENCY`, with an **in-job retry/back-off** `SUBTITLE_CHUNK_RETRY_ATTEMPTS`/`_DELAY_S` so a
 transient blip is retried while the video is still on disk; segment offsets merged), `_translate_segments`
 (deep-translator → EN/ID, timestamps preserved; **always auto-detects source** and **never emits the original
-text as a translation** — a failed segment is dropped, an all-failed track returns None so it's left absent),
+text as a translation** — a failed segment is dropped, an all-failed/all-unchanged track returns None;
+`_translate_track` wraps it with retry/back-off so a transient Google no-op throttle doesn't drop a language),
 `_build_vtt`/`_parse_vtt`/`_parse_ts` (VTT ↔ segments), `_subtitle_worker`/`run_subtitle_job` (single-job,
 dedup'd via a `.done` marker), writes WebVTT to the **persistent** `SUBTITLES_DIR` + a `subtitles` Turso row per
-lang. **`repair_translations_on_disk`** (run once at backfill start, gated by a `.tlok` marker per part) fixes
-videos whose translations failed under the old logic — re-translating straight from the on-disk original VTT
-(`_repair_one_translation`), so it needs **no video re-download**, only a few translate calls; it also recovers
-the case where the original text had leaked into the EN/ID files.
+lang. **`repair_translations_on_disk`** (run at backfill start + each idle rescan; per-part `.tlok` marker holds
+`ok`/`noop` when finalised or an attempt count while still missing a target) fixes videos whose translations
+failed under the old logic — re-translating straight from the on-disk original VTT (`_repair_one_translation`),
+so it needs **no video re-download**, only a few translate calls; it retries a part still missing a language up to
+`SUBTITLE_TL_REPAIR_MAX` passes, and also recovers the case where the original text had leaked into the EN/ID files.
 Subtitle generation is **absence-driven, NOT view-driven**: the streamer does *not* schedule subtitles when
 a video is played — it is produced solely by the background backfill loop, which subtitles any indexed video
 that has no subtitles yet (keeps playback off the shared STT semaphore). `streamer.py` exposes
@@ -122,7 +124,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 `COMPRESSED_MAX_SIZE_GB` (0 = keep forever), `SUBTITLE_GEN` (1/0),
 `SUBTITLES_DIR`, `GROQ_API_KEYS` (comma-separated), `GROQ_STT_MODELS`, `SUBTITLE_TARGET_LANGS`,
 `SUBTITLE_CHUNK_SECONDS`, `SUBTITLE_CHUNK_CONCURRENCY` (0 = #keys), `SUBTITLE_CHUNK_RETRY_ATTEMPTS`,
-`SUBTITLE_CHUNK_RETRY_DELAY_S`, `SUBTITLE_BACKFILL` (1/0), `SUBTITLE_BACKFILL_INTERVAL_S`,
+`SUBTITLE_CHUNK_RETRY_DELAY_S`, `SUBTITLE_TRANSLATE_RETRY`, `SUBTITLE_TRANSLATE_RETRY_DELAY_S`,
+`SUBTITLE_TL_REPAIR_MAX` (passes to fix a part's missing target langs, default 5),
+`SUBTITLE_BACKFILL` (1/0), `SUBTITLE_BACKFILL_INTERVAL_S`,
 `SUBTITLE_MAX_REPAIR_ATTEMPTS` (cross-pass repair budget, default 4).
 
 

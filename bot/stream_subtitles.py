@@ -67,6 +67,15 @@ SUBTITLE_CHUNK_CONCURRENCY = int(os.environ.get("SUBTITLE_CHUNK_CONCURRENCY", "0
 # absorbs brief Groq blips without re-downloading the whole video.
 SUBTITLE_CHUNK_RETRY_ATTEMPTS = int(os.environ.get("SUBTITLE_CHUNK_RETRY_ATTEMPTS", "3"))
 SUBTITLE_CHUNK_RETRY_DELAY_S = int(os.environ.get("SUBTITLE_CHUNK_RETRY_DELAY_S", "20"))
+# Translation retry: the free Google endpoint occasionally returns the input unchanged (a
+# soft-throttle no-op) when hit in rapid bursts. Retry a failed/no-op track a few times with a
+# short back-off before giving up, so a transient throttle doesn't permanently drop a language.
+SUBTITLE_TRANSLATE_RETRY = int(os.environ.get("SUBTITLE_TRANSLATE_RETRY", "3"))
+SUBTITLE_TRANSLATE_RETRY_DELAY_S = int(os.environ.get("SUBTITLE_TRANSLATE_RETRY_DELAY_S", "4"))
+# Translation-repair: how many backfill-start passes may attempt a still-incomplete part before
+# we stop retrying its missing target languages (keeps a permanently-untranslatable part from
+# being reprocessed every restart forever).
+SUBTITLE_TL_REPAIR_MAX = int(os.environ.get("SUBTITLE_TL_REPAIR_MAX", "5"))
 # Skip videos shorter/smaller than this (audio extraction still cheap, but avoids noise).
 SUBTITLE_MIN_BYTES = int(os.environ.get("SUBTITLE_MIN_MB", "1")) * 1048576
 
@@ -367,6 +376,7 @@ async def _transcribe_chunk(client: httpx.AsyncClient, audio_path: Path, key_off
                     await asyncio.sleep(1)
                     continue
                 resp.raise_for_status()
+                log.info("Groq STT ok: %s via key …%s model %s", audio_path.name, key[-4:], model)
                 return resp.json()
             except httpx.HTTPError as e:
                 last_err = e
@@ -550,6 +560,23 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
     return translated
 
 
+async def _translate_track(segments: list[dict], target: str, source: str | None = None) -> list[dict] | None:
+    """Translate a track to `target`, retrying on failure/no-op (the free Google endpoint
+    sometimes echoes the input unchanged under rapid bursts). Returns None only after all
+    SUBTITLE_TRANSLATE_RETRY attempts fail, so a transient throttle never silently drops a lang."""
+    for attempt in range(1, SUBTITLE_TRANSLATE_RETRY + 1):
+        try:
+            result = await asyncio.to_thread(_translate_segments, segments, target, source)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Translate to %s attempt %d errored (%s)", target, attempt, e)
+            result = None
+        if result:
+            return result
+        if attempt < SUBTITLE_TRANSLATE_RETRY:
+            await asyncio.sleep(SUBTITLE_TRANSLATE_RETRY_DELAY_S)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # DB
 # ---------------------------------------------------------------------------
@@ -572,8 +599,29 @@ async def _record_subtitle(db, part_id: int, lang: str) -> None:
 # Fixes both "only the original track exists" and "EN/ID exist but contain the original text".
 # ---------------------------------------------------------------------------
 def _tl_repair_marker(part_id: int) -> Path:
-    """Present once a part has been through the (one-time) translation-repair pass."""
+    """Records translation-repair progress. Holds `ok`/`noop` once finalised, else an attempt
+    count so a still-incomplete part is retried (up to SUBTITLE_TL_REPAIR_MAX) on later passes."""
     return SUBTITLES_DIR / f"part_{part_id}.tlok"
+
+
+def _tl_repair_state(part_id: int) -> str | int | None:
+    """None = never attempted; "ok"/"noop" = finalised (skip); int = attempts so far (retry)."""
+    p = _tl_repair_marker(part_id)
+    if not p.exists():
+        return None
+    try:
+        txt = p.read_text(encoding="utf-8").strip()
+    except Exception:  # noqa: BLE001
+        return 0
+    if txt in ("ok", "noop"):
+        return txt
+    if txt.isdigit():
+        return int(txt)
+    return 0  # legacy/unknown marker (e.g. old "done") → eligible to reprocess
+
+
+def _expected_targets(src_lang: str) -> list[str]:
+    return [t for t in SUBTITLE_TARGET_LANGS if t != src_lang]
 
 
 def _part_ids_with_vtt() -> list[int]:
@@ -630,14 +678,12 @@ async def _repair_one_translation(db, part_id: int) -> None:
 
     orig_text = orig_file.read_text(encoding="utf-8")
     repaired: list[str] = []
-    for target in SUBTITLE_TARGET_LANGS:
-        if target == src_lang:
-            continue
+    for target in _expected_targets(src_lang):
         tpath = subtitle_path(part_id, target)
         # Needs repair if missing, or its content is the original text (symptom b).
         if not hidden and tpath.exists() and tpath.read_text(encoding="utf-8") != orig_text:
             continue  # already a genuine, different translation — leave it
-        translated = await asyncio.to_thread(_translate_segments, segments, target, src_lang)
+        translated = await _translate_track(segments, target, src_lang)  # retries on no-op/throttle
         if translated:
             tpath.write_text(_build_vtt(translated), encoding="utf-8")
             await _record_subtitle(db, part_id, target)
@@ -646,27 +692,45 @@ async def _repair_one_translation(db, part_id: int) -> None:
     if repaired:
         log.info("Translation repair: part %d re-translated %s from %s (on-disk, no download)",
                  part_id, ", ".join(repaired), src_lang)
-    # A part with an original track but no done/partial marker and no chunk cache came from a
-    # fully-transcribed run that only failed at translation → it's complete now, finalise it.
-    if (not _done_marker(part_id).exists() and not _partial_marker(part_id).exists()
-            and not _chunks_cache_path(part_id).exists()):
-        _done_marker(part_id).write_text("ok", encoding="utf-8")
-    _tl_repair_marker(part_id).write_text("done", encoding="utf-8")
+
+    # Finalise based on COMPLETENESS, not just "attempted": if a target is still missing (e.g. a
+    # persistent Google throttle), bump the attempt count so a later pass retries it — until the
+    # budget runs out — instead of marking it done and dropping the language forever.
+    missing = [t for t in _expected_targets(src_lang) if not subtitle_path(part_id, t).exists()]
+    state = _tl_repair_state(part_id)
+    attempts = state if isinstance(state, int) else 0
+    if not missing or attempts + 1 >= SUBTITLE_TL_REPAIR_MAX:
+        # A part with an original track but no done/partial marker and no chunk cache came from a
+        # fully-transcribed run that only failed at translation → it's complete now, finalise it.
+        if (not _done_marker(part_id).exists() and not _partial_marker(part_id).exists()
+                and not _chunks_cache_path(part_id).exists()):
+            _done_marker(part_id).write_text("ok", encoding="utf-8")
+        _tl_repair_marker(part_id).write_text("ok" if not missing else str(attempts + 1),
+                                               encoding="utf-8")
+        if missing:
+            log.warning("Translation repair: part %d giving up on %s after %d attempts",
+                        part_id, ", ".join(missing), attempts + 1)
+    else:
+        _tl_repair_marker(part_id).write_text(str(attempts + 1), encoding="utf-8")
+        log.info("Translation repair: part %d still missing %s — will retry next pass (attempt %d/%d)",
+                 part_id, ", ".join(missing), attempts + 1, SUBTITLE_TL_REPAIR_MAX)
 
 
 async def repair_translations_on_disk(db) -> None:
-    """One-time, download-free repair of every part whose translations failed under the old
-    logic. Runs from the persistent /subtitles volume, so it costs nothing but a few Google
-    translate calls. Idempotent: each part is marked (`.tlok`) once handled."""
+    """Download-free repair of any part whose translations failed under the old logic. Runs from
+    the persistent /subtitles volume, so it costs nothing but a few Google translate calls. A part
+    is skipped once finalised (`ok`/`noop`); an incomplete one is retried on later passes until its
+    target languages are all present or the attempt budget (SUBTITLE_TL_REPAIR_MAX) runs out."""
     if not (SUBTITLE_GEN and SUBTITLES_DIR.exists()):
         return
     for part_id in _part_ids_with_vtt():
-        if _tl_repair_marker(part_id).exists():
+        state = _tl_repair_state(part_id)
+        if state in ("ok", "noop") or (isinstance(state, int) and state >= SUBTITLE_TL_REPAIR_MAX):
             continue
         try:
             await _repair_one_translation(db, part_id)
         except Exception:  # noqa: BLE001
-            # Leave it unmarked so a transient translate failure is retried next restart.
+            # Leave the marker as-is so a transient failure is retried on the next pass.
             log.exception("Translation repair failed for part %d", part_id)
 
 
@@ -731,17 +795,10 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
             for target in SUBTITLE_TARGET_LANGS:
                 if target == source_lang:
                     continue
-                # Best-effort: a translation failure must never abort finalisation (else a
-                # fully-transcribed video would be re-downloaded every restart just to retry
-                # the translation). Worst case the part keeps only its original-language track.
-                try:
-                    translated = await asyncio.to_thread(
-                        _translate_segments, segments, target, source_lang
-                    )
-                except Exception as e:  # noqa: BLE001
-                    log.warning("Subtitle: translate part %d → %s failed (%s) — leaving untranslated",
-                                part_id, target, e)
-                    translated = None
+                # Best-effort (with retry): a translation failure must never abort finalisation
+                # (else a fully-transcribed video would be re-downloaded every restart just to
+                # retry the translation). Worst case the part keeps only its original track.
+                translated = await _translate_track(segments, target, source_lang)
                 if translated:
                     subtitle_path(part_id, target).write_text(_build_vtt(translated), encoding="utf-8")
                     await _record_subtitle(db, part_id, target)

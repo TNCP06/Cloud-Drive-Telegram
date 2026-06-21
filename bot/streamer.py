@@ -961,6 +961,12 @@ async def _subtitle_backfill_loop() -> None:
                 # caps total tries). Fully-failed parts stay skipped until the next restart.
                 for pid in partial_part_ids():
                     _backfill_failed.discard(pid)
+                # Also retry any translation-repair that's still incomplete (a Google throttle
+                # left a target language missing) — self-heals without needing a restart.
+                try:
+                    await repair_translations_on_disk(db)
+                except Exception:  # noqa: BLE001
+                    log.exception("Translation repair (idle) failed")
                 await asyncio.sleep(SUBTITLE_BACKFILL_IDLE_S)
                 continue
             log.info("Subtitle backfill: processing part %d (%s)", part["part_id"], part["file_name"])

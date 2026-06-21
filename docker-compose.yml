@@ -104,6 +104,9 @@ services:
       SUBTITLE_CHUNK_RETRY_ATTEMPTS: "3"    # in-job retries for a transient chunk failure (before leaving it for repair)
       SUBTITLE_CHUNK_RETRY_DELAY_S: "20"    # back-off between those in-job retries
       SUBTITLE_MAX_REPAIR_ATTEMPTS: "4"     # cross-pass repair budget before finalising a still-incomplete video
+      SUBTITLE_TRANSLATE_RETRY: "3"         # retries when Google returns a no-op/throttled translation
+      SUBTITLE_TRANSLATE_RETRY_DELAY_S: "4" # back-off between translation retries
+      SUBTITLE_TL_REPAIR_MAX: "5"           # passes allowed to fix a part's missing target languages
       # --- retroactive backfill: slowly subtitle already-indexed videos (one at a time) ---
       SUBTITLE_BACKFILL: "1"            # set 0 to only subtitle on-demand (no backfill)
       SUBTITLE_BACKFILL_INTERVAL_S: "0"     # extra pace between videos; 0 = back-to-back (3 keys handle Groq)
