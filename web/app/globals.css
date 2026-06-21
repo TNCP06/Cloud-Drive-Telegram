@@ -51,6 +51,7 @@
   --pad: 22px;
 
   --sidebar-w: 248px;
+  --details-w: 300px;
 
   color-scheme: light;
 }
@@ -1169,11 +1170,10 @@ button { font-family: inherit; }
   background: var(--card);
   border: 1px solid var(--line-2);
   border-radius: var(--r-lg);
-  padding: 10px 20px;
+  padding: 5px 7px;
   box-shadow: var(--sh-3);
   display: flex;
   align-items: center;
-  gap: 16px;
   z-index: 250;
   animation: slideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -1198,18 +1198,23 @@ button { font-family: inherit; }
 }
 
 .selection-toolbar button.action-btn {
+  position: relative;
   background: none;
   border: 0;
-  padding: 8px 12px;
+  padding: 9px;
   border-radius: 8px;
   color: var(--muted);
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 500;
+  display: grid;
+  place-items: center;
   transition: all 0.12s;
+}
+/* count badge on the download button when >1 item is selected */
+.selection-toolbar .sel-badge {
+  position: absolute; top: -3px; right: -3px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 99px; background: var(--accent); color: var(--accent-ink);
+  font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
 }
 
 .selection-toolbar button.action-btn:hover {
@@ -1374,3 +1379,210 @@ button { font-family: inherit; }
   max-width: 360px; overflow: hidden; text-overflow: ellipsis;
 }
 .doc-grid tr:first-child td { background: var(--card-2); font-weight: 600; }
+
+/* ===========================================================================
+   Layout & view options (Windows-Explorer-style "View" menu)
+   =========================================================================== */
+
+/* topbar "View" trigger (replaces the old grid/list segmented toggle) */
+.viewbtn {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  border: 1px solid var(--line-2); background: var(--card);
+  color: var(--muted); cursor: pointer;
+  padding: 7px 11px; border-radius: var(--r-sm); font-size: 13px; font-weight: 500;
+}
+.viewbtn:hover { border-color: var(--line-strong); color: var(--ink); }
+.viewbtn > span { line-height: 1; }
+
+/* ---- App shell columns: sidebar + (optional) details pane. Desktop-only so the
+   mobile rules at max-width:860px (single column + drawer sidebar) always win. ---- */
+@media (min-width: 861px) {
+  .app.no-sidebar { grid-template-columns: 1fr; }
+  .app.no-sidebar .sidebar { display: none; }
+  .app.with-details { grid-template-columns: var(--sidebar-w) 1fr var(--details-w); }
+  .app.no-sidebar.with-details { grid-template-columns: 1fr var(--details-w); }
+}
+@media (max-width: 860px) { .details-pane { display: none; } }
+
+/* ---- Icon-grid layouts (xl / large / medium / small). Desktop-gated so phones keep
+   their own .grid sizing from the mobile media query. medium == base .grid. ---- */
+@media (min-width: 861px) {
+  .grid[data-layout="xl"] { grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 16px; }
+  .grid[data-layout="xl"] .card .thumb { height: 196px; }
+  .grid[data-layout="xl"] .card .thumb svg { width: 64px; height: 64px; }
+
+  .grid[data-layout="large"] { grid-template-columns: repeat(auto-fill, minmax(216px, 1fr)); }
+  .grid[data-layout="large"] .card .thumb { height: 150px; }
+  .grid[data-layout="large"] .card .thumb svg { width: 50px; height: 50px; }
+
+  .grid[data-layout="small"] { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 11px; }
+  .grid[data-layout="small"] .card { padding: 10px; }
+  .grid[data-layout="small"] .card .thumb { height: 74px; margin-bottom: 9px; }
+  .grid[data-layout="small"] .card .thumb svg { width: 30px; height: 30px; }
+}
+
+/* shared star/kebab cluster for tile & content rows */
+.ract { display: flex; align-items: center; gap: 2px; flex: none; }
+.ract .rstar {
+  display: grid; place-items: center; cursor: pointer; color: var(--faint);
+  background: none; border: 0; width: 28px; height: 28px; border-radius: 6px;
+  opacity: 0; transition: opacity .12s;
+}
+.tile:hover .ract .rstar, .crow:hover .ract .rstar, .ract .rstar.on { opacity: 1; }
+.ract .rstar.on { color: var(--gold); }
+.ract .rkebab { color: var(--muted); }
+.ract .rstar:hover { background: var(--card-2); color: var(--ink); }
+
+/* ---- Tiles layout: horizontal icon + name + type/size ---- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(252px, 1fr)); gap: 12px; }
+.tile {
+  display: flex; align-items: center; gap: 12px; position: relative; cursor: pointer;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: 11px 12px;
+  transition: border-color .14s, box-shadow .14s;
+}
+.tile:hover { box-shadow: var(--sh-2); border-color: var(--line-2); }
+.tile.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.tile-thumb {
+  width: 50px; height: 50px; flex: none; border-radius: var(--r-md);
+  display: grid; place-items: center; position: relative; overflow: hidden;
+}
+.tile-info { min-width: 0; flex: 1; }
+.tile-info .fname { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-info .meta { font-size: 11.5px; color: var(--faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-info .tags { display: flex; gap: 5px; margin-top: 6px; overflow: hidden; }
+.tile-info .tags > * { flex: none; }
+.tile-check {
+  position: absolute; top: 7px; left: 7px; z-index: 2;
+  width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+  cursor: pointer; color: var(--muted); border: 0;
+  background: color-mix(in oklab, var(--card) 78%, transparent);
+  opacity: 0; transition: opacity .12s;
+}
+.tile:hover .tile-check, .tile-check.on { opacity: 1; }
+.tile-check.on { color: var(--accent); }
+
+/* ---- Content layout: wide rows with metadata ---- */
+.content-rows { display: flex; flex-direction: column; gap: 8px; }
+.crow {
+  display: flex; align-items: center; gap: 14px; position: relative; cursor: pointer;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: 12px 14px;
+  transition: border-color .14s, box-shadow .14s;
+}
+.crow:hover { box-shadow: var(--sh-2); border-color: var(--line-2); }
+.crow.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.crow-thumb {
+  width: 62px; height: 62px; flex: none; border-radius: var(--r-md);
+  display: grid; place-items: center; position: relative; overflow: hidden;
+  background: var(--card-2);
+}
+.crow-ico { width: 100%; height: 100%; display: grid; place-items: center; }
+.crow-main { flex: 1; min-width: 0; }
+.crow-main .fname { font-size: 14.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow-main .meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.crow-main .tags { display: flex; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
+.crow-check {
+  position: absolute; top: 8px; left: 8px; z-index: 2;
+  width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+  cursor: pointer; color: var(--muted); border: 0;
+  background: color-mix(in oklab, var(--card) 78%, transparent);
+  opacity: 0; transition: opacity .12s;
+}
+.crow:hover .crow-check, .crow-check.on { opacity: 1; }
+.crow-check.on { color: var(--accent); }
+
+/* ---- List layout: compact, column-flowing names (Windows "List") ---- */
+.list-flow { columns: 220px; column-gap: 20px; }
+.litem {
+  display: flex; align-items: center; gap: 9px; position: relative;
+  padding: 5px 8px; border-radius: var(--r-sm); cursor: pointer;
+  break-inside: avoid;
+}
+.litem:hover { background: var(--card); }
+.litem.sel { background: var(--accent-soft); }
+.litem-ico { flex: none; }
+.litem-name { flex: 1; min-width: 0; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.litem-check {
+  position: absolute; left: 6px; top: 50%; transform: translateY(-50%); z-index: 2;
+  width: 22px; height: 22px; border-radius: 5px; display: grid; place-items: center;
+  cursor: pointer; color: var(--faint); border: 0; background: var(--card);
+  opacity: 0; transition: opacity .12s;
+}
+.litem:hover .litem-check, .litem-check.on { opacity: 1; }
+.litem-check.on { color: var(--accent); }
+.litem-kebab {
+  flex: none; width: 24px; height: 24px; border-radius: 5px; display: grid; place-items: center;
+  cursor: pointer; color: var(--muted); border: 0; background: none;
+  opacity: 0; transition: opacity .12s;
+}
+.litem:hover .litem-kebab { opacity: 1; }
+.litem-kebab:hover { background: var(--card-2); color: var(--ink); }
+
+/* ---- "Show" toggles ---- */
+/* Item check boxes: always visible (vs reveal-on-hover default) */
+.app.show-checks .card-check,
+.app.show-checks .row-check,
+.app.show-checks .tile-check,
+.app.show-checks .crow-check,
+.app.show-checks .litem-check { opacity: 1; }
+
+/* Compact view: denser rows, cards and gaps */
+.app.compact { --row-h: 38px; }
+.app.compact .grid { gap: 10px; }
+.app.compact .card { padding: 10px; }
+.app.compact .card .thumb { height: 88px; margin-bottom: 9px; }
+.app.compact .tiles, .app.compact .content-rows { gap: 7px; }
+.app.compact .tile { padding: 8px 10px; }
+.app.compact .crow { padding: 9px 12px; }
+
+/* ---- Details pane (persistent right panel) ---- */
+.details-pane {
+  background: var(--surface); border-left: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden;
+}
+.dp-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px var(--pad); border-bottom: 1px solid var(--line);
+  font-size: 11.5px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
+}
+.dp-close {
+  width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center;
+  border: 0; background: none; cursor: pointer; color: var(--muted);
+}
+.dp-close:hover { background: var(--card-2); color: var(--ink); }
+.dp-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 24px; color: var(--faint); text-align: center;
+}
+.dp-empty p { margin: 0; font-size: 13px; max-width: 200px; line-height: 1.5; }
+.dp-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px var(--pad) 28px; }
+.dp-preview {
+  width: 100%; height: 150px; border-radius: var(--r-md);
+  display: grid; place-items: center; position: relative; overflow: hidden; margin-bottom: 14px;
+}
+.dp-name { font-size: 15px; font-weight: 600; word-break: break-word; line-height: 1.35; }
+.dp-sub { font-size: 12.5px; color: var(--accent); margin-top: 2px; }
+.dp-fields { margin-top: 16px; display: flex; flex-direction: column; }
+.dp-field {
+  display: grid; grid-template-columns: 82px 1fr; gap: 10px; align-items: start;
+  padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px;
+}
+.dp-field:first-child { border-top: 0; }
+.dp-key { color: var(--faint); }
+.dp-val { color: var(--ink); min-width: 0; word-break: break-word; }
+.dp-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.dp-faint { color: var(--faint); }
+
+/* ---- Selection-on-click / activation-on-double-click ----
+   Items are keyboard-focusable (tabIndex) and activate on Enter/double-click. Suppress
+   text selection so a double-click activates instead of highlighting the label, and show
+   a clear focus ring for keyboard navigation. */
+.card, .row, .tile, .crow, .litem { user-select: none; -webkit-user-select: none; }
+.card:focus-visible,
+.row:focus-visible,
+.tile:focus-visible,
+.crow:focus-visible,
+.litem:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-md);
+}

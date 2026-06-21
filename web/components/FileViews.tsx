@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@/lib/icons";
 import { TAG_COLORS } from "@/lib/kinds";
-import { fileTypeFor } from "@/lib/fileType";
+import { fileTypeFor, displayName } from "@/lib/fileType";
 import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import type { DriveFile, Tag, Folder } from "@/lib/types";
 
@@ -77,13 +77,79 @@ interface ItemProps {
   tags: Tag[];
   onStar: (item: DriveFile) => void;
   onMenu: (item: DriveFile, anchor: HTMLElement) => void;
+  /** Activation: open the item (double-click / Enter). */
   onOpen: (item: DriveFile) => void;
+  /** Selection: single-click / Space (honours Ctrl/Meta toggle + Shift range). */
+  onSelect?: (item: DriveFile, e: React.MouseEvent | React.KeyboardEvent) => void;
+  /** Open the detail popup (Alt+Enter). */
+  onDetail?: (item: DriveFile) => void;
   /** >1 when multiple archive versions are grouped into one card. */
   versionCount?: number;
   /** Clicking the "N versions" badge → show all versions in this family. */
   onPickFamily?: (family: string) => void;
   selected?: boolean;
   onSelectToggle?: (item: DriveFile, e: React.MouseEvent) => void;
+  /** Append the file extension to the displayed name ("File name extensions" toggle). */
+  showExtensions?: boolean;
+  /** Show per-card detail items (size/date/tags). Off = name only. */
+  showDetails?: boolean;
+}
+
+/* ---- Selection-on-click / activation-on-double-click wiring ----
+   Single click (or Space) selects; double-click (or Enter) activates/opens. Native
+   onClick + onDoubleClick keep the two cleanly separated — no manual timer that could
+   fire a premature single-click — and tabIndex keeps each item keyboard-focusable.
+   Inner buttons (kebab/star/checkbox) stopPropagation so they never bubble up here. */
+function activation(
+  item: DriveFile,
+  onSelect: ItemProps["onSelect"],
+  onOpen: ItemProps["onOpen"],
+  onDetail: ItemProps["onDetail"]
+) {
+  return {
+    tabIndex: 0,
+    role: "button" as const,
+    // `data-id` lets DriveApp's arrow-key handler map focused DOM nodes back to items.
+    "data-id": item.id,
+    // stopPropagation so the click doesn't bubble to the content background (which
+    // clears the selection on empty-area clicks).
+    onClick: (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onSelect?.(item, e);
+    },
+    onDoubleClick: () => onOpen(item),
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        // Alt+Enter → details popup (Windows "Properties"); plain Enter → open.
+        if (e.altKey) onDetail?.(item);
+        else onOpen(item);
+      } else if (e.key === " ") {
+        e.preventDefault();
+        onSelect?.(item, e);
+      }
+    },
+  };
+}
+
+/* ---- Folder activation: single click selects (clears item selection), double-click
+   or Enter opens/enters the folder. ---- */
+function folderActivation(folderId: number, onSelect: (() => void) | undefined, onOpen: (id: number) => void) {
+  return {
+    tabIndex: 0,
+    role: "button" as const,
+    onClick: (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onSelect?.();
+    },
+    onDoubleClick: () => onOpen(folderId),
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        onOpen(folderId);
+      }
+    },
+  };
 }
 
 /** Version badge (e.g. "v0.6.0") + optional "N versions" button. */
@@ -118,13 +184,15 @@ export function FolderCard({
   folder,
   onOpen,
   onMenu,
+  onSelect,
 }: {
   folder: Folder;
   onOpen: (id: number) => void;
   onMenu: (folder: Folder, anchor: HTMLElement) => void;
+  onSelect?: () => void;
 }) {
   return (
-    <div className="card folder" onClick={() => onOpen(folder.id)}>
+    <div className="card folder" {...folderActivation(folder.id, onSelect, onOpen)}>
       <div className="folder-ico">
         <Icon name="folder" size={20} stroke={1.6} />
       </div>
@@ -153,13 +221,15 @@ export function FolderRow({
   folder,
   onOpen,
   onMenu,
+  onSelect,
 }: {
   folder: Folder;
   onOpen: (id: number) => void;
   onMenu: (folder: Folder, anchor: HTMLElement) => void;
+  onSelect?: () => void;
 }) {
   return (
-    <div className="row" onClick={() => onOpen(folder.id)}>
+    <div className="row" {...folderActivation(folder.id, onSelect, onOpen)}>
       <div className="rname">
         <div
           className="ico-wrap"
@@ -198,14 +268,18 @@ export function FileCard({
   onStar,
   onMenu,
   onOpen,
+  onSelect,
+  onDetail,
   versionCount,
   onPickFamily,
   selected = false,
   onSelectToggle,
+  showExtensions = false,
+  showDetails = true,
 }: ItemProps) {
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
-    <div className={`card ${selected ? "sel" : ""}`} onClick={() => onOpen(item)}>
+    <div className={`card ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
       <div className="thumb">
         {item.thumb ? (
           <Image src={item.thumb!} alt="" fill unoptimized style={{ objectFit: "cover" }} />
@@ -247,20 +321,22 @@ export function FileCard({
       )}
 
       <div className="fname" title={item.name}>
-        {item.version ? item.family : item.name}
+        {displayName(item, showExtensions)}
       </div>
-      <div className="meta">
-        {item.trashed && item.deletedAt != null ? (
-          <ClientText render={() => `Permanently deleted in ${trashDaysLeft(item.deletedAt!)} days`} />
-        ) : (
-          <>
-            {`${fmtSize(item.size)}${item.parts > 1 ? ` · ${item.parts} parts` : ""} · `}
-            <ClientText render={() => fmtDate(item.modified)} />
-          </>
-        )}
-      </div>
+      {showDetails && (
+        <div className="meta">
+          {item.trashed && item.deletedAt != null ? (
+            <ClientText render={() => `Permanently deleted in ${trashDaysLeft(item.deletedAt!)} days`} />
+          ) : (
+            <>
+              {`${fmtSize(item.size)}${item.parts > 1 ? ` · ${item.parts} parts` : ""} · `}
+              <ClientText render={() => fmtDate(item.modified)} />
+            </>
+          )}
+        </div>
+      )}
       <VersionBadge item={item} versionCount={versionCount} onPickFamily={onPickFamily} />
-      {itemTags.length > 0 && (
+      {showDetails && itemTags.length > 0 && (
         <div className="tagline">
           {itemTags.slice(0, 2).map((t) => (
             <Chip key={t.id} tag={t} />
@@ -283,15 +359,18 @@ export function FileRow({
   onStar,
   onMenu,
   onOpen,
+  onSelect,
+  onDetail,
   versionCount,
   onPickFamily,
   selected = false,
   onSelectToggle,
+  showExtensions = false,
 }: ItemProps) {
   const ft = fileTypeFor(item);
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
-    <div className={`row ${selected ? "sel" : ""}`} onClick={() => onOpen(item)}>
+    <div className={`row ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
       <div className="rname">
         {onSelectToggle && (
           <button
@@ -313,7 +392,7 @@ export function FileRow({
         </div>
         <div className="txt">
           <div className="t" title={item.name}>
-            {item.version ? item.family : item.name}
+            {displayName(item, showExtensions)}
             {item.version && <span className="ver" style={{ marginLeft: 8 }}>{item.version}</span>}
             {(versionCount ?? 1) > 1 && onPickFamily && (
               <button
@@ -360,6 +439,201 @@ export function FileRow({
           <Icon name="kebab" size={15} />
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================ Shared bits */
+/** Star + kebab cluster used by the tile/content layouts. */
+function RowActions({
+  item,
+  onStar,
+  onMenu,
+}: Pick<ItemProps, "item" | "onStar" | "onMenu">) {
+  return (
+    <div className="ract">
+      {!item.trashed && <Star on={item.starred} onClick={() => onStar(item)} cls="rstar" />}
+      <button
+        className="rstar rkebab"
+        title="Actions"
+        onClick={(e) => {
+          e.stopPropagation();
+          onMenu(item, e.currentTarget);
+        }}
+      >
+        <Icon name="kebab" size={15} />
+      </button>
+    </div>
+  );
+}
+
+function SelectCheck({
+  item,
+  selected,
+  onSelectToggle,
+  cls,
+}: Pick<ItemProps, "item" | "selected" | "onSelectToggle"> & { cls: string }) {
+  if (!onSelectToggle) return null;
+  return (
+    <button
+      className={`${cls} ${selected ? "on" : ""}`}
+      title={selected ? "Deselect" : "Select"}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelectToggle(item, e);
+      }}
+    >
+      <Icon name={selected ? "check" : "circle"} size={16} fill={selected} stroke={1.5} />
+    </button>
+  );
+}
+
+/* ============================================================ Tile (horizontal) */
+export function FileTile({
+  item,
+  tags,
+  onStar,
+  onMenu,
+  onOpen,
+  onSelect,
+  onDetail,
+  selected = false,
+  onSelectToggle,
+  showExtensions = false,
+  showDetails = true,
+}: ItemProps) {
+  const ft = fileTypeFor(item);
+  const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
+  return (
+    <div className={`tile ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
+      <div className="tile-thumb" style={{ background: `color-mix(in oklab, ${ft.tint} 10%, var(--card-2))` }}>
+        {item.thumb ? (
+          <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+        ) : (
+          <Icon name={ft.icon} size={26} stroke={1.5} style={{ color: ft.tint }} />
+        )}
+      </div>
+      <div className="tile-info">
+        <div className="fname" title={item.name}>
+          {displayName(item, showExtensions)}
+        </div>
+        {showDetails && (
+          <div className="meta">
+            {ft.label}
+            {item.size ? ` · ${fmtSize(item.size)}` : ""}
+            {item.version ? ` · ${item.version}` : ""}
+          </div>
+        )}
+        {showDetails && itemTags.length > 0 && (
+          <div className="tags">
+            {itemTags.slice(0, 2).map((t) => (
+              <Chip key={t.id} tag={t} />
+            ))}
+          </div>
+        )}
+      </div>
+      <SelectCheck item={item} selected={selected} onSelectToggle={onSelectToggle} cls="tile-check" />
+      <RowActions item={item} onStar={onStar} onMenu={onMenu} />
+    </div>
+  );
+}
+
+/* ============================================================ Content (wide row) */
+export function FileContent({
+  item,
+  tags,
+  onStar,
+  onMenu,
+  onOpen,
+  onSelect,
+  onDetail,
+  versionCount,
+  onPickFamily,
+  selected = false,
+  onSelectToggle,
+  showExtensions = false,
+  showDetails = true,
+}: ItemProps) {
+  const ft = fileTypeFor(item);
+  const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
+  return (
+    <div className={`crow ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
+      <SelectCheck item={item} selected={selected} onSelectToggle={onSelectToggle} cls="crow-check" />
+      <div className="crow-thumb">
+        {item.thumb ? (
+          <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+        ) : (
+          <div className="crow-ico" style={{ background: `color-mix(in oklab, ${ft.tint} 12%, var(--card-2))` }}>
+            <Icon name={ft.icon} size={26} stroke={1.5} style={{ color: ft.tint }} />
+          </div>
+        )}
+      </div>
+      <div className="crow-main">
+        <div className="fname" title={item.name}>
+          {displayName(item, showExtensions)}
+          {item.version && <span className="ver" style={{ marginLeft: 8 }}>{item.version}</span>}
+          {(versionCount ?? 1) > 1 && onPickFamily && (
+            <button
+              className="vermore"
+              style={{ marginLeft: 6 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onPickFamily(item.family);
+              }}
+            >
+              {versionCount} versions
+            </button>
+          )}
+        </div>
+        {showDetails && (
+          <div className="meta">
+            {ft.label} · {fmtSize(item.size)}
+            {item.parts > 1 ? ` · ${item.parts} parts` : ""} ·{" "}
+            <ClientText render={() => fmtDate(item.modified)} />
+          </div>
+        )}
+        {showDetails && itemTags.length > 0 && (
+          <div className="tags">
+            {itemTags.slice(0, 4).map((t) => (
+              <Chip key={t.id} tag={t} />
+            ))}
+          </div>
+        )}
+      </div>
+      <RowActions item={item} onStar={onStar} onMenu={onMenu} />
+    </div>
+  );
+}
+
+/* ============================================================ List (compact, column-flow) */
+export function FileListItem({
+  item,
+  onMenu,
+  onOpen,
+  onSelect,
+  onDetail,
+  selected = false,
+  onSelectToggle,
+  showExtensions = false,
+}: ItemProps) {
+  const ft = fileTypeFor(item);
+  return (
+    <div className={`litem ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
+      <SelectCheck item={item} selected={selected} onSelectToggle={onSelectToggle} cls="litem-check" />
+      <Icon name={ft.icon} size={18} stroke={1.5} className="litem-ico" style={{ color: ft.tint }} />
+      <span className="litem-name" title={item.name}>
+        {displayName(item, showExtensions)}
+      </span>
+      <button
+        className="litem-kebab"
+        title="Actions"
+        onClick={(e) => {
+          e.stopPropagation();
+          onMenu(item, e.currentTarget);
+        }}
+      >
+        <Icon name="kebab" size={14} />
+      </button>
     </div>
   );
 }

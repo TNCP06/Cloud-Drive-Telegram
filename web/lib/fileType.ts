@@ -148,6 +148,30 @@ const MEDIA_FALLBACK: FileType = {
   preview: "image",
 };
 
+/**
+ * The name shown in the grid. Items carry a clean title (not a filename), so the
+ * "File name extensions" toggle appends the real extension (from the first part's
+ * file name) when on. Archives show their family (version stripped) as the base.
+ */
+export function displayName(
+  item: Pick<DriveFile, "name" | "family" | "version" | "fileName" | "kind">,
+  showExtensions = false
+): string {
+  const base = item.version ? item.family : item.name;
+  if (!showExtensions) return base;
+  let ext = extOf(item.fileName) || extOf(item.name);
+  if (!ext && item.kind === "media") {
+    // Telegram photos carry NO file name (always served as JPEG), and any media item
+    // without a usable file name is treated as an image everywhere else in the app.
+    // Fall back to ".jpg" so the extension shows consistently for media instead of
+    // appearing only for the items that happened to be uploaded as named files.
+    ext = "jpg";
+  }
+  if (!ext) return base;
+  // Don't double up if the title already ends with the extension.
+  return base.toLowerCase().endsWith("." + ext) ? base : `${base}.${ext}`;
+}
+
 /** Lowercase extension (no dot) from a file name, or "" if none. */
 export function extOf(name: string | null | undefined): string {
   if (!name) return "";

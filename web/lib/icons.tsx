@@ -56,6 +56,20 @@ const PATHS: Record<string, string> = {
   share: '<path d="M12 15V4M8.5 7.5L12 4l3.5 3.5"/><path d="M6 12v6.5c0 .55.45 1 1 1h10c.55 0 1-.45 1-1V12"/>',
   rotate: '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 4.5V9h-4.5"/>',
   expand: '<path d="M8 4H5a1 1 0 0 0-1 1v3M16 4h3a1 1 0 0 1 1 1v3M8 20H5a1 1 0 0 1-1-1v-3M16 20h3a1 1 0 0 0 1-1v-3"/>',
+  // --- layout / view-menu icons ---
+  iconsXl: '<rect x="5" y="5" width="14" height="14" rx="2.5"/>',
+  iconsLg: '<rect x="4.5" y="4.5" width="6" height="6" rx="1.3"/><rect x="13.5" y="4.5" width="6" height="6" rx="1.3"/><rect x="4.5" y="13.5" width="6" height="6" rx="1.3"/><rect x="13.5" y="13.5" width="6" height="6" rx="1.3"/>',
+  iconsMd: '<rect x="3.6" y="6" width="4.2" height="4.2" rx="1"/><rect x="9.9" y="6" width="4.2" height="4.2" rx="1"/><rect x="16.2" y="6" width="4.2" height="4.2" rx="1"/><rect x="3.6" y="13.8" width="4.2" height="4.2" rx="1"/><rect x="9.9" y="13.8" width="4.2" height="4.2" rx="1"/><rect x="16.2" y="13.8" width="4.2" height="4.2" rx="1"/>',
+  iconsSm: '<rect x="4" y="4" width="3.4" height="3.4" rx=".8"/><rect x="10.3" y="4" width="3.4" height="3.4" rx=".8"/><rect x="16.6" y="4" width="3.4" height="3.4" rx=".8"/><rect x="4" y="10.3" width="3.4" height="3.4" rx=".8"/><rect x="10.3" y="10.3" width="3.4" height="3.4" rx=".8"/><rect x="16.6" y="10.3" width="3.4" height="3.4" rx=".8"/><rect x="4" y="16.6" width="3.4" height="3.4" rx=".8"/><rect x="10.3" y="16.6" width="3.4" height="3.4" rx=".8"/><rect x="16.6" y="16.6" width="3.4" height="3.4" rx=".8"/>',
+  viewList: '<path d="M4 7h6M4 12h6M4 17h6M14 7h6M14 12h6M14 17h6"/>',
+  viewDetails: '<rect x="3.7" y="5.9" width="2.6" height="2.6" rx=".6"/><path d="M9 7.2h11"/><rect x="3.7" y="10.7" width="2.6" height="2.6" rx=".6"/><path d="M9 12h11"/><rect x="3.7" y="15.5" width="2.6" height="2.6" rx=".6"/><path d="M9 16.8h11"/>',
+  viewTiles: '<rect x="3.7" y="5.5" width="5" height="5" rx="1"/><path d="M10.6 7h9.7M10.6 9.4h6"/><rect x="3.7" y="13.5" width="5" height="5" rx="1"/><path d="M10.6 15h9.7M10.6 17.4h6"/>',
+  viewContent: '<rect x="3.7" y="5" width="6.4" height="6.4" rx="1.2"/><path d="M12 6.6h8.3M12 9.4h5.4"/><path d="M3.7 14.6h16.6M3.7 18h11"/>',
+  panelLeft: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M9.5 5v14"/>',
+  panelRight: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M14.5 5v14"/>',
+  compact: '<path d="M8 3.5v3.2a1 1 0 0 1-1 1H3.8M16 3.5v3.2a1 1 0 0 0 1 1h3.2M8 20.5v-3.2a1 1 0 0 0-1-1H3.8M16 20.5v-3.2a1 1 0 0 1 1-1h3.2"/>',
+  checkbox: '<rect x="4.5" y="4.5" width="15" height="15" rx="3.5"/><path d="M8.4 12l2.5 2.5 5-5"/>',
+  info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5"/><path d="M12 7.7h.01"/>',
 };
 
 export function Icon({

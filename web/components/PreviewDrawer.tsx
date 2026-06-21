@@ -371,6 +371,9 @@ export function PreviewDrawer({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (document.fullscreenElement) return; // let Plyr exit fullscreen first
+        // Consume the Esc here (capture phase) so it never reaches the grid's
+        // selection-clear handler — closing the preview must not drop the selection.
+        e.stopPropagation();
         if (detailsOnly) onClose();
         else if (showDetails && !editing) closeDetails();
         else onClose();

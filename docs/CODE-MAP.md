@@ -189,6 +189,13 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `{ id, label, icon, tint, badge, preview }` where `preview` (`pdf|text|word|sheet|image|video|none`)
   tells the viewer how to render the file inline; multi-part items are forced to `preview:"none"`.
   Drives the per-type icon/colour/badge in the grid/list and the inline document preview.
+  `displayName(item, showExtensions)` — the name shown in the grid (family for archives, title
+  otherwise); appends the real extension from the first part's `fileName` when the "File name
+  extensions" view toggle is on.
+- `layoutPrefs.ts` — **Windows-Explorer-style view preferences** persisted to `localStorage`
+  (`tcd_layout`). `LayoutMode` (`xl|large|medium|small|list|details|tiles|content`), `LayoutPrefs`
+  (layout + `showSidebar`/`compact`/`showCheckboxes`/`showExtensions`/`showDetailItems`/`detailsPane`),
+  `DEFAULT_PREFS`, `loadPrefs`/`savePrefs` (best-effort, SSR-safe), `LAYOUT_ICON`/`LAYOUT_LABEL`.
 - `format.ts` — `sqliteToMs()` (SQLite datetime→epoch ms), byte/size formatting.
 - `uploads.ts` — `getUploadJobs()` — read helper for the `/upload` page.
 - `uploadDb.ts` — **client-side IndexedDB** persistence for the upload queue (`tcd-upload-db`).
@@ -269,6 +276,27 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).
 - `DriveApp.tsx` — top-level app shell/state (largest component). Takes a `space` prop ("main"|"private");
   a navbar **lock/unlock** icon enters/exits the Private space (exit clears the PIN cookie via `lockPrivate`).
+  A topbar **"View" button** (replaces the old grid/list segmented toggle) opens `ViewMenu`; the chosen
+  `LayoutPrefs` (from `lib/layoutPrefs.ts`, hydrated post-mount to avoid SSR mismatch) drive **8 layouts**
+  via `renderItems` — icon grids `xl|large|medium|small` (one `FileCard`, sized by `.grid[data-layout]`
+  CSS), `list` (`FileListItem` column-flow), `details` (the sortable `FileRow` table), `tiles`
+  (`FileTile`), `content` (`FileContent`) — plus the `.app` class flags `no-sidebar`/`with-details`/
+  `compact`/`show-checks`. When `detailsPane` is on, `DetailsPane` renders the **single-selected** item.
+  Selection UX: clicking the empty content background or pressing **Esc** clears the selection (a
+  window-level handler; the preview/detail popup `stopPropagation`s its own Esc in `PreviewDrawer` so
+  closing it never drops the selection). **Arrow keys** move the focused item (a global window listener via
+  `keyNavRef`, so it works even before any click — lands on the selected/first item; DOM-geometry nav via
+  `[data-id]`, works in every layout) — **Shift+arrow** extends the range from the anchor, **Ctrl+arrow**
+  moves focus only (Ctrl+Space toggles), **Ctrl/Cmd+A** selects all, **Alt+Enter** opens the detail popup. The floating
+  **selection toolbar is icon-only** (tooltip/aria-label per button) and adds a **Download** action (opens
+  the bot deep link for each selected item in a new tab; shows a count badge when >1) and, for a single
+  selection, a **Details** action (the standalone detail popup).
+- `ViewMenu.tsx` — the **View dropdown**: a radio list of the 8 layouts (picks close the menu), a
+  Details-pane toggle, and a "Show" group of on/off toggles (Sidebar / Compact view / Item check boxes /
+  File name extensions / Detail items) — toggles keep the menu open. Built from the shared `Menu`/`MenuItem`.
+- `DetailsPane.tsx` — **persistent right-hand details panel** (Windows "Details pane"). Shows the
+  selected item's preview + metadata (type/size/parts/modified/added/status/tags) when exactly one item is
+  selected (else a hint); does not change card-click behavior. Desktop-only (hidden on mobile via CSS).
   Folders render in their own compact `.grid.folders` above the file grid. Its modals + empty state were
   extracted to `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete`, `CreateFolderModal`,
   `RenameFolderModal`, `MoveToFolderModal`, `EmptyState`). `MoveToFolderModal` works for both items and
@@ -281,9 +309,18 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   Volume/mute **and** the chosen caption language persist globally in `localStorage` (`subtitle-lang`, or
   `"off"`): each new video auto-activates the saved language via `pickCaptionLang` with the fallback chain
   **preferred → Indonesian → original**.
-- `FileViews.tsx` — grid/list rendering of `DriveFile`s and folders. `FolderCard` is a **compact
-  horizontal tile** (icon + name, no big thumbnail) to avoid wasted space; `FolderRow` for list view.
-  File cards keep checkboxes for multi-select, a star toggle, and a kebab action button.
+- `FileViews.tsx` — per-layout rendering of `DriveFile`s and folders: `FileCard` (icon grids),
+  `FileRow` (Details table), `FileTile` (horizontal tile), `FileContent` (wide metadata row),
+  `FileListItem` (compact column-flow). All take `showExtensions` (extension on the name via
+  `displayName`) and card-like ones take `showDetails` (the "Detail items" toggle — hides size/date/tags).
+  `FolderCard` is a **compact horizontal tile** (icon + name, no big thumbnail); `FolderRow` for the
+  Details table. File cards keep checkboxes for multi-select, a star toggle, and a kebab action button.
+  **Interaction model (Explorer-style):** a shared `activation()` helper wires every cell so a single
+  click (or Space) **selects** (`onSelect`) and a double-click (or Enter) **activates/opens** (`onOpen`);
+  items are `tabIndex`-focusable with a focus ring. Native `onClick`/`onDoubleClick` keep the two
+  separate (no timer), and inner buttons `stopPropagation`. `onSelect` honours Ctrl/Meta (toggle) and
+  Shift (range over the on-screen order, anchored by `selectAnchor` in `DriveApp`); folders select-on-click
+  (clearing the item selection) and open-on-double-click.
   Thumbless items render a **type-specific icon + colour** via `fileTypeFor` (PDF/Word/Excel/…)
   with an extension **badge** (e.g. "PDF", "XLSX"); the list view's Type column shows the
   fine-grained label.

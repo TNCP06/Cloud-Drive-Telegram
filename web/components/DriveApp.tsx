@@ -7,10 +7,29 @@ import { fmtSize, relGroup } from "@/lib/format";
 import { TAG_COLORS } from "@/lib/kinds";
 import type { DriveFile, Tag, Folder } from "@/lib/types";
 import { Sidebar, type Counts, type Storage } from "./Sidebar";
-import { FileCard, FileRow, FolderCard, FolderRow, Menu, MenuItem } from "./FileViews";
+import {
+  FileCard,
+  FileRow,
+  FileTile,
+  FileContent,
+  FileListItem,
+  FolderCard,
+  FolderRow,
+  Menu,
+  MenuItem,
+} from "./FileViews";
 import { PreviewDrawer } from "./PreviewDrawer";
 import { TagManager } from "./TagManager";
 import { ThemeToggle } from "./ThemeToggle";
+import { ViewMenu } from "./ViewMenu";
+import { DetailsPane } from "./DetailsPane";
+import {
+  type LayoutPrefs,
+  DEFAULT_PREFS,
+  loadPrefs,
+  savePrefs,
+  LAYOUT_ICON,
+} from "@/lib/layoutPrefs";
 import {
   ConfirmDelete,
   ConfirmBulkDelete,
@@ -88,12 +107,27 @@ export function DriveApp({
   const [view, setView] = useState<View>(initialView);
   const [activeTag, setActiveTag] = useState<number | null>(null);
   const [query, setQuery] = useState("");
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [sort, setSort] = useState("modified");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [groupVersions, setGroupVersions] = useState(true);
   const [navOpen, setNavOpen] = useState(false);
   const [sortMenu, setSortMenu] = useState<HTMLElement | null>(null);
+
+  /* ---- layout & view preferences (persisted to localStorage) ----
+     Start from defaults (server + first client paint match), then hydrate the saved
+     prefs after mount so there's no SSR class mismatch. */
+  const [prefs, setPrefs] = useState<LayoutPrefs>(DEFAULT_PREFS);
+  const [viewMenu, setViewMenu] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setPrefs(loadPrefs());
+  }, []);
+  const updatePrefs = (patch: Partial<LayoutPrefs>) =>
+    setPrefs((p) => {
+      const next = { ...p, ...patch };
+      savePrefs(next);
+      return next;
+    });
+  const layout = prefs.layout;
   const [menu, setMenu] = useState<{ anchor: HTMLElement; item: DriveFile } | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [manageTags, setManageTags] = useState(false);
@@ -117,6 +151,8 @@ export function DriveApp({
 
   // Multi-select states
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  // Anchor for Shift+click range selection (last item single-clicked / ctrl-toggled).
+  const [selectAnchor, setSelectAnchor] = useState<number | null>(null);
   const [confirmBulk, setConfirmBulk] = useState<{ ids: number[]; mode: "trash" | "purge" } | null>(null);
 
   // Preview options
@@ -154,6 +190,10 @@ export function DriveApp({
     markMenuClosed();
     setTimeout(() => setSortMenu(null), 0);
   };
+  const closeViewMenu = () => {
+    markMenuClosed();
+    setTimeout(() => setViewMenu(null), 0);
+  };
 
   useEffect(() => {
     if (!toast) return;
@@ -161,6 +201,10 @@ export function DriveApp({
     return () => window.clearTimeout(t);
   }, [toast]);
   const searchRef = useRef<HTMLInputElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  // Latest-ref for the global keyboard handler: the window listener stays stable while
+  // always seeing the current selection/state (assigned during render below).
+  const keyNavRef = useRef<(e: KeyboardEvent) => void>(() => {});
 
   /* ---- keyboard: ⌘K focuses search ---- */
   useEffect(() => {
@@ -170,6 +214,29 @@ export function DriveApp({
         searchRef.current?.focus();
       }
     };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  /* ---- keyboard: Esc clears the selection (when no menu/preview is open) ---- */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (previewId != null || menu || sortMenu || viewMenu || folderMenu) return;
+      if (selectedIds.length) {
+        setSelectedIds([]);
+        setSelectAnchor(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [previewId, menu, sortMenu, viewMenu, folderMenu, selectedIds.length]);
+
+  /* ---- keyboard: global arrow-key navigation + Ctrl/Cmd+A select-all ----
+     Bound once on window so it works even before any file is clicked (delegates to the
+     latest handler via keyNavRef). ---- */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keyNavRef.current(e);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
@@ -417,175 +484,347 @@ export function DriveApp({
     if (next) setPreviewId(next.id);
   };
 
+  /* ---- selection helpers reachable from the content background + toolbar ---- */
+  const clickThroughNow = () =>
+    Date.now() - menuClosedTimeRef.current < 150 || Date.now() - previewClosedTimeRef.current < 150;
+
+  // Clear the selection when clicking the empty content background. Items stopPropagation,
+  // so this only fires for clicks that actually reach the scroll area / its containers.
+  const onContentClick = () => {
+    if (clickThroughNow()) return;
+    if (selectedIds.length) {
+      setSelectedIds([]);
+      setSelectAnchor(null);
+    }
+  };
+
+  // Arrow-key navigation between focused items. Uses live DOM geometry so it works for
+  // every layout (grid columns, list rows, column-flow): Left/Right step linearly;
+  // Up/Down pick the nearest item on the adjacent row by horizontal position.
+  //   plain  → move focus + select only that item (anchor = it)
+  //   Shift  → extend the selection range from the anchor to the new item
+  //   Ctrl   → move focus only, leaving the selection untouched (toggle with Ctrl+Space)
+  keyNavRef.current = (e: KeyboardEvent) => {
+    const ae = document.activeElement as HTMLElement | null;
+    const typing = !!ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
+    const overlayOpen = previewId != null || !!menu || !!sortMenu || !!viewMenu || !!folderMenu;
+
+    // Ctrl/Cmd+A → select every visible item.
+    if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+      if (typing || overlayOpen || !items.length) return;
+      e.preventDefault();
+      setSelectedIds(items.map((i) => i.id));
+      setSelectAnchor(items[0]?.id ?? null);
+      return;
+    }
+
+    const arrows = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
+    if (!arrows.includes(e.key) || typing || overlayOpen) return;
+    const container = contentRef.current;
+    if (!container) return;
+    const nodes = Array.from(container.querySelectorAll<HTMLElement>("[data-id]"));
+    if (!nodes.length) return;
+    e.preventDefault();
+    const idOf = (n: HTMLElement) => Number(n.dataset.id);
+    const active = document.activeElement as HTMLElement | null;
+    const idx = active ? nodes.indexOf(active) : -1;
+
+    // Nothing focused yet → land on the selected item (or the first) and select it.
+    if (idx === -1) {
+      const start = nodes.find((n) => selectedIds.includes(idOf(n))) ?? nodes[0];
+      start.focus();
+      setSelectedIds([idOf(start)]);
+      setSelectAnchor(idOf(start));
+      return;
+    }
+
+    // Resolve the target node for this arrow.
+    let target: HTMLElement | undefined;
+    if (e.key === "ArrowRight") target = nodes[idx + 1] ?? nodes[idx];
+    else if (e.key === "ArrowLeft") target = nodes[idx - 1] ?? nodes[idx];
+    else {
+      const down = e.key === "ArrowDown";
+      const cr = nodes[idx].getBoundingClientRect();
+      const cand = nodes.filter((n) => {
+        const t = n.getBoundingClientRect().top;
+        return down ? t > cr.top + 1 : t < cr.top - 1;
+      });
+      if (!cand.length) return; // already on the edge row
+      let rowTop: number | null = null;
+      for (const n of cand) {
+        const t = n.getBoundingClientRect().top;
+        rowTop = rowTop == null ? t : down ? Math.min(rowTop, t) : Math.max(rowTop, t);
+      }
+      const rowNodes = cand.filter((n) => Math.abs(n.getBoundingClientRect().top - (rowTop as number)) < 2);
+      target = rowNodes[0];
+      for (const n of rowNodes) {
+        if (
+          Math.abs(n.getBoundingClientRect().left - cr.left) <
+          Math.abs(target.getBoundingClientRect().left - cr.left)
+        )
+          target = n;
+      }
+    }
+    if (!target) return;
+    target.focus();
+    const tid = idOf(target);
+
+    if (e.shiftKey) {
+      // Extend the range from the anchor (seed it from the current item if unset).
+      const anchorId = selectAnchor ?? idOf(nodes[idx]);
+      const aIdx = nodes.findIndex((n) => idOf(n) === anchorId);
+      const tIdx = nodes.indexOf(target);
+      if (aIdx >= 0) {
+        const [lo, hi] = aIdx < tIdx ? [aIdx, tIdx] : [tIdx, aIdx];
+        setSelectedIds(nodes.slice(lo, hi + 1).map(idOf));
+        setSelectAnchor(anchorId);
+      } else {
+        setSelectedIds([tid]);
+        setSelectAnchor(tid);
+      }
+    } else if (e.ctrlKey || e.metaKey) {
+      // Move focus only — keep the existing selection + anchor (Ctrl+Space toggles).
+    } else {
+      setSelectedIds([tid]);
+      setSelectAnchor(tid);
+    }
+  };
+
+  // Toolbar download: open the bot deep link for every selected item in a new tab.
+  const downloadSelected = () => {
+    selectedIds.forEach((id) => {
+      const f = files.find((x) => x.id === id);
+      const url = f ? deepLink(f.slug) : null;
+      if (url) window.open(url, "_blank");
+    });
+  };
+
+  // Toolbar detail (single selection): open the standalone detail popup.
+  const detailSelected = () => {
+    const f = files.find((x) => x.id === selectedIds[0]);
+    if (!f) return;
+    setInitialEditing(false);
+    setInitialShowDetails(true);
+    setDetailsOnly(true);
+    openPreview(f);
+  };
+
   function renderItems(list: DriveFile[]) {
     const onMenu = (item: DriveFile, anchor: HTMLElement) => setMenu({ anchor, item });
     const { list: shown, counts } = collapseVersions(list);
     const isClickThrough = () => {
       return (Date.now() - menuClosedTimeRef.current < 150) || (Date.now() - previewClosedTimeRef.current < 150);
     };
-    if (viewMode === "grid") {
-      return (
-        <>
-        {currentFolders.length > 0 && (
-          <div className="grid folders">
-            {currentFolders.map((folder) => (
-              <FolderCard
-                key={`folder-${folder.id}`}
-                folder={folder}
-                onOpen={(id) => {
-                  if (isClickThrough()) return;
-                  setCurrentFolderId(id);
-                  setSelectedIds([]);
-                }}
-                onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
-              />
-            ))}
-          </div>
-        )}
-        <div className="grid">
-          {shown.map((item) => (
-            <FileCard
-              key={item.id}
-              item={item}
-              tags={tags}
-              onStar={doStar}
-              onMenu={onMenu}
-              onOpen={(it) => {
+    const onOpenItem = (it: DriveFile) => {
+      if (isClickThrough()) return;
+      setInitialShowDetails(false);
+      setInitialEditing(false);
+      setDetailsOnly(false);
+      openPreview(it);
+    };
+    // Alt+Enter → standalone detail popup for this item.
+    const onDetailItem = (it: DriveFile) => {
+      if (isClickThrough()) return;
+      setInitialEditing(false);
+      setInitialShowDetails(true);
+      setDetailsOnly(true);
+      openPreview(it);
+    };
+    const onToggle = (it: DriveFile) =>
+      setSelectedIds((prev) =>
+        prev.includes(it.id) ? prev.filter((id) => id !== it.id) : [...prev, it.id]
+      );
+    // Single-click selection (Explorer-style): plain = select only; Ctrl/Meta = toggle;
+    // Shift = range from the anchor along the on-screen order (`shown`).
+    const onSelect = (it: DriveFile, e: React.MouseEvent | React.KeyboardEvent) => {
+      if (isClickThrough()) return;
+      if (e.ctrlKey || e.metaKey) {
+        onToggle(it);
+        setSelectAnchor(it.id);
+      } else if (e.shiftKey && selectAnchor != null) {
+        const aIdx = shown.findIndex((f) => f.id === selectAnchor);
+        const bIdx = shown.findIndex((f) => f.id === it.id);
+        if (aIdx >= 0 && bIdx >= 0) {
+          const [lo, hi] = aIdx < bIdx ? [aIdx, bIdx] : [bIdx, aIdx];
+          setSelectedIds(shown.slice(lo, hi + 1).map((f) => f.id));
+        } else {
+          setSelectedIds([it.id]);
+          setSelectAnchor(it.id);
+        }
+      } else {
+        setSelectedIds([it.id]);
+        setSelectAnchor(it.id);
+      }
+    };
+    // Clicking a folder (or empty selection target) clears the item selection.
+    const clearSelection = () => {
+      if (isClickThrough()) return;
+      setSelectedIds([]);
+      setSelectAnchor(null);
+    };
+    // Shared props for every file-cell component (grid card, tile, content row, list item).
+    const cell = (item: DriveFile) => ({
+      item,
+      tags,
+      onStar: doStar,
+      onMenu,
+      onOpen: onOpenItem,
+      onSelect,
+      onDetail: onDetailItem,
+      versionCount: counts.get(item.familyKey),
+      onPickFamily: pickFamily,
+      selected: selectedIds.includes(item.id),
+      onSelectToggle: onToggle,
+      showExtensions: prefs.showExtensions,
+      showDetails: prefs.showDetailItems,
+    });
+
+    // Folders render as compact cards above the items in every layout except Details,
+    // where they become table rows interleaved with the file rows.
+    const folderBlock =
+      currentFolders.length > 0 && layout !== "details" ? (
+        <div className="grid folders">
+          {currentFolders.map((folder) => (
+            <FolderCard
+              key={`folder-${folder.id}`}
+              folder={folder}
+              onOpen={(id) => {
                 if (isClickThrough()) return;
-                setInitialShowDetails(false);
-                setInitialEditing(false);
-                setDetailsOnly(false);
-                openPreview(it);
+                setCurrentFolderId(id);
+                setSelectedIds([]);
               }}
-              versionCount={counts.get(item.familyKey)}
-              onPickFamily={pickFamily}
-              selected={selectedIds.includes(item.id)}
-              onSelectToggle={(it) => {
-                setSelectedIds((prev) =>
-                  prev.includes(it.id)
-                    ? prev.filter((id) => id !== it.id)
-                    : [...prev, it.id]
-                );
-              }}
+              onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
+              onSelect={clearSelection}
             />
           ))}
         </div>
+      ) : null;
+
+    if (layout === "details") {
+      const sortHead = (key: string, label: string, cls?: string, defOrder: "asc" | "desc" = "asc") => (
+        <button
+          className={cls}
+          onClick={() => {
+            if (sort === key) setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
+            else {
+              setSort(key);
+              setSortOrder(defOrder);
+            }
+          }}
+        >
+          {label}{" "}
+          {sort === key && (
+            <Icon
+              name="chevdown"
+              size={13}
+              style={{
+                transform: sortOrder === "asc" ? "rotate(180deg)" : "none",
+                transition: "transform 0.2s",
+                display: "inline-block",
+                marginLeft: "4px",
+              }}
+            />
+          )}
+        </button>
+      );
+      return (
+        <div className="list">
+          <div className="list-head">
+            {sortHead("name", "Name", undefined, "asc")}
+            {sortHead("modified", "Modified", "h-mod", "desc")}
+            {sortHead("size", "Size", "h-size", "desc")}
+            <span className="hide-mob">Type</span>
+            <span></span>
+          </div>
+          {currentFolders.map((folder) => (
+            <FolderRow
+              key={`folder-${folder.id}`}
+              folder={folder}
+              onOpen={(id) => {
+                if (isClickThrough()) return;
+                setCurrentFolderId(id);
+                setSelectedIds([]);
+              }}
+              onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
+              onSelect={clearSelection}
+            />
+          ))}
+          {shown.map((item) => (
+            <FileRow key={item.id} {...cell(item)} />
+          ))}
+        </div>
+      );
+    }
+
+    if (layout === "list") {
+      return (
+        <>
+          {folderBlock}
+          <div className="list-flow">
+            {shown.map((item) => (
+              <FileListItem key={item.id} {...cell(item)} />
+            ))}
+          </div>
         </>
       );
     }
+
+    if (layout === "tiles") {
+      return (
+        <>
+          {folderBlock}
+          <div className="tiles">
+            {shown.map((item) => (
+              <FileTile key={item.id} {...cell(item)} />
+            ))}
+          </div>
+        </>
+      );
+    }
+
+    if (layout === "content") {
+      return (
+        <>
+          {folderBlock}
+          <div className="content-rows">
+            {shown.map((item) => (
+              <FileContent key={item.id} {...cell(item)} />
+            ))}
+          </div>
+        </>
+      );
+    }
+
+    // Icon grids: xl / large / medium / small — same card, CSS sizes by data-layout.
     return (
-      <div className="list">
-        <div className="list-head">
-          <button onClick={() => {
-            if (sort === "name") {
-              setSortOrder(o => o === "asc" ? "desc" : "asc");
-            } else {
-              setSort("name");
-              setSortOrder("asc");
-            }
-          }}>
-            Name {sort === "name" && (
-              <Icon
-                name="chevdown"
-                size={13}
-                style={{
-                  transform: sortOrder === "asc" ? "rotate(180deg)" : "none",
-                  transition: "transform 0.2s",
-                  display: "inline-block",
-                  marginLeft: "4px"
-                }}
-              />
-            )}
-          </button>
-          <button className="h-mod" onClick={() => {
-            if (sort === "modified") {
-              setSortOrder(o => o === "asc" ? "desc" : "asc");
-            } else {
-              setSort("modified");
-              setSortOrder("desc");
-            }
-          }}>
-            Modified {sort === "modified" && (
-              <Icon
-                name="chevdown"
-                size={13}
-                style={{
-                  transform: sortOrder === "asc" ? "rotate(180deg)" : "none",
-                  transition: "transform 0.2s",
-                  display: "inline-block",
-                  marginLeft: "4px"
-                }}
-              />
-            )}
-          </button>
-          <button className="h-size" onClick={() => {
-            if (sort === "size") {
-              setSortOrder(o => o === "asc" ? "desc" : "asc");
-            } else {
-              setSort("size");
-              setSortOrder("desc");
-            }
-          }}>
-            Size {sort === "size" && (
-              <Icon
-                name="chevdown"
-                size={13}
-                style={{
-                  transform: sortOrder === "asc" ? "rotate(180deg)" : "none",
-                  transition: "transform 0.2s",
-                  display: "inline-block",
-                  marginLeft: "4px"
-                }}
-              />
-            )}
-          </button>
-          <span className="hide-mob">Type</span>
-          <span></span>
+      <>
+        {folderBlock}
+        <div className="grid" data-layout={layout}>
+          {shown.map((item) => (
+            <FileCard key={item.id} {...cell(item)} />
+          ))}
         </div>
-        {currentFolders.map((folder) => (
-          <FolderRow
-            key={`folder-${folder.id}`}
-            folder={folder}
-            onOpen={(id) => {
-              if (isClickThrough()) return;
-              setCurrentFolderId(id);
-              setSelectedIds([]);
-            }}
-            onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
-          />
-        ))}
-        {shown.map((item) => (
-          <FileRow
-            key={item.id}
-            item={item}
-            tags={tags}
-            onStar={doStar}
-            onMenu={onMenu}
-            onOpen={(it) => {
-              if (isClickThrough()) return;
-              setInitialShowDetails(false);
-              setInitialEditing(false);
-              setDetailsOnly(false);
-              openPreview(it);
-            }}
-            versionCount={counts.get(item.familyKey)}
-            onPickFamily={pickFamily}
-            selected={selectedIds.includes(item.id)}
-            onSelectToggle={(it) => {
-              setSelectedIds((prev) =>
-                prev.includes(it.id)
-                  ? prev.filter((id) => id !== it.id)
-                  : [...prev, it.id]
-              );
-            }}
-          />
-        ))}
-      </div>
+      </>
     );
   }
 
+  // Single-selection drives the persistent details pane.
+  const detailsSelected =
+    selectedIds.length === 1 ? files.find((f) => f.id === selectedIds[0]) ?? null : null;
+
+  const appClass = [
+    "app",
+    navOpen ? "nav-open" : "",
+    prefs.showSidebar ? "" : "no-sidebar",
+    prefs.detailsPane ? "with-details" : "",
+    prefs.compact ? "compact" : "",
+    prefs.showCheckboxes ? "show-checks" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className={"app" + (navOpen ? " nav-open" : "")} style={{ opacity: isPending ? 0.7 : 1 }}>
+    <div className={appClass} style={{ opacity: isPending ? 0.7 : 1 }}>
       <div className="scrim-mob" onClick={() => setNavOpen(false)}></div>
 
       <Sidebar
@@ -663,22 +902,18 @@ export function DriveApp({
             )}
           </div>
 
-          <div className="seg hide-mob">
-            <button
-              className={viewMode === "grid" ? "on" : ""}
-              onClick={() => setViewMode("grid")}
-              title="Grid"
-            >
-              <Icon name="grid" size={16} />
-            </button>
-            <button
-              className={viewMode === "list" ? "on" : ""}
-              onClick={() => setViewMode("list")}
-              title="List"
-            >
-              <Icon name="rows" size={16} />
-            </button>
-          </div>
+          <button
+            className="viewbtn hide-mob"
+            onClick={(e) => {
+              e.stopPropagation();
+              setViewMenu(e.currentTarget);
+            }}
+            title="Layout & view options"
+          >
+            <Icon name={LAYOUT_ICON[layout]} size={16} />
+            <span>View</span>
+            <Icon name="chevdown" size={14} />
+          </button>
 
           <button
             className="iconbtn ghost"
@@ -740,7 +975,7 @@ export function DriveApp({
           <div className="spacer"></div>
         </div>
 
-        <div className="content scroll">
+        <div className="content scroll" ref={contentRef} onClick={onContentClick}>
           {items.length === 0 && currentFolders.length === 0 ? (
             <EmptyState view={view} query={query} />
           ) : grouped ? (
@@ -755,6 +990,24 @@ export function DriveApp({
           )}
         </div>
       </div>
+
+      {prefs.detailsPane && (
+        <DetailsPane
+          item={detailsSelected}
+          tags={tags}
+          showExtensions={prefs.showExtensions}
+          onClose={() => updatePrefs({ detailsPane: false })}
+        />
+      )}
+
+      {viewMenu && (
+        <ViewMenu
+          anchor={viewMenu}
+          prefs={prefs}
+          onChange={updatePrefs}
+          onClose={closeViewMenu}
+        />
+      )}
 
       {sortMenu && (
         <>
@@ -993,12 +1246,22 @@ export function DriveApp({
         />
       )}
 
-      {/* Multi-select Floating Selection Toolbar — hidden while a preview/viewer
+      {/* Multi-select Floating Selection Toolbar — icon-only; hidden while a preview/viewer
           is open so it doesn't float over the fullscreen stage. */}
       {selectedIds.length > 0 && !previewItem && (
         <div className="selection-toolbar">
-          <div className="sel-count">{selectedIds.length} selected</div>
           <div className="sel-actions">
+            {selectedIds.length === 1 && view !== "trash" && (
+              <button className="action-btn" onClick={detailSelected} title="Details" aria-label="Details">
+                <Icon name="info" size={17} />
+              </button>
+            )}
+            {view !== "trash" && (
+              <button className="action-btn" onClick={downloadSelected} title="Download" aria-label="Download">
+                <Icon name="download" size={17} />
+                {selectedIds.length > 1 && <span className="sel-badge">{selectedIds.length}</span>}
+              </button>
+            )}
             <button
               className="action-btn"
               onClick={() => {
@@ -1007,18 +1270,18 @@ export function DriveApp({
                   await bulkToggleFavorite(selectedIds, !allSelectedStarred);
                 });
               }}
-              title="Toggle Favorite"
+              title="Toggle favorite"
+              aria-label="Toggle favorite"
             >
               <Icon name="star" size={16} fill={selectedIds.every((id) => files.find((f) => f.id === id)?.starred)} />
-              <span>Favorite</span>
             </button>
             <button
               className="action-btn"
               onClick={() => setMoveTargetIds(selectedIds)}
               title="Move to folder"
+              aria-label="Move to folder"
             >
               <Icon name="folder" size={16} />
-              <span>Move to</span>
             </button>
             {view === "trash" ? (
               <>
@@ -1031,53 +1294,48 @@ export function DriveApp({
                     });
                   }}
                   title="Restore items"
+                  aria-label="Restore items"
                 >
                   <Icon name="restore" size={16} />
-                  <span>Restore</span>
                 </button>
                 <button
                   className="action-btn danger-btn"
-                  onClick={() => {
-                    setConfirmBulk({ ids: selectedIds, mode: "purge" });
-                  }}
+                  onClick={() => setConfirmBulk({ ids: selectedIds, mode: "purge" })}
                   title="Delete permanently"
+                  aria-label="Delete permanently"
                 >
                   <Icon name="trash" size={16} />
-                  <span>Delete permanently</span>
                 </button>
               </>
             ) : (
               <button
                 className="action-btn danger-btn"
-                onClick={() => {
-                  setConfirmBulk({ ids: selectedIds, mode: "trash" });
-                }}
+                onClick={() => setConfirmBulk({ ids: selectedIds, mode: "trash" })}
                 title="Delete items"
+                aria-label="Delete items"
               >
                 <Icon name="trash" size={16} />
-                <span>Delete</span>
               </button>
             )}
             <button
               className="action-btn"
               onClick={() => {
-                if (selectedIds.length === items.length) {
-                  setSelectedIds([]);
-                } else {
-                  setSelectedIds(items.map((item) => item.id));
-                }
+                if (selectedIds.length === items.length) setSelectedIds([]);
+                else setSelectedIds(items.map((item) => item.id));
               }}
+              title={selectedIds.length === items.length ? "Deselect all" : "Select all"}
+              aria-label={selectedIds.length === items.length ? "Deselect all" : "Select all"}
             >
               <Icon name={selectedIds.length === items.length ? "circle" : "check"} size={16} />
-              <span>{selectedIds.length === items.length ? "Deselect all" : "Select all"}</span>
             </button>
             <button
               className="action-btn"
-              style={{ borderLeft: "1px solid var(--line)", paddingLeft: "16px" }}
+              style={{ borderLeft: "1px solid var(--line)", paddingLeft: "14px" }}
               onClick={() => setSelectedIds([])}
+              title="Clear selection"
+              aria-label="Clear selection"
             >
               <Icon name="close" size={16} />
-              <span>Clear</span>
             </button>
           </div>
         </div>
