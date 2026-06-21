@@ -76,7 +76,8 @@ services:
     env_file: .env
     environment:
       CACHE_DIR: /cache
-      CACHE_MAX_SIZE_GB: "15"            # auto-cleanup (LRU) if exceeded
+      CACHE_MAX_SIZE_GB: "6"             # LRU-evict the transient video cache. Kept well below the
+                                         # 25 GB disk (OS+images already use ~13 GB) so it can't fill it.
       PREFETCH_BUFFER_MB: "16"           # YouTube-style: buffer 16 MB ahead
       CHUNK_SIZE_MB: "1"                 # 1 MB per chunk (responsive seeking)
       INITIAL_CHUNKS: "4"               # fast start: download first 4 MB
@@ -98,6 +99,11 @@ services:
       SUBTITLES_DIR: /subtitles         # PERSISTENT — generated VTT tracks live here
       GROQ_API_KEYS: ${GROQ_API_KEYS:-} # comma-separated Groq keys (rotated on 429)
       GROQ_STT_MODELS: whisper-large-v3-turbo,whisper-large-v3
+      # --- optional STT FAILOVER: Cloudflare Workers AI Whisper (used only when Groq fails) ---
+      # Put CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .env to enable; empty = Groq-only.
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      CLOUDFLARE_STT_MODEL: "@cf/openai/whisper-large-v3-turbo"
       SUBTITLE_TARGET_LANGS: en,id      # translate every video into these (besides original)
       SUBTITLE_CHUNK_SECONDS: "600"     # audio chunk length to stay under Groq's file cap
       SUBTITLE_CHUNK_CONCURRENCY: "0"   # 0 = auto (= #keys): transcribe that many chunks at once, each on its own key

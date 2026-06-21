@@ -75,6 +75,7 @@ from stream_subtitles import (
     repair_translations_on_disk,
     available_langs,
     subtitle_path,
+    stt_available,
 )
 
 # ---------------------------------------------------------------------------
@@ -940,7 +941,7 @@ async def _backfill_one(part: dict) -> None:
 
 async def _subtitle_backfill_loop() -> None:
     """Slowly subtitle already-indexed videos, one at a time, paced to respect API limits."""
-    if not (SUBTITLE_BACKFILL and SUBTITLE_GEN and GROQ_API_KEYS):
+    if not (SUBTITLE_BACKFILL and SUBTITLE_GEN and stt_available()):
         return
     await asyncio.sleep(SUBTITLE_BACKFILL_START_DELAY_S)
     # First, a one-time download-free pass that repairs any video whose translations failed

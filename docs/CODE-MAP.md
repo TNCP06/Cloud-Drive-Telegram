@@ -90,8 +90,10 @@ mid-session. Once the compressed copy is written, `_transcode_worker` calls back
 `_reclaim_original_after_compress` to **delete the now-redundant original** from the Bot API cache (an
 in-progress stream's open fd keeps reading on Linux); the compressed copy is persistent.
 **Background subtitle generation** (Groq Whisper STT) lives in **`stream_subtitles.py`**: `_extract_audio_chunks`
-(ffmpeg → time-sliced 16 kHz FLAC), `_transcribe_chunk`/`_transcribe_audio` (Groq `audio/transcriptions` with
-**key + model failover** on 429; chunks transcribed **CONCURRENTLY**, each on its own rotating key bounded by
+(ffmpeg → time-sliced 16 kHz FLAC), `_transcribe_chunk`/`_transcribe_audio` (`_transcribe_chunk_groq` =
+`audio/transcriptions` with **key + model failover** on 429, then **`_transcribe_chunk_cloudflare`** = optional
+Cloudflare Workers AI Whisper **failover** used only when every Groq attempt fails, normalised to Groq's shape;
+`stt_available` gates the backfill on any provider being configured; chunks transcribed **CONCURRENTLY**, each on its own rotating key bounded by
 `SUBTITLE_CHUNK_CONCURRENCY`, with an **in-job retry/back-off** `SUBTITLE_CHUNK_RETRY_ATTEMPTS`/`_DELAY_S` so a
 transient blip is retried while the video is still on disk; segment offsets merged), `_translate_segments`
 (deep-translator → EN/ID, timestamps preserved; uses the **known source language** mapped to a valid code
@@ -124,7 +126,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 `COMPRESSED_DIR`, `VIDEO_COMPRESS` (1/0), `VIDEO_CRF`, `VIDEO_PRESET` (default `veryfast`),
 `VIDEO_MIN_COMPRESS_MB`, `VIDEO_TRANSCODE_CONCURRENCY`, `VIDEO_TRANSCODE_THREADS` (0 = auto),
 `COMPRESSED_MAX_SIZE_GB` (0 = keep forever), `SUBTITLE_GEN` (1/0),
-`SUBTITLES_DIR`, `GROQ_API_KEYS` (comma-separated), `GROQ_STT_MODELS`, `SUBTITLE_TARGET_LANGS`,
+`SUBTITLES_DIR`, `GROQ_API_KEYS` (comma-separated), `GROQ_STT_MODELS`,
+`CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_STT_MODEL` (optional Whisper failover),
+`SUBTITLE_TARGET_LANGS`,
 `SUBTITLE_CHUNK_SECONDS`, `SUBTITLE_CHUNK_CONCURRENCY` (0 = #keys), `SUBTITLE_CHUNK_RETRY_ATTEMPTS`,
 `SUBTITLE_CHUNK_RETRY_DELAY_S`, `SUBTITLE_TRANSLATE_RETRY`, `SUBTITLE_TRANSLATE_RETRY_DELAY_S`,
 `SUBTITLE_TL_REPAIR_MAX` (passes to fix a part's missing target langs, default 5),

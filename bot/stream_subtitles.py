@@ -50,6 +50,22 @@ GROQ_STT_MODELS = [m.strip() for m in os.environ.get(
 GROQ_TRANSCRIBE_URL = os.environ.get(
     "GROQ_TRANSCRIBE_URL", "https://api.groq.com/openai/v1/audio/transcriptions")
 
+# Optional SERVER-SIDE STT FAILOVER via Cloudflare Workers AI Whisper — used ONLY when every Groq
+# key/model attempt fails (e.g. a Groq outage). Dormant unless both vars are set, so leaving them
+# empty keeps the Groq-only behaviour. Free tier: 10k Neurons/day (plenty for a failover).
+CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+CLOUDFLARE_STT_MODEL = os.environ.get("CLOUDFLARE_STT_MODEL", "@cf/openai/whisper-large-v3-turbo").strip()
+
+
+def _cloudflare_stt_enabled() -> bool:
+    return bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
+
+
+def stt_available() -> bool:
+    """True if any STT provider is configured (Groq keys or the Cloudflare failover)."""
+    return bool(GROQ_API_KEYS) or _cloudflare_stt_enabled()
+
 # Target languages every video should end up with (besides the original).
 SUBTITLE_TARGET_LANGS = [l.strip() for l in os.environ.get(
     "SUBTITLE_TARGET_LANGS", "en,id").split(",") if l.strip()]
@@ -348,7 +364,7 @@ def _key_order(start: int | None = None) -> list[str]:
     return GROQ_API_KEYS[start:] + GROQ_API_KEYS[:start]
 
 
-async def _transcribe_chunk(client: httpx.AsyncClient, audio_path: Path, key_offset: int | None = None) -> dict:
+async def _transcribe_chunk_groq(client: httpx.AsyncClient, audio_path: Path, key_offset: int | None = None) -> dict:
     """POST one audio chunk to Groq, rotating keys on 429 and models on exhaustion.
 
     `key_offset` (the chunk index, when called concurrently) picks the starting key so parallel
@@ -384,6 +400,50 @@ async def _transcribe_chunk(client: httpx.AsyncClient, audio_path: Path, key_off
                 await asyncio.sleep(1)
                 continue
     raise last_err or RuntimeError("All Groq keys/models failed")
+
+
+async def _transcribe_chunk_cloudflare(client: httpx.AsyncClient, audio_path: Path) -> dict:
+    """Transcribe one chunk via Cloudflare Workers AI Whisper, normalised to Groq's verbose_json
+    shape ({"language", "segments":[{start,end,text}], "text"}) so the merge code is provider-agnostic."""
+    import base64
+    audio_b64 = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_STT_MODEL}"
+    resp = await client.post(
+        url,
+        headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"},
+        json={"audio": audio_b64},
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    if not payload.get("success", True):
+        raise RuntimeError(f"Cloudflare AI error: {payload.get('errors')}")
+    result = payload.get("result") or {}
+    segments = []
+    for s in result.get("segments") or []:
+        text = (s.get("text") or "").strip()
+        if not text:
+            continue
+        segments.append({"start": float(s.get("start", 0.0) or 0.0),
+                         "end": float(s.get("end", 0.0) or 0.0), "text": text})
+    info = result.get("transcription_info") or {}
+    language = info.get("language") or result.get("language") or "xx"
+    return {"language": language, "segments": segments, "text": result.get("text", "")}
+
+
+async def _transcribe_chunk(client: httpx.AsyncClient, audio_path: Path, key_offset: int | None = None) -> dict:
+    """Transcribe one chunk: Groq first (key+model failover); fall back to the Cloudflare Workers AI
+    Whisper provider if every Groq attempt fails AND Cloudflare is configured."""
+    try:
+        return await _transcribe_chunk_groq(client, audio_path, key_offset)
+    except Exception as groq_err:  # noqa: BLE001
+        if _cloudflare_stt_enabled():
+            try:
+                result = await _transcribe_chunk_cloudflare(client, audio_path)
+                log.info("Cloudflare STT ok: %s via %s (Groq failover)", audio_path.name, CLOUDFLARE_STT_MODEL)
+                return result
+            except Exception as cf_err:  # noqa: BLE001
+                log.warning("Cloudflare STT failover failed for %s: %s", audio_path.name, cf_err)
+        raise groq_err
 
 
 async def _transcribe_audio(part_id: int, src_path: str) -> tuple[list[dict], str, int, int]:
@@ -804,8 +864,8 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
             src_path = video
             if os.path.getsize(src_path) < SUBTITLE_MIN_BYTES:
                 return
-            if not GROQ_API_KEYS:
-                log.warning("Subtitle: no GROQ_API_KEYS configured — skipping part %d", part_id)
+            if not stt_available():
+                log.warning("Subtitle: no STT provider configured (Groq/Cloudflare) — skipping part %d", part_id)
                 return
 
             SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
