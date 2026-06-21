@@ -111,9 +111,10 @@ export function PreviewDrawer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const closeDetails = () => setShowDetails(false);
-  // Photo viewing affordances (mirror the screenshot's bottom-right controls).
+  // Photo viewing affordances (mirror the PikPak bottom box: counter + filmstrip + rotate/fullscreen).
   const [rotation, setRotation] = useState(0);
-  const [stripOpen, setStripOpen] = useState(true);
+  // The bottom box is shown by default; "collapse" hides its filmstrip (chevron or the "E" key).
+  const [collapsed, setCollapsed] = useState(false);
   const toggleFullscreen = () => {
     const el = stageRef.current;
     if (!el) return;
@@ -228,7 +229,7 @@ export function PreviewDrawer({
   const canNext = activeIdx < last || hasNextFile;
   // A still image on the stage gets the bottom-right rotate + fullscreen controls.
   const isImageStage = !!activePart?.thumb && !isPartStreamableVideo(activePart, item.kind);
-  const showStrip = multi && stripOpen;
+  const showStrip = multi && !collapsed;
 
   // Move to the next/previous part; if already at the edge, jump to the next file.
   const go = useCallback((delta: number) => {
@@ -267,6 +268,14 @@ export function PreviewDrawer({
         return;
       }
 
+      // "E" collapses/expands the bottom box (its filmstrip) — works for photos and videos.
+      if (e.key === "e" || e.key === "E") {
+        e.preventDefault();
+        e.stopPropagation();
+        setCollapsed((c) => !c);
+        return;
+      }
+
       if (isPartStreamableVideo(activePart, item.kind)) {
         // Shift+arrow → navigate parts/files; plain arrows fall through to Plyr.
         if (e.shiftKey && e.key === "ArrowLeft") {
@@ -299,7 +308,7 @@ export function PreviewDrawer({
         <>
           {/* Backdrop is purely visual now — clicking it must NOT close the viewer. */}
           <div className="viewer-scrim"></div>
-          <div className={"viewer" + (multi && stripOpen ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
+          <div className={"viewer has-bottom" + (showStrip ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
             <div className="viewer-stage" ref={stageRef}>
               {isPartStreamableVideo(activePart, item.kind) ? (
                 <VideoPlayer
@@ -370,22 +379,26 @@ export function PreviewDrawer({
               </>
             )}
 
-            {(multi || isImageStage) && (
-              <div className="viewer-botbar" style={{ bottom: showStrip ? 92 : 18 }}>
-                <div />
-                {multi ? (
+            {/* Bottom box (PikPak-style) — a full-width solid bar that is ALWAYS visible. Its
+                control row holds the part counter + collapse chevron (center) and rotate/
+                fullscreen (right); the thumbnail filmstrip sits below it and collapses with the
+                chevron or the "E" key. */}
+            <div className="viewer-bottom">
+              <div className="viewer-bottom-bar">
+                <div className="viewer-bottom-side" />
+                <div className="viewer-bottom-center">
+                  {multi && (
+                    <span className="viewer-count">{Math.min(activeIdx, last) + 1} / {partsList.length}</span>
+                  )}
                   <button
-                    className="viewer-counter"
-                    onClick={() => setStripOpen((o) => !o)}
-                    title={stripOpen ? "Hide thumbnails" : "Show thumbnails"}
+                    className="viewer-iconbtn"
+                    onClick={() => setCollapsed((c) => !c)}
+                    title={collapsed ? "Expand (E)" : "Collapse (E)"}
                   >
-                    {Math.min(activeIdx, last) + 1} / {partsList.length}
-                    <Icon name={stripOpen ? "chevdown" : "chevup"} size={14} />
+                    <Icon name={collapsed ? "chevup" : "chevdown"} size={16} />
                   </button>
-                ) : (
-                  <div />
-                )}
-                <div className="viewer-botbtns">
+                </div>
+                <div className="viewer-bottom-side viewer-botbtns">
                   {isImageStage && (
                     <>
                       <button
@@ -406,28 +419,28 @@ export function PreviewDrawer({
                   )}
                 </div>
               </div>
-            )}
 
-            {showStrip && (
-              <div className="viewer-strip">
-                {partsList.map((part, i) => (
-                  <button
-                    key={i}
-                    className={"viewer-thumb" + (i === activeIdx ? " on" : "")}
-                    onClick={() => setActiveIdx(i)}
-                    title={`Part ${i + 1}`}
-                  >
-                    {part.thumb ? (
-                      <Image src={part.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
-                    ) : (
-                      <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
-                        <Icon name={isPartStreamableVideo(part, item.kind) ? "video" : "file"} size={16} />
-                      </div>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
+              {showStrip && (
+                <div className="viewer-strip">
+                  {partsList.map((part, i) => (
+                    <button
+                      key={i}
+                      className={"viewer-thumb" + (i === activeIdx ? " on" : "")}
+                      onClick={() => setActiveIdx(i)}
+                      title={`Part ${i + 1}`}
+                    >
+                      {part.thumb ? (
+                        <Image src={part.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+                      ) : (
+                        <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
+                          <Icon name={isPartStreamableVideo(part, item.kind) ? "video" : "file"} size={16} />
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}
