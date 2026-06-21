@@ -95,7 +95,11 @@ in-progress stream's open fd keeps reading on Linux); the compressed copy is per
 Cloudflare Workers AI Whisper **failover** used only when every Groq attempt fails, normalised to Groq's shape;
 `stt_available` gates the backfill on any provider being configured; chunks transcribed **CONCURRENTLY**, each on its own rotating key bounded by
 `SUBTITLE_CHUNK_CONCURRENCY`, with an **in-job retry/back-off** `SUBTITLE_CHUNK_RETRY_ATTEMPTS`/`_DELAY_S` so a
-transient blip is retried while the video is still on disk; segment offsets merged), `_translate_segments`
+transient blip is retried while the video is still on disk; segment offsets merged; each chunk's segments pass
+`_is_confident_segment` — drops Whisper **hallucinations** on music/silence via verbose_json stats
+(`no_speech_prob`/`avg_logprob`/`compression_ratio`, thresholds `SUBTITLE_NO_SPEECH_MAX`/`_LOGPROB_MIN`/`_COMPRESSION_MAX`)
+and `_collapse_consecutive_dupes` merges looping repeats, so a non-speech video no longer yields a **random-language**
+track and **only a chunk with confident speech sets the source language**), `_translate_segments`
 (deep-translator → EN/ID, timestamps preserved; uses the **known source language** mapped to a valid code
 via `_make_translator` — `zh`→`zh-CN` — because Google's auto-detect silently echoes some content untranslated
 (e.g. Traditional Chinese → English); **never emits the original

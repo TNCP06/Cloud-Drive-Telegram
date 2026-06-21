@@ -95,6 +95,15 @@ SUBTITLE_TL_REPAIR_MAX = int(os.environ.get("SUBTITLE_TL_REPAIR_MAX", "5"))
 # Skip videos shorter/smaller than this (audio extraction still cheap, but avoids noise).
 SUBTITLE_MIN_BYTES = int(os.environ.get("SUBTITLE_MIN_MB", "1")) * 1048576
 
+# --- Hallucination / low-confidence filtering (faster-whisper's default thresholds) ---
+# Whisper reliably HALLUCINATES plausible boilerplate ("subscribe", "thanks for watching", …) —
+# often in a RANDOM language — on music/silence/non-speech audio. Those segments carry tell-tale
+# stats in verbose_json: a high no_speech_prob, a low avg_logprob, or a high gzip compression_ratio
+# (from looping). We drop them so a music-only video no longer produces a bogus random-language track.
+SUBTITLE_NO_SPEECH_MAX = float(os.environ.get("SUBTITLE_NO_SPEECH_MAX", "0.6"))
+SUBTITLE_LOGPROB_MIN = float(os.environ.get("SUBTITLE_LOGPROB_MIN", "-1.0"))
+SUBTITLE_COMPRESSION_MAX = float(os.environ.get("SUBTITLE_COMPRESSION_MAX", "2.4"))
+
 # --- Retroactive backfill: subtitle already-indexed videos one at a time ---
 SUBTITLE_BACKFILL = os.environ.get("SUBTITLE_BACKFILL", "1") not in ("0", "false", "False", "")
 # Optional extra pace between videos. 0 = back-to-back (the 3 rotating GROQ_API_KEYS already
@@ -446,6 +455,40 @@ async def _transcribe_chunk(client: httpx.AsyncClient, audio_path: Path, key_off
         raise groq_err
 
 
+# ---------------------------------------------------------------------------
+# Segment hygiene: drop hallucinated / low-confidence output
+# ---------------------------------------------------------------------------
+def _is_confident_segment(seg: dict) -> bool:
+    """True if a verbose_json segment looks like real speech (not a music/silence hallucination).
+    Segments missing the stats (e.g. the Cloudflare failover) are kept as-is."""
+    no_speech = seg.get("no_speech_prob")
+    avg_lp = seg.get("avg_logprob")
+    comp = seg.get("compression_ratio")
+    # Whisper itself flags no speech AND is unsure about what it heard → silence misfire.
+    if (isinstance(no_speech, (int, float)) and isinstance(avg_lp, (int, float))
+            and no_speech > SUBTITLE_NO_SPEECH_MAX and avg_lp < SUBTITLE_LOGPROB_MIN):
+        return False
+    # Degenerate, highly compressible output → a looping/repeating hallucination.
+    if isinstance(comp, (int, float)) and comp > SUBTITLE_COMPRESSION_MAX:
+        return False
+    # Very low average log-prob → unreliable transcription regardless of no_speech_prob.
+    if isinstance(avg_lp, (int, float)) and avg_lp < SUBTITLE_LOGPROB_MIN - 0.5:
+        return False
+    return True
+
+
+def _collapse_consecutive_dupes(segs: list[dict]) -> list[dict]:
+    """Merge runs of identical back-to-back lines (a Whisper looping hallucination) into one,
+    extending the kept segment's end so playback timing is preserved."""
+    out: list[dict] = []
+    for s in segs:
+        if out and out[-1]["text"].strip().lower() == s["text"].strip().lower():
+            out[-1]["end"] = max(out[-1]["end"], s["end"])
+            continue
+        out.append(dict(s))
+    return out
+
+
 async def _transcribe_audio(part_id: int, src_path: str) -> tuple[list[dict], str, int, int]:
     """Extract audio, transcribe each chunk (skipping ones already cached), merge segments.
 
@@ -501,15 +544,19 @@ async def _transcribe_audio(part_id: int, src_path: str) -> tuple[list[dict], st
             segs = []
             for seg in result.get("segments", []) or []:
                 text = (seg.get("text") or "").strip()
-                if not text:
+                if not text or not _is_confident_segment(seg):
                     continue
                 segs.append({
                     "start": float(seg.get("start", 0.0)),
                     "end": float(seg.get("end", 0.0)),
                     "text": text,
                 })
+            segs = _collapse_consecutive_dupes(segs)
             async with lock:
-                if state["lang"] == "xx":
+                # Only a chunk that yielded real, confident speech may set the source language — a
+                # hallucinated music/silence chunk (now filtered to empty) must not label the whole
+                # video with a random language (the bug behind "subtitles in a random language").
+                if segs and state["lang"] == "xx":
                     state["lang"] = _iso_from_groq_language(result.get("language"))
                 cached[str(idx)] = segs
                 # Persist after every chunk so progress survives a crash/restart mid-video.

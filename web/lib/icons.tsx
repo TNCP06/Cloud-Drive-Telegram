@@ -45,6 +45,9 @@ const PATHS: Record<string, string> = {
   lock: '<rect x="4.5" y="10.5" width="15" height="9.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 018 0v3"/>',
   unlock: '<rect x="4.5" y="10.5" width="15" height="9.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 017.7-1.5"/>',
   backspace: '<path d="M9 5.5h9.5a1.5 1.5 0 011.5 1.5v10a1.5 1.5 0 01-1.5 1.5H9l-5.2-6a.8.8 0 010-1z"/><path d="M12.5 9.8l4 4.4M16.5 9.8l-4 4.4"/>',
+  share: '<path d="M12 15V4M8.5 7.5L12 4l3.5 3.5"/><path d="M6 12v6.5c0 .55.45 1 1 1h10c.55 0 1-.45 1-1V12"/>',
+  rotate: '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 4.5V9h-4.5"/>',
+  expand: '<path d="M8 4H5a1 1 0 0 0-1 1v3M16 4h3a1 1 0 0 1 1 1v3M8 20H5a1 1 0 0 1-1-1v-3M16 20h3a1 1 0 0 0 1-1v-3"/>',
 };
 
 export function Icon({

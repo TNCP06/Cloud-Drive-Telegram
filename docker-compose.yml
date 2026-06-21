@@ -26,6 +26,7 @@ services:
     environment:
       UPLOAD_STAGING_DIR: /staging
       STREAMER_URL: http://streamer:8080
+      STREAMER_SECRET: ${STREAMER_SECRET:-}   # forwarded as X-Streamer-Secret (matches the streamer)
     ports:
       - "3000:3000"
     volumes:
@@ -83,6 +84,7 @@ services:
       INITIAL_CHUNKS: "4"               # fast start: download first 4 MB
       PREFETCH_TIMEOUT_S: "90"           # stop prefetch after 90s idle
       STREAMER_SESSION: streamer
+      STREAMER_SECRET: ${STREAMER_SECRET:-}   # if set, require this as X-Streamer-Secret on all but /health
       TELEGRAM_API_URL: http://telegram-bot-api:8081
       # --- background video compression (original stays in the evictable cache;
       #     the smaller H.264 copy is written to the PERSISTENT /compressed volume) ---
@@ -124,6 +126,18 @@ services:
       - subtitles:/subtitles             # PERSISTENT — generated subtitle tracks live here
       - ./bot/streamer.session:/app/streamer.session
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+
+  # Cloudflare Tunnel — gives the internal `streamer` a public HTTPS URL with NO open inbound port,
+  # so a dashboard hosted OFF the VPS (e.g. Vercel) can stream from it. The connector shares this
+  # compose network, so the tunnel's Public Hostname (configured in the Cloudflare dashboard) must
+  # point at the in-network origin http://streamer:8080. Set CLOUDFLARE_TUNNEL_TOKEN in .env; when
+  # it's empty this connector just idles/retries harmlessly (the rest of the stack is unaffected).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN:-}"]
+    depends_on:
+      - streamer
     restart: unless-stopped
 
 volumes:

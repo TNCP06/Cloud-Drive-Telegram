@@ -32,9 +32,11 @@ export async function GET(
   // Forward Range header if present (required for <video> seeking).
   // Disable Keep-Alive (Connection: close) to ensure Uvicorn completes the request cycle
   // and promotes completed chunks to cache without socket deadlocks.
-  const headers: HeadersInit = {
+  const headers: Record<string, string> = {
     Connection: "close",
   };
+  // Shared secret so a publicly-exposed streamer (Cloudflare Tunnel) only serves the dashboard.
+  if (process.env.STREAMER_SECRET) headers["X-Streamer-Secret"] = process.env.STREAMER_SECRET;
   const range = req.headers.get("Range");
   if (range) headers["Range"] = range;
 

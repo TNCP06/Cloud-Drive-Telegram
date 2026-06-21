@@ -79,6 +79,8 @@ export function PreviewDrawer({
   onNavigateFile,
   onClose,
   onSave,
+  onDownload,
+  onToggleStar,
   initialEditing = false,
   initialShowDetails = false,
   detailsOnly = false,
@@ -90,6 +92,8 @@ export function PreviewDrawer({
   onNavigateFile?: (delta: number) => void;
   onClose: () => void;
   onSave: (item: DriveFile, input: { title: string; kind: Kind; tags: string }) => void;
+  onDownload?: () => void;
+  onToggleStar?: () => void;
   initialEditing?: boolean;
   initialShowDetails?: boolean;
   detailsOnly?: boolean;
@@ -105,16 +109,16 @@ export function PreviewDrawer({
   const [thumbBusy, setThumbBusy] = useState(false);
   const [thumbMsg, setThumbMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const detailsClosedTimeRef = useRef<number>(0);
-  const closeDetails = () => {
-    detailsClosedTimeRef.current = Date.now();
-    setShowDetails(false);
-  };
-  const handleStageClick = () => {
-    if (Date.now() - detailsClosedTimeRef.current < 150) {
-      return;
-    }
-    onClose();
+  const stageRef = useRef<HTMLDivElement>(null);
+  const closeDetails = () => setShowDetails(false);
+  // Photo viewing affordances (mirror the screenshot's bottom-right controls).
+  const [rotation, setRotation] = useState(0);
+  const [stripOpen, setStripOpen] = useState(true);
+  const toggleFullscreen = () => {
+    const el = stageRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else el.requestFullscreen?.().catch(() => {});
   };
   // Initialise from cache — if the gallery was already loaded (or pre-fetched),
   // all photos appear instantly on first render without a cover flash.
@@ -134,6 +138,11 @@ export function PreviewDrawer({
     setTagsText(item.tags.map((id) => tags.find((t) => t.id === id)?.name).filter(Boolean).join(", "));
     setThumbMsg(null);
   }, [item.id, item.name, item.kind, item.tags, tags, initialEditing, initialShowDetails]);
+
+  // A fresh photo/part always starts un-rotated.
+  useEffect(() => {
+    setRotation(0);
+  }, [item.id, activeIdx]);
 
   const onRefreshThumb = async () => {
     setThumbBusy(true);
@@ -217,6 +226,9 @@ export function PreviewDrawer({
   // Navigation past a part boundary → jump to the neighbouring file in the list.
   const canPrev = activeIdx > 0 || hasPrevFile;
   const canNext = activeIdx < last || hasNextFile;
+  // A still image on the stage gets the bottom-right rotate + fullscreen controls.
+  const isImageStage = !!activePart?.thumb && !isPartStreamableVideo(activePart, item.kind);
+  const showStrip = multi && stripOpen;
 
   // Move to the next/previous part; if already at the edge, jump to the next file.
   const go = useCallback((delta: number) => {
@@ -285,35 +297,56 @@ export function PreviewDrawer({
       {/* ---- Full-screen photo layer ---- */}
       {!detailsOnly && (
         <>
-          <div className="viewer-scrim" onClick={handleStageClick}></div>
-          <div className={"viewer" + (multi ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
-            <div className="viewer-stage" onClick={handleStageClick}>
+          {/* Backdrop is purely visual now — clicking it must NOT close the viewer. */}
+          <div className="viewer-scrim"></div>
+          <div className={"viewer" + (multi && stripOpen ? " has-strip" : "") + (canPrev || canNext ? " has-nav" : "")}>
+            <div className="viewer-stage" ref={stageRef}>
               {isPartStreamableVideo(activePart, item.kind) ? (
                 <VideoPlayer
                   key={activePart!.partId}
                   src={`/api/stream/${activePart!.partId}`}
                   poster={activePart!.thumb || undefined}
                   partId={activePart!.partId}
-                  onRequestClose={onClose}
                 />
               ) : activePart?.thumb ? (
-                <Image src={activePart.thumb} alt={item.name} unoptimized width={0} height={0} sizes="100vw" onClick={(e) => e.stopPropagation()} style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default" }} />
+                <Image src={activePart.thumb} alt={item.name} unoptimized width={0} height={0} sizes="100vw" style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "var(--r-sm)", cursor: "default", transform: rotation ? `rotate(${rotation}deg)` : undefined, transition: "transform .2s ease" }} />
               ) : (
                 <Icon name={meta.icon} size={120} stroke={1.2} style={{ color: meta.tint }} />
               )}
             </div>
 
-            {/* Floating controls above the photo. Close/edit/delete on the left, download/
-                favorite/kebab on the right — balanced so the title stays centered.
-                Kebab only opens the metadata panel. */}
+            {/* Floating top bar (PikPak-style): filename on the left; download, favorite,
+                details (kebab), a divider, then the ✕ close on the right. The ONLY ways to
+                leave the viewer are this ✕ button or the Esc key. */}
             <div className="viewer-top">
+              <span className="viewer-name">{item.version ? item.family : item.name}</span>
               <div className="viewer-tools">
-                <button className="viewer-iconbtn" onClick={onClose} title="Close">
+                {onDownload && (
+                  <button className="viewer-iconbtn" onClick={onDownload} title="Download">
+                    <Icon name="download" size={17} />
+                  </button>
+                )}
+                {onToggleStar && (
+                  <button
+                    className={"viewer-iconbtn" + (item.starred ? " on" : "")}
+                    onClick={onToggleStar}
+                    title={item.starred ? "Remove from favorites" : "Add to favorites"}
+                  >
+                    <Icon name="star" size={17} fill={item.starred} />
+                  </button>
+                )}
+                <button
+                  className="viewer-iconbtn"
+                  onClick={() => setShowDetails(true)}
+                  title="Details"
+                >
+                  <Icon name="kebab" size={17} />
+                </button>
+                <span className="viewer-sep" />
+                <button className="viewer-iconbtn" onClick={onClose} title="Close (Esc)">
                   <Icon name="close" size={17} />
                 </button>
               </div>
-              <span className="viewer-name">{item.version ? item.family : item.name}</span>
-              <div className="viewer-tools" style={{ width: 32 }}></div>
             </div>
 
             {(canPrev || canNext) && (
@@ -337,7 +370,45 @@ export function PreviewDrawer({
               </>
             )}
 
-            {multi && (
+            {(multi || isImageStage) && (
+              <div className="viewer-botbar" style={{ bottom: showStrip ? 92 : 18 }}>
+                <div />
+                {multi ? (
+                  <button
+                    className="viewer-counter"
+                    onClick={() => setStripOpen((o) => !o)}
+                    title={stripOpen ? "Hide thumbnails" : "Show thumbnails"}
+                  >
+                    {Math.min(activeIdx, last) + 1} / {partsList.length}
+                    <Icon name={stripOpen ? "chevdown" : "chevup"} size={14} />
+                  </button>
+                ) : (
+                  <div />
+                )}
+                <div className="viewer-botbtns">
+                  {isImageStage && (
+                    <>
+                      <button
+                        className="viewer-iconbtn"
+                        onClick={() => setRotation((r) => (r + 90) % 360)}
+                        title="Rotate"
+                      >
+                        <Icon name="rotate" size={16} />
+                      </button>
+                      <button
+                        className="viewer-iconbtn"
+                        onClick={toggleFullscreen}
+                        title="Fullscreen"
+                      >
+                        <Icon name="expand" size={16} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {showStrip && (
               <div className="viewer-strip">
                 {partsList.map((part, i) => (
                   <button

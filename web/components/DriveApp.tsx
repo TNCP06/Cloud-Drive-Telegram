@@ -940,6 +940,11 @@ export function DriveApp({
             doSave(it, input);
             closePreview();
           }}
+          onDownload={() => {
+            const url = deepLink(previewItem.slug);
+            if (url) window.open(url, "_blank");
+          }}
+          onToggleStar={() => doStar(previewItem)}
           initialEditing={initialEditing}
           initialShowDetails={initialShowDetails}
           detailsOnly={detailsOnly}

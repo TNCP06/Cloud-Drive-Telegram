@@ -66,7 +66,7 @@ function langLabel(code: string): string {
  *
  * Click behaviour (Plyr's own click-to-play is disabled so we can split it):
  *   • on the video frame  → play / pause
- *   • on the letterbox    → close the viewer (`onRequestClose`)
+ *   • on the letterbox    → nothing (the viewer only closes via the ✕ button or Esc)
  *   • on the controls      → handled by Plyr
  * The frame vs letterbox split is computed from the displayed `object-fit:
  * contain` rectangle, falling back to the poster's aspect ratio before the
@@ -76,12 +76,10 @@ export function VideoPlayer({
   src,
   poster,
   partId,
-  onRequestClose,
 }: {
   src: string;
   poster?: string;
   partId?: number;
-  onRequestClose: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const posterDims = useRef<{ w: number; h: number } | null>(null);
@@ -246,11 +244,10 @@ export function VideoPlayer({
     }
 
     if (insideFrame) {
+      // Only the frame toggles play/pause; a letterbox click is intentionally inert so the
+      // viewer can only be dismissed via the ✕ button or Esc.
       if (video.paused) video.play().catch(() => {});
       else video.pause();
-    } else if (!document.fullscreenElement) {
-      // Letterbox click closes — but never while fullscreen (Esc/the button exit it).
-      onRequestClose();
     }
   };
 

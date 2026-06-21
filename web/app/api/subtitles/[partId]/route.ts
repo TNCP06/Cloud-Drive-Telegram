@@ -26,9 +26,9 @@ export async function GET(
   }
   const { partId } = await params;
   try {
-    const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}`, {
-      headers: { Connection: "close" },
-    });
+    const headers: Record<string, string> = { Connection: "close" };
+    if (process.env.STREAMER_SECRET) headers["X-Streamer-Secret"] = process.env.STREAMER_SECRET;
+    const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}`, { headers });
     if (!resp.ok) return NextResponse.json({ langs: [] });
     const data = await resp.json();
     return NextResponse.json({ langs: Array.isArray(data?.langs) ? data.langs : [] });

@@ -1046,6 +1046,21 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Telegram Cloud Drive Streamer", lifespan=lifespan)
 
 
+# Optional shared-secret guard. When the streamer is reachable from the public internet (e.g. via a
+# Cloudflare Tunnel so a Vercel-hosted dashboard can stream from it), set STREAMER_SECRET so only the
+# dashboard — which forwards it as X-Streamer-Secret — can use it. Empty = no check (internal-only;
+# the streamer is only on the Docker network). /health is always open for connectivity checks.
+STREAMER_SECRET = os.environ.get("STREAMER_SECRET", "").strip()
+
+
+@app.middleware("http")
+async def _require_secret(request: Request, call_next):
+    if STREAMER_SECRET and request.url.path != "/health":
+        if request.headers.get("x-streamer-secret") != STREAMER_SECRET:
+            return Response(status_code=403, content="Forbidden")
+    return await call_next(request)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------

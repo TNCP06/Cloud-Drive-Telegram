@@ -29,9 +29,9 @@ export async function GET(
     return NextResponse.json({ error: "Bad language." }, { status: 400 });
   }
   try {
-    const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}/${lang}`, {
-      headers: { Connection: "close" },
-    });
+    const headers: Record<string, string> = { Connection: "close" };
+    if (process.env.STREAMER_SECRET) headers["X-Streamer-Secret"] = process.env.STREAMER_SECRET;
+    const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}/${lang}`, { headers });
     if (!resp.ok) {
       return new Response("Not found", { status: resp.status });
     }
