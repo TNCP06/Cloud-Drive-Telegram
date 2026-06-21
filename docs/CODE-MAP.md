@@ -70,10 +70,14 @@ downloads files on-the-fly to a shared cache volume on the VPS disk using a loca
 server in `--local` mode (bypassing the 3Mbps download throttle) and streams directly to the browser.
 Otherwise, falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetching.
 
-`MIME_MAP`/`_mime_from_filename` now also cover **documents & images** (pdf, txt/md/csv, doc(x),
-xls(x), ppt(x), zip/7z/…, png/jpg/…) so the browser previews them inline with the correct
-`Content-Type` (default stays `video/mp4` for unknown extensions). Background **transcode is
-guarded to `mime.startswith("video/")`** so a previewed PDF/doc is never fed to ffmpeg.
+`_init_part_meta` streams **any** non-deleted part — media **and** documents (the old
+`i.kind = 'media'` gate was removed) — so a document is downloaded/cached & range-served on demand
+exactly like media, sharing the same cache + eviction limits. `MIME_MAP`/`_mime_from_filename` now
+also cover **documents & images** (pdf, txt/md/csv, doc(x), xls(x), ppt(x), zip/7z/…, png/jpg/…) so
+the browser previews them inline with the correct `Content-Type` (default stays `video/mp4` for
+unknown extensions). Background **transcode is guarded to `mime.startswith("video/")`** so a previewed
+PDF/doc is never fed to ffmpeg, and subtitle backfill is gated by a video-only `VIDEO_EXTS` set
+(derived from `MIME_MAP`) so the expanded map doesn't let the STT loop pick up images/documents.
 Key functions: `_turso_http_url` (libsql→https), `download_via_local_bot_api` (requests file download
 from local Bot API server), `_evict_local_api_cache_if_needed` (scans shared volume and deletes oldest files
 using mtime LRU policy), `_ensure_chunk_stream` (fallback Telethon disk-or-download),

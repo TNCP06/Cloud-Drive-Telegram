@@ -175,6 +175,10 @@ MIME_MAP = {
     ".tar": "application/x-tar",
 }
 
+# Video-only extensions — used to gate subtitle backfill so the now-expanded MIME_MAP
+# (which also carries documents/images) doesn't make the STT loop pick up non-videos.
+VIDEO_EXTS = {ext for ext, mime in MIME_MAP.items() if mime.startswith("video/")}
+
 # ---------------------------------------------------------------------------
 # Global state (initialised in lifespan)
 # ---------------------------------------------------------------------------
@@ -728,11 +732,14 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
 # ---------------------------------------------------------------------------
 async def _init_part_meta(part_id: int) -> dict:
     """Query Turso for part info and create meta.json. Returns meta dict."""
+    # Any non-deleted part is streamable — media (video/image) AND documents
+    # (PDF/Word/Excel/…). Documents are downloaded & cached on demand exactly like
+    # media; the inline preview in the web UI fetches them through this same route.
     rs = await db.execute(
         "SELECT p.id, p.channel_msg_id, p.file_size, p.file_name, p.file_id "
         "FROM parts p "
         "JOIN items i ON i.id = p.item_id "
-        "WHERE p.id = ? AND i.kind = 'media' "
+        "WHERE p.id = ? "
         "AND i.deleted_at IS NULL",
         [part_id],
     )
@@ -857,7 +864,7 @@ async def _fetch_part_row(part_id: int) -> dict | None:
     )
     for row in rs.rows:
         ext = os.path.splitext(row[2] or "")[1].lower()
-        if ext not in MIME_MAP:
+        if ext not in VIDEO_EXTS:
             return None
         return {
             "part_id": int(row[0]),
