@@ -9,6 +9,19 @@ const CHUNK = 16 * 1024 * 1024; // 16 MB per request
 const MAX_RETRY = 6;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Telegram (via the local Bot API) caps one file at ~2 GB. Anything larger MUST be split
+// to upload at all, so the auto picker routes big files to the splitting pipeline
+// (kind="archive", stream-split by the watcher) with the default part size; everything
+// ≤ 2 GB uploads as a single media file (keeps inline preview/thumbnail support).
+export const SPLIT_THRESHOLD_BYTES = 2000 * 1024 * 1024; // ~2 GB
+export const DEFAULT_PART_MB = 1500;
+
+// Auto-pick the upload kind for a file when no explicit kind is chosen: split big files,
+// keep everything else as a single media file.
+export function autoKindFor(size: number): Kind {
+  return size > SPLIT_THRESHOLD_BYTES ? "archive" : "media";
+}
+
 export interface UploadCtl {
   readonly cancel: boolean;
   readonly pause: boolean;

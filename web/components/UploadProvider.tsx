@@ -16,6 +16,7 @@ import {
   newToken,
   autoTypeTag,
   withTag,
+  autoKindFor,
   type UploadCtl,
 } from "@/lib/uploadClient";
 import {
@@ -54,6 +55,10 @@ export interface UploadDefaults {
   title: string;
   tags: string;
   partSize: number;
+  // When true, the kind is decided per file by size (> ~2 GB → split/archive, else
+  // media) instead of using `kind`. Used by the one-click Upload button, which fills
+  // everything automatically with no form.
+  autoKind?: boolean;
 }
 
 interface UploadContextValue {
@@ -219,7 +224,12 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
           : files.length === 1 && defaults.title.trim()
           ? defaults.title.trim()
           : stripExt(f.name);
-        const itTags = withTag(defaults.tags, autoTypeTag(f.name, defaults.kind));
+        // Auto mode: split big files (archive) and keep the rest as media; otherwise use
+        // the form's chosen kind. Tag by the real file type (Image/Video) regardless, so
+        // a large video routed to the split pipeline isn't mislabelled "Archive".
+        const itKind: Kind = defaults.autoKind ? autoKindFor(f.size) : defaults.kind;
+        const tagKind: Kind = defaults.autoKind ? "media" : itKind;
+        const itTags = withTag(defaults.tags, autoTypeTag(f.name, tagKind));
         const tokenKey = `tcd_up_${folder ? rel : f.name}:${f.size}:${f.lastModified}`;
         let token: string | null = null;
         try {
@@ -238,7 +248,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
         const item: LocalItem = {
           id: token,
           file: f,
-          kind: defaults.kind,
+          kind: itKind,
           title: itTitle,
           tags: itTags,
           partSize: defaults.partSize,

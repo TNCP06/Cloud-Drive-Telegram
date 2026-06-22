@@ -99,7 +99,10 @@ interface ItemProps {
    Single click (or Space) selects; double-click (or Enter) activates/opens. Native
    onClick + onDoubleClick keep the two cleanly separated — no manual timer that could
    fire a premature single-click — and tabIndex keeps each item keyboard-focusable.
-   Inner buttons (kebab/star/checkbox) stopPropagation so they never bubble up here. */
+   `data-key` (`i:<id>` for items, `f:<id>` for folders) lets DriveApp's arrow-key
+   handler map focused DOM nodes back to the right entry — files and folders share one
+   selection model. Inner buttons (kebab/star/checkbox) stopPropagation so they never
+   bubble up here. */
 function activation(
   item: DriveFile,
   onSelect: ItemProps["onSelect"],
@@ -109,8 +112,7 @@ function activation(
   return {
     tabIndex: 0,
     role: "button" as const,
-    // `data-id` lets DriveApp's arrow-key handler map focused DOM nodes back to items.
-    "data-id": item.id,
+    "data-key": `i:${item.id}`,
     // stopPropagation so the click doesn't bubble to the content background (which
     // clears the selection on empty-area clicks).
     onClick: (e: React.MouseEvent) => {
@@ -132,24 +134,63 @@ function activation(
   };
 }
 
-/* ---- Folder activation: single click selects (clears item selection), double-click
-   or Enter opens/enters the folder. ---- */
-function folderActivation(folderId: number, onSelect: (() => void) | undefined, onOpen: (id: number) => void) {
+/* ---- Folder activation: mirrors `activation` so folders behave like files — single
+   click (or Space) selects (Ctrl/Shift honoured by DriveApp), double-click (or Enter)
+   opens/enters the folder, Alt+Enter opens its details popup. ---- */
+function folderActivation(
+  folder: Folder,
+  onSelect: FolderProps["onSelect"],
+  onOpen: (id: number) => void,
+  onDetail: FolderProps["onDetail"]
+) {
   return {
     tabIndex: 0,
     role: "button" as const,
+    "data-key": `f:${folder.id}`,
     onClick: (e: React.MouseEvent) => {
       e.stopPropagation();
-      onSelect?.();
+      onSelect?.(folder, e);
     },
-    onDoubleClick: () => onOpen(folderId),
+    onDoubleClick: () => onOpen(folder.id),
     onKeyDown: (e: React.KeyboardEvent) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        onOpen(folderId);
+        if (e.altKey) onDetail?.(folder);
+        else onOpen(folder.id);
+      } else if (e.key === " ") {
+        e.preventDefault();
+        onSelect?.(folder, e);
       }
     },
   };
+}
+
+/* ---- Folder cell props (shared by FolderCard + FolderRow) ---- */
+interface FolderProps {
+  folder: Folder;
+  onOpen: (id: number) => void;
+  onMenu: (folder: Folder, anchor: HTMLElement) => void;
+  /** Selection: single-click / Space (honours Ctrl/Meta toggle + Shift range). */
+  onSelect?: (folder: Folder, e: React.MouseEvent | React.KeyboardEvent) => void;
+  /** Open the folder's details popup (Alt+Enter). */
+  onDetail?: (folder: Folder) => void;
+  onSelectToggle?: (folder: Folder, e: React.MouseEvent) => void;
+  selected?: boolean;
+  /** Total items inside (recursive, excludes trashed). */
+  itemCount?: number;
+  /** Total sub-folders inside (recursive). */
+  subfolderCount?: number;
+}
+
+/** Compact "3 folders · 12 items" summary line for a folder (or "Empty folder"). */
+function folderMeta(itemCount?: number, subfolderCount?: number): string {
+  const i = itemCount ?? 0;
+  const s = subfolderCount ?? 0;
+  if (!i && !s) return "Empty folder";
+  const parts: string[] = [];
+  if (s) parts.push(`${s} folder${s > 1 ? "s" : ""}`);
+  if (i) parts.push(`${i} item${i > 1 ? "s" : ""}`);
+  return parts.join(" · ");
 }
 
 /** Version badge (e.g. "v0.6.0") + optional "N versions" button. */
@@ -185,14 +226,13 @@ export function FolderCard({
   onOpen,
   onMenu,
   onSelect,
-}: {
-  folder: Folder;
-  onOpen: (id: number) => void;
-  onMenu: (folder: Folder, anchor: HTMLElement) => void;
-  onSelect?: () => void;
-}) {
+  onDetail,
+  selected = false,
+  itemCount,
+  subfolderCount,
+}: FolderProps) {
   return (
-    <div className="card folder" {...folderActivation(folder.id, onSelect, onOpen)}>
+    <div className={`card folder ${selected ? "sel" : ""}`} {...folderActivation(folder, onSelect, onOpen, onDetail)}>
       <div className="folder-ico">
         <Icon name="folder" size={20} stroke={1.6} />
       </div>
@@ -200,7 +240,7 @@ export function FolderCard({
         <div className="fname" title={folder.name}>
           {folder.name}
         </div>
-        <div className="meta">Folder</div>
+        <div className="meta">{folderMeta(itemCount, subfolderCount)}</div>
       </div>
       <button
         className="folder-kebab"
@@ -222,15 +262,27 @@ export function FolderRow({
   onOpen,
   onMenu,
   onSelect,
-}: {
-  folder: Folder;
-  onOpen: (id: number) => void;
-  onMenu: (folder: Folder, anchor: HTMLElement) => void;
-  onSelect?: () => void;
-}) {
+  onDetail,
+  selected = false,
+  onSelectToggle,
+  itemCount,
+  subfolderCount,
+}: FolderProps) {
   return (
-    <div className="row" {...folderActivation(folder.id, onSelect, onOpen)}>
+    <div className={`row ${selected ? "sel" : ""}`} {...folderActivation(folder, onSelect, onOpen, onDetail)}>
       <div className="rname">
+        {onSelectToggle && (
+          <button
+            className={`row-check ${selected ? "on" : ""}`}
+            style={{ border: 0, background: "none", display: "grid", placeItems: "center", cursor: "pointer", padding: 0 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectToggle(folder, e);
+            }}
+          >
+            <Icon name={selected ? "check" : "circle"} size={16} fill={selected} stroke={1.5} />
+          </button>
+        )}
         <div
           className="ico-wrap"
           style={{ background: "color-mix(in oklab, var(--accent) 12%, var(--card-2))" }}
@@ -244,7 +296,7 @@ export function FolderRow({
         </div>
       </div>
       <div className="col c-mod">—</div>
-      <div className="col c-size">—</div>
+      <div className="col c-size">{folderMeta(itemCount, subfolderCount)}</div>
       <div className="col c-kind hide-mob">Folder</div>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 2 }}>
         <button
@@ -720,5 +772,27 @@ export function MenuItem({
       <span>{label}</span>
       {check && <Icon name="check" size={16} className="check" stroke={2} />}
     </button>
+  );
+}
+
+/** Menu row that expands a side flyout on hover/focus (Windows-Explorer "Group by ›"). */
+export function SubMenuItem({
+  icon,
+  label,
+  children,
+}: {
+  icon?: string;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="menu-item has-sub" tabIndex={0}>
+      {icon && <Icon name={icon} size={17} className="ico" />}
+      <span>{label}</span>
+      <Icon name="chevright" size={15} className="sub-caret" />
+      <div className="submenu" role="menu">
+        {children}
+      </div>
+    </div>
   );
 }

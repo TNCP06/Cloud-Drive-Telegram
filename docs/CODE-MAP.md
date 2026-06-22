@@ -282,25 +282,47 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   CSS), `list` (`FileListItem` column-flow), `details` (the sortable `FileRow` table), `tiles`
   (`FileTile`), `content` (`FileContent`) — plus the `.app` class flags `no-sidebar`/`with-details`/
   `compact`/`show-checks`. When `detailsPane` is on, `DetailsPane` renders the **single-selected** item.
-  Selection UX: clicking the empty content background or pressing **Esc** clears the selection (a
-  window-level handler; the preview/detail popup `stopPropagation`s its own Esc in `PreviewDrawer` so
-  closing it never drops the selection). **Arrow keys** move the focused item (a global window listener via
-  `keyNavRef`, so it works even before any click — lands on the selected/first item; DOM-geometry nav via
-  `[data-id]`, works in every layout) — **Shift+arrow** extends the range from the anchor, **Ctrl+arrow**
-  moves focus only (Ctrl+Space toggles), **Ctrl/Cmd+A** selects all, **Alt+Enter** opens the detail popup. The floating
-  **selection toolbar is icon-only** (tooltip/aria-label per button) and adds a **Download** action (opens
-  the bot deep link for each selected item in a new tab; shows a count badge when >1) and, for a single
-  selection, a **Details** action (the standalone detail popup).
+  The **sort menu** also carries a Windows-Explorer **"Group by ›"** side-flyout (`SubMenuItem`):
+  `groupBy` (`none|name|type|tag|modified|size`) feeds `buildGroups()` → labelled sections rendered via
+  `renderItems(section, false)` with the folders drawn **once** above all sections (the Recent view still
+  defaults to date grouping when `groupBy` is `none`); grouping is suppressed while searching. The
+  displayed-order key list `visibleKeys` (folders + `navList`) drives Ctrl+A, select-all, and Shift-range
+  so a range can span folders, files, and groups.
+  Selection UX: **files and folders share one selection model** — every selected entry is a tagged key
+  (`i:<id>` / `f:<id>` in `selected: SelKey[]`; `selectedItemIds`/`selectedFolderIds` are derived for the
+  actions) because item and folder IDs live in different tables and can collide. Clicking the empty content
+  background or pressing **Esc** clears the selection (a window-level handler; the preview/detail popup
+  `stopPropagation`s its own Esc in `PreviewDrawer` so closing it never drops the selection). **Arrow keys**
+  move the focused entry — folders included (a global window listener via `keyNavRef`, so it works even
+  before any click — lands on the selected/first entry; DOM-geometry nav via `[data-key]`, works in every
+  layout) — **Shift+arrow** extends the range from the anchor (ranges may span folders + files + groups via the
+  `visibleKeys` on-screen order), **Ctrl+arrow** moves focus only (Ctrl+Space toggles), **Ctrl/Cmd+A**
+  selects all (folders + items), **Alt+Enter** opens the detail popup. The floating **selection toolbar is
+  icon-only** (tooltip/aria-label per button): **Download**/**Favorite** appear only when the selection
+  contains files (folders can't be downloaded/starred; download opens the bot deep link per item, badge
+  when >1), **Move** and **Delete** act on the whole mix (delete → `bulkSoftDelete` items + `deleteFolder`
+  each folder, cascading), and for a single selection a **Details** action (item drawer or `FolderDetailsModal`).
+  `folderStats` (memoized bottom-up over the acyclic folder tree) gives each folder its recursive item +
+  sub-folder counts for the cards/details views.
+  The toolbar (Main space, "All files", no search) carries an **Upload** button next to **New Folder**:
+  it opens a small menu (**Upload files** / **Upload folder**) wired to hidden `<input type=file>`
+  pickers (the folder one uses `webkitdirectory`). Picking starts the upload **immediately with no form**
+  via `useUpload().addFiles(..., { autoKind: true })` + `runQueue()` — titles/tags are auto-filled and
+  files **> ~2 GB are auto-split** (see `UploadProvider`/`uploadClient`). Hidden in the Private space
+  (the upload pipeline indexes into Main only).
 - `ViewMenu.tsx` — the **View dropdown**: a radio list of the 8 layouts (picks close the menu), a
   Details-pane toggle, and a "Show" group of on/off toggles (Sidebar / Compact view / Item check boxes /
   File name extensions / Detail items) — toggles keep the menu open. Built from the shared `Menu`/`MenuItem`.
 - `DetailsPane.tsx` — **persistent right-hand details panel** (Windows "Details pane"). Shows the
-  selected item's preview + metadata (type/size/parts/modified/added/status/tags) when exactly one item is
-  selected (else a hint); does not change card-click behavior. Desktop-only (hidden on mobile via CSS).
-  Folders render in their own compact `.grid.folders` above the file grid. Its modals + empty state were
-  extracted to `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete`, `CreateFolderModal`,
-  `RenameFolderModal`, `MoveToFolderModal`, `EmptyState`). `MoveToFolderModal` works for both items and
-  folders and offers a cross-space destination (Move to Private / Move to Main drive). `PrivateLock.tsx` —
+  single selected entry's preview + metadata when exactly one is selected (else a hint): a **file**
+  (type/size/parts/modified/added/status/tags) or a **folder** (type/total items/sub-folders/created/
+  modified, counts from `folderStats`). Does not change card-click behavior. Desktop-only (hidden on
+  mobile via CSS). Folders render in their own compact `.grid.folders` above the file grid. Its modals +
+  empty state were extracted to `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete` — folder-aware
+  message, `CreateFolderModal`, `RenameFolderModal`, `MoveToFolderModal`, `FolderDetailsModal` — the
+  standalone folder "Properties" popup, `EmptyState`). `MoveToFolderModal` takes `moveItemIds` +
+  `moveFolderIds` so one dialog moves any mix of items + folders (excluding each moving folder's own
+  subtree as a target) and offers a cross-space destination (Move to Private / Move to Main drive). `PrivateLock.tsx` —
   the phone-style PIN keypad (also keyboard-typable); fixed **6-digit** PIN that **auto-submits** the
   moment the 6th digit is entered (no Enter / check tap needed). `Sidebar.tsx` — nav/filters (the **brand is clickable
   to exit** in the Private space); regular tags sorted by usage count (desc); a collapsible **Type Tags**
@@ -313,14 +335,18 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `FileRow` (Details table), `FileTile` (horizontal tile), `FileContent` (wide metadata row),
   `FileListItem` (compact column-flow). All take `showExtensions` (extension on the name via
   `displayName`) and card-like ones take `showDetails` (the "Detail items" toggle — hides size/date/tags).
-  `FolderCard` is a **compact horizontal tile** (icon + name, no big thumbnail); `FolderRow` for the
-  Details table. File cards keep checkboxes for multi-select, a star toggle, and a kebab action button.
-  **Interaction model (Explorer-style):** a shared `activation()` helper wires every cell so a single
-  click (or Space) **selects** (`onSelect`) and a double-click (or Enter) **activates/opens** (`onOpen`);
-  items are `tabIndex`-focusable with a focus ring. Native `onClick`/`onDoubleClick` keep the two
-  separate (no timer), and inner buttons `stopPropagation`. `onSelect` honours Ctrl/Meta (toggle) and
-  Shift (range over the on-screen order, anchored by `selectAnchor` in `DriveApp`); folders select-on-click
-  (clearing the item selection) and open-on-double-click.
+  `FolderCard` is a **compact horizontal tile** (icon + name + "N folders · M items" summary) sized to
+  the **same column width as file cards** (the `.grid.folders` block carries `data-layout` and inherits
+  the file grid's columns); `FolderRow` for the Details table. **Folders are first-class selectable cells**
+  with the same `data-key` focus wiring as files. The FolderCard has **no select checkbox** — its selected
+  state is shown as a **glowing accent ring around the folder icon** (`.card.folder.sel .folder-ico`, no
+  card border), not the file card's border highlight; `FolderRow` keeps the table `row-check`. **Interaction model (Explorer-style):**
+  shared `activation()` (files) / `folderActivation()` (folders) helpers wire every cell so a single click
+  (or Space) **selects** (`onSelect`) and a double-click (or Enter) **activates/opens** (`onOpen`, folders
+  enter the folder); cells are `tabIndex`-focusable with a focus ring, tagged `data-key` (`i:`/`f:`). Native
+  `onClick`/`onDoubleClick` keep the two separate (no timer), and inner buttons `stopPropagation`. `onSelect`
+  honours Ctrl/Meta (toggle) and Shift (range over the on-screen order, anchored by `selectAnchor` in
+  `DriveApp`); **Alt+Enter** opens the entry's details popup (folder → `FolderDetailsModal`).
   Thumbless items render a **type-specific icon + colour** via `fileTypeFor` (PDF/Word/Excel/…)
   with an extension **badge** (e.g. "PDF", "XLSX"); the list view's Type column shows the
   fine-grained label.
@@ -342,7 +368,10 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `UploadProvider.tsx` — **global upload context** mounted in `app/layout.tsx` so the client-side
   upload queue + runner live above the page tree and **survive client-side navigation**. Holds the
   `LocalItem[]` queue (ref + force-render), the sequential runner (`runQueue`, was in `UploadManager`),
-  `pauseRun`/`cancelRun`, `addFiles`/`removeLocal`/`updateLocal`/`clearDone`, and `speed`. Persists
+  `pauseRun`/`cancelRun`, `addFiles`/`removeLocal`/`updateLocal`/`clearDone`, and `speed`. `addFiles`
+  takes `UploadDefaults`; with `autoKind: true` (the one-click Upload button) the **kind is decided per
+  file by size** — `autoKindFor(size)` routes files > ~2 GB to the split pipeline (`kind="archive"`,
+  default part size) and keeps the rest as single `media`, tagging by real file type either way. Persists
   each item to IndexedDB (`lib/uploadDb.ts`) on add/edit and, on first mount, **rehydrates + auto-resumes**
   any in-flight uploads (the refresh-safety fix). On handoff (browser→VPS done) it deletes the persisted
   blob, marks the item `done`, and calls `startUpload(jobId)`. `useUpload()` is the consumer hook.
@@ -362,7 +391,8 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   **Source toggle**: device (default) vs "Host path (advanced)" (`FsBrowser` + `enqueueUpload`). The
   list collapses to ~6 rows with **Show more / Show less**. The resumable engine lives in
   `lib/uploadClient.ts` (`uploadResumable` 16 MB chunks + server-offset resume; `autoTypeTag`,
-  `withTag`, `newToken`).
+  `withTag`, `newToken`; `autoKindFor` + `SPLIT_THRESHOLD_BYTES`/`DEFAULT_PART_MB` for size-based
+  kind selection used by the one-click Upload button).
   `TagManager.tsx` / `TagPicker.tsx` — category library + chip picker (picker dedupes existing tags case-insensitively).
   `ThemeToggle.tsx` — light/dark switch (flips `data-theme` on `<html>`, persists to localStorage
   `tcd_theme`; theme is applied pre-paint by an inline script in `layout.tsx`). `AppSkeleton.tsx` — loading skeleton.

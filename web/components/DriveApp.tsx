@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/lib/icons";
 import { fmtSize, relGroup } from "@/lib/format";
+import { fileTypeFor } from "@/lib/fileType";
 import { TAG_COLORS } from "@/lib/kinds";
 import type { DriveFile, Tag, Folder } from "@/lib/types";
 import { Sidebar, type Counts, type Storage } from "./Sidebar";
@@ -17,6 +18,7 @@ import {
   FolderRow,
   Menu,
   MenuItem,
+  SubMenuItem,
 } from "./FileViews";
 import { PreviewDrawer } from "./PreviewDrawer";
 import { TagManager } from "./TagManager";
@@ -36,6 +38,7 @@ import {
   CreateFolderModal,
   RenameFolderModal,
   MoveToFolderModal,
+  FolderDetailsModal,
   EmptyState,
 } from "./DriveDialogs";
 import {
@@ -58,13 +61,110 @@ import {
   bulkPurgeNow
 } from "@/app/actions";
 import { prefetchGallery } from "@/lib/gallery-cache";
+import { useUpload } from "./UploadProvider";
+import { DEFAULT_PART_MB } from "@/lib/uploadClient";
 
 type View = "all" | "recent" | "starred" | "trash" | "tag";
+
+/* ---- Unified selection keys ----
+   Files and folders share one selection model so they behave identically (Ctrl/Shift
+   range, arrow-nav, Ctrl+A, the floating toolbar). Item and folder IDs live in
+   different tables and can collide, so every selected entry is tagged: `i:<id>` for a
+   file, `f:<id>` for a folder. */
+type SelKey = string;
+const ik = (id: number): SelKey => `i:${id}`;
+const fk = (id: number): SelKey => `f:${id}`;
+const isItemKey = (k: SelKey) => k.charCodeAt(0) === 105; // 'i'
+const keyId = (k: SelKey) => Number(k.slice(2));
+
+/** Recursive content counts for a folder (excludes trashed items). */
+export type FolderStat = {
+  items: number;
+  subfolders: number;
+  directItems: number;
+  directSubfolders: number;
+};
 
 // Bot deep link for download (NEXT_PUBLIC_* is available on the client).
 const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME;
 const deepLink = (slug: string): string | null =>
   BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=${slug}` : null;
+
+/* ---- Group by (Windows-Explorer-style section grouping) ----
+   Splits the visible files into labelled sections. Items keep the active sort order
+   within each section; grouping is suppressed while searching. */
+type GroupKey = "none" | "name" | "type" | "tag" | "modified" | "size";
+const GROUP_OPTIONS: { key: GroupKey; label: string }[] = [
+  { key: "none", label: "(None)" },
+  { key: "name", label: "Name" },
+  { key: "type", label: "Type" },
+  { key: "tag", label: "Tag" },
+  { key: "modified", label: "Date modified" },
+  { key: "size", label: "Size" },
+];
+
+const SIZE_BUCKET_ORDER = [
+  "Tiny (< 1 MB)",
+  "Small (1–10 MB)",
+  "Medium (10–100 MB)",
+  "Large (100 MB – 1 GB)",
+  "Huge (> 1 GB)",
+  "Unknown",
+];
+function sizeBucket(bytes: number): string {
+  if (!bytes) return "Unknown";
+  const MB = 1024 * 1024;
+  const GB = 1024 * MB;
+  if (bytes < MB) return "Tiny (< 1 MB)";
+  if (bytes < 10 * MB) return "Small (1–10 MB)";
+  if (bytes < 100 * MB) return "Medium (10–100 MB)";
+  if (bytes < GB) return "Large (100 MB – 1 GB)";
+  return "Huge (> 1 GB)";
+}
+
+// Build ordered { label, items } sections for a (pre-sorted) list. Items stay in the
+// incoming order within each section. Returns null for "none".
+function buildGroups(
+  list: DriveFile[],
+  key: GroupKey,
+  tags: Tag[]
+): { label: string; items: DriveFile[] }[] | null {
+  if (key === "none") return null;
+  const groups = new Map<string, DriveFile[]>();
+  const push = (label: string, f: DriveFile) => {
+    const arr = groups.get(label);
+    if (arr) arr.push(f);
+    else groups.set(label, [f]);
+  };
+
+  if (key === "modified") {
+    list.forEach((f) => push(relGroup(f.modified), f));
+    const order = ["Today", "Yesterday", "This week", "This month", "Older"];
+    return order.filter((g) => groups.has(g)).map((g) => ({ label: g, items: groups.get(g)! }));
+  }
+  if (key === "size") {
+    list.forEach((f) => push(sizeBucket(f.size), f));
+    return SIZE_BUCKET_ORDER.filter((g) => groups.has(g)).map((g) => ({ label: g, items: groups.get(g)! }));
+  }
+  if (key === "name") {
+    list.forEach((f) => {
+      const c = (f.name.trim()[0] || "#").toUpperCase();
+      push(/[A-Z]/.test(c) ? c : "#", f);
+    });
+  } else if (key === "type") {
+    list.forEach((f) => push(fileTypeFor(f).label, f));
+  } else {
+    // tag → first tag (or "Untagged"); a file lands in exactly one section to avoid dupes.
+    const nameOf = new Map(tags.map((t) => [t.id, t.name]));
+    list.forEach((f) => push(f.tags.length ? nameOf.get(f.tags[0]) ?? "Untagged" : "Untagged", f));
+  }
+  // Alphabetical, with the catch-all bucket ("#" / "Untagged") pinned last.
+  const catchAll = key === "tag" ? "Untagged" : "#";
+  const labels = [...groups.keys()].sort((a, b) =>
+    a === catchAll ? 1 : b === catchAll ? -1 : a.localeCompare(b, "en")
+  );
+  return labels.map((l) => ({ label: l, items: groups.get(l)! }));
+}
 
 const SORTS: Record<string, { label: string; fn: (a: DriveFile, b: DriveFile, order: "asc" | "desc") => number }> = {
   modified: {
@@ -110,6 +210,7 @@ export function DriveApp({
   const [sort, setSort] = useState("modified");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [groupVersions, setGroupVersions] = useState(true);
+  const [groupBy, setGroupBy] = useState<GroupKey>("none");
   const [navOpen, setNavOpen] = useState(false);
   const [sortMenu, setSortMenu] = useState<HTMLElement | null>(null);
 
@@ -135,10 +236,34 @@ export function DriveApp({
   // Folder states
   const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
   const [showCreateFolder, setShowCreateFolder] = useState(false);
+
+  // One-click upload (global queue from UploadProvider). The Upload button picks
+  // files/folder and starts uploading immediately — no form. Big files (> ~2 GB) are
+  // auto-split, everything else uploads as a single media file; titles/tags are filled
+  // automatically from the filename + type.
+  const { addFiles: addFilesCtx, runQueue } = useUpload();
+  const [uploadMenu, setUploadMenu] = useState<HTMLElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const startUploadFiles = (list: FileList | null, folder: boolean) => {
+    const picked = Array.from(list ?? []);
+    if (!picked.length) return;
+    addFilesCtx(picked, folder, {
+      kind: "media",
+      title: "",
+      tags: "",
+      partSize: DEFAULT_PART_MB,
+      autoKind: true,
+    });
+    runQueue();
+  };
   const [showRenameFolder, setShowRenameFolder] = useState<Folder | null>(null);
-  const [moveTargetIds, setMoveTargetIds] = useState<number[]>([]);
-  const [moveFolderTarget, setMoveFolderTarget] = useState<Folder | null>(null);
+  // Unified move target: any mix of items + folders (kebab → one entry; toolbar → the
+  // whole selection). null = no move dialog open.
+  const [moveTarget, setMoveTarget] = useState<{ itemIds: number[]; folderIds: number[] } | null>(null);
   const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
+  // Standalone folder details popup (Alt+Enter / kebab Detail / toolbar Details).
+  const [folderDetail, setFolderDetail] = useState<Folder | null>(null);
 
   // Private-space navigation: enter goes to the PIN-gated /private route; exit clears
   // the unlock cookie (so the PIN is required again next time) and returns to Main.
@@ -149,11 +274,25 @@ export function DriveApp({
       router.push("/");
     });
 
-  // Multi-select states
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  // Anchor for Shift+click range selection (last item single-clicked / ctrl-toggled).
-  const [selectAnchor, setSelectAnchor] = useState<number | null>(null);
-  const [confirmBulk, setConfirmBulk] = useState<{ ids: number[]; mode: "trash" | "purge" } | null>(null);
+  // Multi-select states. `selected` holds tagged keys (`i:<id>` / `f:<id>`) so files and
+  // folders share one selection; the id arrays below are derived for the actions.
+  const [selected, setSelected] = useState<SelKey[]>([]);
+  // Anchor for Shift+click range selection (last entry single-clicked / ctrl-toggled).
+  const [selectAnchor, setSelectAnchor] = useState<SelKey | null>(null);
+  const selectedItemIds = useMemo(() => selected.filter(isItemKey).map(keyId), [selected]);
+  const selectedFolderIds = useMemo(
+    () => selected.filter((k) => !isItemKey(k)).map(keyId),
+    [selected]
+  );
+  const clearSelection = () => {
+    setSelected([]);
+    setSelectAnchor(null);
+  };
+  const [confirmBulk, setConfirmBulk] = useState<{
+    itemIds: number[];
+    folderIds: number[];
+    mode: "trash" | "purge";
+  } | null>(null);
 
   // Preview options
   const [initialShowDetails, setInitialShowDetails] = useState(false);
@@ -194,6 +333,10 @@ export function DriveApp({
     markMenuClosed();
     setTimeout(() => setViewMenu(null), 0);
   };
+  const closeUploadMenu = () => {
+    markMenuClosed();
+    setTimeout(() => setUploadMenu(null), 0);
+  };
 
   useEffect(() => {
     if (!toast) return;
@@ -223,14 +366,11 @@ export function DriveApp({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (previewId != null || menu || sortMenu || viewMenu || folderMenu) return;
-      if (selectedIds.length) {
-        setSelectedIds([]);
-        setSelectAnchor(null);
-      }
+      if (selected.length) clearSelection();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [previewId, menu, sortMenu, viewMenu, folderMenu, selectedIds.length]);
+  }, [previewId, menu, sortMenu, viewMenu, folderMenu, selected.length]);
 
   /* ---- keyboard: global arrow-key navigation + Ctrl/Cmd+A select-all ----
      Bound once on window so it works even before any file is clicked (delegates to the
@@ -386,6 +526,49 @@ export function DriveApp({
     return folders.filter((f) => f.parentId === currentFolderId);
   }, [folders, view, currentFolderId, query]);
 
+  /* ---- recursive content counts per folder (total items + sub-folders) ----
+     Memoized bottom-up over the (acyclic) folder tree so every folder card/details
+     view can show "N folders · M items" without re-walking each time. */
+  const folderStats = useMemo(() => {
+    const childrenMap = new Map<number, number[]>();
+    for (const f of folders) {
+      if (f.parentId != null) {
+        const arr = childrenMap.get(f.parentId);
+        if (arr) arr.push(f.id);
+        else childrenMap.set(f.parentId, [f.id]);
+      }
+    }
+    const directItems = new Map<number, number>();
+    for (const f of files) {
+      if (f.trashed || f.folderId == null) continue;
+      directItems.set(f.folderId, (directItems.get(f.folderId) ?? 0) + 1);
+    }
+    const memo = new Map<number, FolderStat>();
+    const compute = (id: number): FolderStat => {
+      const cached = memo.get(id);
+      if (cached) return cached;
+      const kids = childrenMap.get(id) ?? [];
+      const directItemCount = directItems.get(id) ?? 0;
+      const res: FolderStat = {
+        items: directItemCount,
+        subfolders: kids.length,
+        directItems: directItemCount,
+        directSubfolders: kids.length,
+      };
+      memo.set(id, res); // set before recursing → safe even if the tree ever cycles
+      for (const k of kids) {
+        const s = compute(k);
+        res.items += s.items;
+        res.subfolders += s.subfolders;
+      }
+      return res;
+    };
+    for (const f of folders) compute(f.id);
+    return memo;
+  }, [folders, files]);
+  const statOf = (id: number): FolderStat =>
+    folderStats.get(id) ?? { items: 0, subfolders: 0, directItems: 0, directSubfolders: 0 };
+
   /* ---- breadcrumbs path ---- */
   const breadcrumbs = useMemo(() => {
     if (view !== "all") return null;
@@ -401,17 +584,12 @@ export function DriveApp({
     return [...crumbs, ...path];
   }, [view, currentFolderId, folders]);
 
-  /* ---- grouping for the "Recent" view ---- */
+  /* ---- section grouping (explicit "Group by", or the Recent view's date default) ---- */
   const grouped = useMemo(() => {
-    if (view !== "recent" || query) return null;
-    const groups: Record<string, DriveFile[]> = {};
-    const order = ["Today", "Yesterday", "This week", "This month", "Older"];
-    items.forEach((f) => {
-      const g = relGroup(f.modified);
-      (groups[g] = groups[g] || []).push(f);
-    });
-    return order.filter((g) => groups[g]).map((g) => ({ label: g, items: groups[g] }));
-  }, [items, view, query]);
+    if (query) return null; // never group while searching
+    const key: GroupKey = groupBy !== "none" ? groupBy : view === "recent" ? "modified" : "none";
+    return buildGroups(items, key, tags);
+  }, [items, view, query, groupBy, tags]);
 
   /* ---- navigation ---- */
   const go = (v: string) => {
@@ -420,7 +598,7 @@ export function DriveApp({
     setQuery("");
     setNavOpen(false);
     setCurrentFolderId(null);
-    setSelectedIds([]);
+    clearSelection();
   };
   const goTag = (id: number) => {
     setView("tag");
@@ -428,7 +606,7 @@ export function DriveApp({
     setQuery("");
     setNavOpen(false);
     setCurrentFolderId(null);
-    setSelectedIds([]);
+    clearSelection();
   };
 
   const title =
@@ -492,29 +670,118 @@ export function DriveApp({
   // so this only fires for clicks that actually reach the scroll area / its containers.
   const onContentClick = () => {
     if (clickThroughNow()) return;
-    if (selectedIds.length) {
-      setSelectedIds([]);
-      setSelectAnchor(null);
+    if (selected.length) clearSelection();
+  };
+
+  // Every selectable entry currently on screen, in visual order: folders first (they
+  // render above the items in every layout), then items in their displayed order
+  // (`navList` already reflects grouping + version collapsing). Drives Ctrl+A,
+  // select-all, and Shift-range (which can therefore span folders, files, and groups).
+  const visibleKeys: SelKey[] = [
+    ...currentFolders.map((f) => fk(f.id)),
+    ...navList.map((i) => ik(i.id)),
+  ];
+
+  // Shared selection wiring (files + folders, every layout + grouped sections).
+  const toggleKey = (key: SelKey) =>
+    setSelected((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  const selectKey = (key: SelKey, e: React.MouseEvent | React.KeyboardEvent) => {
+    if (clickThroughNow()) return;
+    if (e.ctrlKey || e.metaKey) {
+      toggleKey(key);
+      setSelectAnchor(key);
+    } else if (e.shiftKey && selectAnchor != null) {
+      const aIdx = visibleKeys.indexOf(selectAnchor);
+      const bIdx = visibleKeys.indexOf(key);
+      if (aIdx >= 0 && bIdx >= 0) {
+        const [lo, hi] = aIdx < bIdx ? [aIdx, bIdx] : [bIdx, aIdx];
+        setSelected(visibleKeys.slice(lo, hi + 1));
+      } else {
+        setSelected([key]);
+        setSelectAnchor(key);
+      }
+    } else {
+      setSelected([key]);
+      setSelectAnchor(key);
     }
   };
 
-  // Arrow-key navigation between focused items. Uses live DOM geometry so it works for
-  // every layout (grid columns, list rows, column-flow): Left/Right step linearly;
-  // Up/Down pick the nearest item on the adjacent row by horizontal position.
-  //   plain  → move focus + select only that item (anchor = it)
-  //   Shift  → extend the selection range from the anchor to the new item
+  // Item-cell handlers.
+  const onMenuItem = (item: DriveFile, anchor: HTMLElement) => setMenu({ anchor, item });
+  const onOpenItem = (it: DriveFile) => {
+    if (clickThroughNow()) return;
+    setInitialShowDetails(false);
+    setInitialEditing(false);
+    setDetailsOnly(false);
+    openPreview(it);
+  };
+  const onDetailItem = (it: DriveFile) => {
+    if (clickThroughNow()) return;
+    setInitialEditing(false);
+    setInitialShowDetails(true);
+    setDetailsOnly(true);
+    openPreview(it);
+  };
+  const onItemSelect = (it: DriveFile, e: React.MouseEvent | React.KeyboardEvent) => selectKey(ik(it.id), e);
+  const onItemToggle = (it: DriveFile) => {
+    toggleKey(ik(it.id));
+    setSelectAnchor(ik(it.id));
+  };
+
+  // Folder-cell wiring — folders share the file selection model.
+  const onFolderOpen = (id: number) => {
+    if (clickThroughNow()) return;
+    setCurrentFolderId(id);
+    clearSelection();
+  };
+  const folderCell = (folder: Folder) => {
+    const s = statOf(folder.id);
+    return {
+      folder,
+      onOpen: onFolderOpen,
+      onMenu: (f: Folder, anchor: HTMLElement) => setFolderMenu({ anchor, folder: f }),
+      onSelect: (f: Folder, e: React.MouseEvent | React.KeyboardEvent) => selectKey(fk(f.id), e),
+      onDetail: (f: Folder) => {
+        if (clickThroughNow()) return;
+        setFolderDetail(f);
+      },
+      onSelectToggle: (f: Folder) => {
+        toggleKey(fk(f.id));
+        setSelectAnchor(fk(f.id));
+      },
+      selected: selected.includes(fk(folder.id)),
+      itemCount: s.items,
+      subfolderCount: s.subfolders,
+    };
+  };
+  // Compact folder-cards grid (used above the file area; same column width as cards).
+  const foldersGrid =
+    currentFolders.length > 0 ? (
+      <div className="grid folders" data-layout={layout}>
+        {currentFolders.map((folder) => (
+          <FolderCard key={`folder-${folder.id}`} {...folderCell(folder)} />
+        ))}
+      </div>
+    ) : null;
+
+  // Arrow-key navigation between focused entries (files AND folders). Uses live DOM
+  // geometry so it works for every layout (grid columns, list rows, column-flow):
+  // Left/Right step linearly; Up/Down pick the nearest entry on the adjacent row by
+  // horizontal position.
+  //   plain  → move focus + select only that entry (anchor = it)
+  //   Shift  → extend the selection range from the anchor to the new entry
   //   Ctrl   → move focus only, leaving the selection untouched (toggle with Ctrl+Space)
   keyNavRef.current = (e: KeyboardEvent) => {
     const ae = document.activeElement as HTMLElement | null;
     const typing = !!ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
     const overlayOpen = previewId != null || !!menu || !!sortMenu || !!viewMenu || !!folderMenu;
 
-    // Ctrl/Cmd+A → select every visible item.
+    // Ctrl/Cmd+A → select every visible folder + item.
     if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
-      if (typing || overlayOpen || !items.length) return;
+      if (typing || overlayOpen || !visibleKeys.length) return;
       e.preventDefault();
-      setSelectedIds(items.map((i) => i.id));
-      setSelectAnchor(items[0]?.id ?? null);
+      setSelected(visibleKeys);
+      setSelectAnchor(visibleKeys[0] ?? null);
       return;
     }
 
@@ -522,19 +789,19 @@ export function DriveApp({
     if (!arrows.includes(e.key) || typing || overlayOpen) return;
     const container = contentRef.current;
     if (!container) return;
-    const nodes = Array.from(container.querySelectorAll<HTMLElement>("[data-id]"));
+    const nodes = Array.from(container.querySelectorAll<HTMLElement>("[data-key]"));
     if (!nodes.length) return;
     e.preventDefault();
-    const idOf = (n: HTMLElement) => Number(n.dataset.id);
+    const keyOf = (n: HTMLElement) => n.dataset.key!;
     const active = document.activeElement as HTMLElement | null;
     const idx = active ? nodes.indexOf(active) : -1;
 
-    // Nothing focused yet → land on the selected item (or the first) and select it.
+    // Nothing focused yet → land on the selected entry (or the first) and select it.
     if (idx === -1) {
-      const start = nodes.find((n) => selectedIds.includes(idOf(n))) ?? nodes[0];
+      const start = nodes.find((n) => selected.includes(keyOf(n))) ?? nodes[0];
       start.focus();
-      setSelectedIds([idOf(start)]);
-      setSelectAnchor(idOf(start));
+      setSelected([keyOf(start)]);
+      setSelectAnchor(keyOf(start));
       return;
     }
 
@@ -567,138 +834,80 @@ export function DriveApp({
     }
     if (!target) return;
     target.focus();
-    const tid = idOf(target);
+    const tkey = keyOf(target);
 
     if (e.shiftKey) {
-      // Extend the range from the anchor (seed it from the current item if unset).
-      const anchorId = selectAnchor ?? idOf(nodes[idx]);
-      const aIdx = nodes.findIndex((n) => idOf(n) === anchorId);
+      // Extend the range from the anchor (seed it from the current entry if unset).
+      const anchorKey = selectAnchor ?? keyOf(nodes[idx]);
+      const aIdx = nodes.findIndex((n) => keyOf(n) === anchorKey);
       const tIdx = nodes.indexOf(target);
       if (aIdx >= 0) {
         const [lo, hi] = aIdx < tIdx ? [aIdx, tIdx] : [tIdx, aIdx];
-        setSelectedIds(nodes.slice(lo, hi + 1).map(idOf));
-        setSelectAnchor(anchorId);
+        setSelected(nodes.slice(lo, hi + 1).map(keyOf));
+        setSelectAnchor(anchorKey);
       } else {
-        setSelectedIds([tid]);
-        setSelectAnchor(tid);
+        setSelected([tkey]);
+        setSelectAnchor(tkey);
       }
     } else if (e.ctrlKey || e.metaKey) {
       // Move focus only — keep the existing selection + anchor (Ctrl+Space toggles).
     } else {
-      setSelectedIds([tid]);
-      setSelectAnchor(tid);
+      setSelected([tkey]);
+      setSelectAnchor(tkey);
     }
   };
 
   // Toolbar download: open the bot deep link for every selected item in a new tab.
   const downloadSelected = () => {
-    selectedIds.forEach((id) => {
+    selectedItemIds.forEach((id) => {
       const f = files.find((x) => x.id === id);
       const url = f ? deepLink(f.slug) : null;
       if (url) window.open(url, "_blank");
     });
   };
 
-  // Toolbar detail (single selection): open the standalone detail popup.
+  // Toolbar detail (single selection): open the standalone detail popup for the one
+  // selected entry — item drawer or folder details popup.
   const detailSelected = () => {
-    const f = files.find((x) => x.id === selectedIds[0]);
-    if (!f) return;
-    setInitialEditing(false);
-    setInitialShowDetails(true);
-    setDetailsOnly(true);
-    openPreview(f);
-  };
-
-  function renderItems(list: DriveFile[]) {
-    const onMenu = (item: DriveFile, anchor: HTMLElement) => setMenu({ anchor, item });
-    const { list: shown, counts } = collapseVersions(list);
-    const isClickThrough = () => {
-      return (Date.now() - menuClosedTimeRef.current < 150) || (Date.now() - previewClosedTimeRef.current < 150);
-    };
-    const onOpenItem = (it: DriveFile) => {
-      if (isClickThrough()) return;
-      setInitialShowDetails(false);
-      setInitialEditing(false);
-      setDetailsOnly(false);
-      openPreview(it);
-    };
-    // Alt+Enter → standalone detail popup for this item.
-    const onDetailItem = (it: DriveFile) => {
-      if (isClickThrough()) return;
+    const key = selected[0];
+    if (!key) return;
+    if (isItemKey(key)) {
+      const f = files.find((x) => x.id === keyId(key));
+      if (!f) return;
       setInitialEditing(false);
       setInitialShowDetails(true);
       setDetailsOnly(true);
-      openPreview(it);
-    };
-    const onToggle = (it: DriveFile) =>
-      setSelectedIds((prev) =>
-        prev.includes(it.id) ? prev.filter((id) => id !== it.id) : [...prev, it.id]
-      );
-    // Single-click selection (Explorer-style): plain = select only; Ctrl/Meta = toggle;
-    // Shift = range from the anchor along the on-screen order (`shown`).
-    const onSelect = (it: DriveFile, e: React.MouseEvent | React.KeyboardEvent) => {
-      if (isClickThrough()) return;
-      if (e.ctrlKey || e.metaKey) {
-        onToggle(it);
-        setSelectAnchor(it.id);
-      } else if (e.shiftKey && selectAnchor != null) {
-        const aIdx = shown.findIndex((f) => f.id === selectAnchor);
-        const bIdx = shown.findIndex((f) => f.id === it.id);
-        if (aIdx >= 0 && bIdx >= 0) {
-          const [lo, hi] = aIdx < bIdx ? [aIdx, bIdx] : [bIdx, aIdx];
-          setSelectedIds(shown.slice(lo, hi + 1).map((f) => f.id));
-        } else {
-          setSelectedIds([it.id]);
-          setSelectAnchor(it.id);
-        }
-      } else {
-        setSelectedIds([it.id]);
-        setSelectAnchor(it.id);
-      }
-    };
-    // Clicking a folder (or empty selection target) clears the item selection.
-    const clearSelection = () => {
-      if (isClickThrough()) return;
-      setSelectedIds([]);
-      setSelectAnchor(null);
-    };
+      openPreview(f);
+    } else {
+      const folder = folders.find((x) => x.id === keyId(key));
+      if (folder) setFolderDetail(folder);
+    }
+  };
+
+  // Render a list of files (one section). `includeFolders` draws the current folders too
+  // (set false for grouped sections, which render the folders once above all groups).
+  function renderItems(list: DriveFile[], includeFolders = true) {
+    const { list: shown, counts } = collapseVersions(list);
     // Shared props for every file-cell component (grid card, tile, content row, list item).
     const cell = (item: DriveFile) => ({
       item,
       tags,
       onStar: doStar,
-      onMenu,
+      onMenu: onMenuItem,
       onOpen: onOpenItem,
-      onSelect,
+      onSelect: onItemSelect,
       onDetail: onDetailItem,
       versionCount: counts.get(item.familyKey),
       onPickFamily: pickFamily,
-      selected: selectedIds.includes(item.id),
-      onSelectToggle: onToggle,
+      selected: selected.includes(ik(item.id)),
+      onSelectToggle: onItemToggle,
       showExtensions: prefs.showExtensions,
       showDetails: prefs.showDetailItems,
     });
 
     // Folders render as compact cards above the items in every layout except Details,
     // where they become table rows interleaved with the file rows.
-    const folderBlock =
-      currentFolders.length > 0 && layout !== "details" ? (
-        <div className="grid folders">
-          {currentFolders.map((folder) => (
-            <FolderCard
-              key={`folder-${folder.id}`}
-              folder={folder}
-              onOpen={(id) => {
-                if (isClickThrough()) return;
-                setCurrentFolderId(id);
-                setSelectedIds([]);
-              }}
-              onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
-              onSelect={clearSelection}
-            />
-          ))}
-        </div>
-      ) : null;
+    const folderBlock = includeFolders && layout !== "details" ? foldersGrid : null;
 
     if (layout === "details") {
       const sortHead = (key: string, label: string, cls?: string, defOrder: "asc" | "desc" = "asc") => (
@@ -736,19 +945,10 @@ export function DriveApp({
             <span className="hide-mob">Type</span>
             <span></span>
           </div>
-          {currentFolders.map((folder) => (
-            <FolderRow
-              key={`folder-${folder.id}`}
-              folder={folder}
-              onOpen={(id) => {
-                if (isClickThrough()) return;
-                setCurrentFolderId(id);
-                setSelectedIds([]);
-              }}
-              onMenu={(f, anchor) => setFolderMenu({ anchor, folder: f })}
-              onSelect={clearSelection}
-            />
-          ))}
+          {includeFolders &&
+            currentFolders.map((folder) => (
+              <FolderRow key={`folder-${folder.id}`} {...folderCell(folder)} />
+            ))}
           {shown.map((item) => (
             <FileRow key={item.id} {...cell(item)} />
           ))}
@@ -808,9 +1008,12 @@ export function DriveApp({
     );
   }
 
-  // Single-selection drives the persistent details pane.
+  // A single selected entry (file OR folder) drives the persistent details pane.
+  const singleKey = selected.length === 1 ? selected[0] : null;
   const detailsSelected =
-    selectedIds.length === 1 ? files.find((f) => f.id === selectedIds[0]) ?? null : null;
+    singleKey && isItemKey(singleKey) ? files.find((f) => f.id === keyId(singleKey)) ?? null : null;
+  const detailsFolder =
+    singleKey && !isItemKey(singleKey) ? folders.find((f) => f.id === keyId(singleKey)) ?? null : null;
 
   const appClass = [
     "app",
@@ -960,6 +1163,23 @@ export function DriveApp({
             Group versions
           </button>
 
+          {/* Upload Button (files / folder) — starts uploading immediately, no form.
+              Main space only: the upload pipeline indexes into Main, not Private. */}
+          {view === "all" && !query && !isPrivate && (
+            <button
+              className="sortbtn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setUploadMenu(e.currentTarget);
+              }}
+              title="Upload files or a folder"
+            >
+              <Icon name="upload" size={15} />
+              Upload
+              <Icon name="chevdown" size={14} />
+            </button>
+          )}
+
           {/* New Folder Button */}
           {view === "all" && !query && (
             <button
@@ -979,12 +1199,18 @@ export function DriveApp({
           {items.length === 0 && currentFolders.length === 0 ? (
             <EmptyState view={view} query={query} />
           ) : grouped ? (
-            grouped.map((g) => (
-              <div key={g.label}>
-                <div className="section-h">{g.label}</div>
-                {renderItems(g.items)}
-              </div>
-            ))
+            <>
+              {/* folders once, above the grouped sections (each section is files only) */}
+              {foldersGrid}
+              {grouped.map((g) => (
+                <div key={g.label}>
+                  <div className="section-h">
+                    {g.label} <span className="section-count">{g.items.length}</span>
+                  </div>
+                  {renderItems(g.items, false)}
+                </div>
+              ))}
+            </>
           ) : (
             renderItems(items)
           )}
@@ -994,6 +1220,8 @@ export function DriveApp({
       {prefs.detailsPane && (
         <DetailsPane
           item={detailsSelected}
+          folder={detailsFolder}
+          folderStat={detailsFolder ? statOf(detailsFolder.id) : null}
           tags={tags}
           showExtensions={prefs.showExtensions}
           onClose={() => updatePrefs({ detailsPane: false })}
@@ -1007,6 +1235,54 @@ export function DriveApp({
           onChange={updatePrefs}
           onClose={closeViewMenu}
         />
+      )}
+
+      {/* Hidden pickers for the Upload button. Selecting starts the upload immediately. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        hidden
+        multiple
+        onChange={(e) => {
+          startUploadFiles(e.target.files, false);
+          e.currentTarget.value = "";
+        }}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        hidden
+        multiple
+        // webkitdirectory/directory are non-standard but widely supported.
+        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+        onChange={(e) => {
+          startUploadFiles(e.target.files, true);
+          e.currentTarget.value = "";
+        }}
+      />
+
+      {uploadMenu && (
+        <>
+          <div className="menu-scrim" onClick={closeUploadMenu} />
+          <Menu anchor={uploadMenu} onClose={closeUploadMenu} width={190}>
+            <MenuItem
+              icon="upload"
+              label="Upload files"
+              onClick={() => {
+                fileInputRef.current?.click();
+                closeUploadMenu();
+              }}
+            />
+            <MenuItem
+              icon="folder"
+              label="Upload folder"
+              onClick={() => {
+                folderInputRef.current?.click();
+                closeUploadMenu();
+              }}
+            />
+          </Menu>
+        </>
       )}
 
       {sortMenu && (
@@ -1048,6 +1324,20 @@ export function DriveApp({
                 closeSortMenu();
               }}
             />
+            <div className="menu-sep" />
+            <SubMenuItem icon="rows" label="Group by">
+              {GROUP_OPTIONS.map((g) => (
+                <MenuItem
+                  key={g.key}
+                  label={g.label}
+                  check={groupBy === g.key}
+                  onClick={() => {
+                    setGroupBy(g.key);
+                    closeSortMenu();
+                  }}
+                />
+              ))}
+            </SubMenuItem>
           </Menu>
         </>
       )}
@@ -1105,7 +1395,7 @@ export function DriveApp({
                   icon="folder"
                   label="Move to..."
                   onClick={() => {
-                    setMoveTargetIds([menu.item.id]);
+                    setMoveTarget({ itemIds: [menu.item.id], folderIds: [] });
                     closeMenu();
                   }}
                 />
@@ -1148,6 +1438,14 @@ export function DriveApp({
           <div className="menu-scrim" onClick={closeFolderMenu} />
           <Menu anchor={folderMenu.anchor} onClose={closeFolderMenu} width={180}>
             <MenuItem
+              icon="info"
+              label="Detail"
+              onClick={() => {
+                setFolderDetail(folderMenu.folder);
+                closeFolderMenu();
+              }}
+            />
+            <MenuItem
               icon="edit"
               label="Rename"
               onClick={() => {
@@ -1159,21 +1457,17 @@ export function DriveApp({
               icon="folder"
               label="Move to..."
               onClick={() => {
-                setMoveFolderTarget(folderMenu.folder);
+                setMoveTarget({ itemIds: [], folderIds: [folderMenu.folder.id] });
                 closeFolderMenu();
               }}
             />
+            <div className="menu-sep"></div>
             <MenuItem
               icon="trash"
               label="Delete"
               danger
               onClick={() => {
-                const confirmDel = window.confirm(`Delete folder "${folderMenu.folder.name}" and soft-delete all items inside?`);
-                if (confirmDel) {
-                  startTransition(async () => {
-                    await deleteFolder(folderMenu.folder.id);
-                  });
-                }
+                setConfirmBulk({ itemIds: [], folderIds: [folderMenu.folder.id], mode: "trash" });
                 closeFolderMenu();
               }}
             />
@@ -1225,20 +1519,23 @@ export function DriveApp({
 
       {confirmBulk && (
         <ConfirmBulkDelete
-          count={confirmBulk.ids.length}
+          itemCount={confirmBulk.itemIds.length}
+          folderCount={confirmBulk.folderIds.length}
           mode={confirmBulk.mode}
           onCancel={() => setConfirmBulk(null)}
           onConfirm={() => {
-            if (confirmBulk.mode === "purge") {
+            const { itemIds, folderIds, mode } = confirmBulk;
+            if (mode === "purge") {
               startTransition(async () => {
-                const r = await bulkPurgeNow(confirmBulk.ids);
+                const r = await bulkPurgeNow(itemIds);
                 if (!r.ok) setToast(r.error ?? "Failed to delete permanently.");
-                setSelectedIds([]);
+                clearSelection();
               });
             } else {
               startTransition(async () => {
-                await bulkSoftDelete(confirmBulk.ids);
-                setSelectedIds([]);
+                if (itemIds.length) await bulkSoftDelete(itemIds);
+                for (const fid of folderIds) await deleteFolder(fid);
+                clearSelection();
               });
             }
             setConfirmBulk(null);
@@ -1247,50 +1544,56 @@ export function DriveApp({
       )}
 
       {/* Multi-select Floating Selection Toolbar — icon-only; hidden while a preview/viewer
-          is open so it doesn't float over the fullscreen stage. */}
-      {selectedIds.length > 0 && !previewItem && (
+          is open so it doesn't float over the fullscreen stage. Item-only actions
+          (download/favorite) appear only when the selection contains files; move + delete
+          act on the whole mix of files + folders. */}
+      {selected.length > 0 && !previewItem && (
         <div className="selection-toolbar">
           <div className="sel-actions">
-            {selectedIds.length === 1 && view !== "trash" && (
+            {selected.length === 1 && view !== "trash" && (
               <button className="action-btn" onClick={detailSelected} title="Details" aria-label="Details">
                 <Icon name="info" size={17} />
               </button>
             )}
-            {view !== "trash" && (
+            {view !== "trash" && selectedItemIds.length > 0 && (
               <button className="action-btn" onClick={downloadSelected} title="Download" aria-label="Download">
                 <Icon name="download" size={17} />
-                {selectedIds.length > 1 && <span className="sel-badge">{selectedIds.length}</span>}
+                {selectedItemIds.length > 1 && <span className="sel-badge">{selectedItemIds.length}</span>}
               </button>
             )}
-            <button
-              className="action-btn"
-              onClick={() => {
-                const allSelectedStarred = selectedIds.every((id) => files.find((f) => f.id === id)?.starred);
-                startTransition(async () => {
-                  await bulkToggleFavorite(selectedIds, !allSelectedStarred);
-                });
-              }}
-              title="Toggle favorite"
-              aria-label="Toggle favorite"
-            >
-              <Icon name="star" size={16} fill={selectedIds.every((id) => files.find((f) => f.id === id)?.starred)} />
-            </button>
-            <button
-              className="action-btn"
-              onClick={() => setMoveTargetIds(selectedIds)}
-              title="Move to folder"
-              aria-label="Move to folder"
-            >
-              <Icon name="folder" size={16} />
-            </button>
+            {view !== "trash" && selectedItemIds.length > 0 && (
+              <button
+                className="action-btn"
+                onClick={() => {
+                  const allStarred = selectedItemIds.every((id) => files.find((f) => f.id === id)?.starred);
+                  startTransition(async () => {
+                    await bulkToggleFavorite(selectedItemIds, !allStarred);
+                  });
+                }}
+                title="Toggle favorite"
+                aria-label="Toggle favorite"
+              >
+                <Icon name="star" size={16} fill={selectedItemIds.every((id) => files.find((f) => f.id === id)?.starred)} />
+              </button>
+            )}
+            {view !== "trash" && (
+              <button
+                className="action-btn"
+                onClick={() => setMoveTarget({ itemIds: selectedItemIds, folderIds: selectedFolderIds })}
+                title="Move to folder"
+                aria-label="Move to folder"
+              >
+                <Icon name="folder" size={16} />
+              </button>
+            )}
             {view === "trash" ? (
               <>
                 <button
                   className="action-btn"
                   onClick={() => {
                     startTransition(async () => {
-                      await bulkRestore(selectedIds);
-                      setSelectedIds([]);
+                      await bulkRestore(selectedItemIds);
+                      clearSelection();
                     });
                   }}
                   title="Restore items"
@@ -1300,7 +1603,7 @@ export function DriveApp({
                 </button>
                 <button
                   className="action-btn danger-btn"
-                  onClick={() => setConfirmBulk({ ids: selectedIds, mode: "purge" })}
+                  onClick={() => setConfirmBulk({ itemIds: selectedItemIds, folderIds: [], mode: "purge" })}
                   title="Delete permanently"
                   aria-label="Delete permanently"
                 >
@@ -1310,9 +1613,9 @@ export function DriveApp({
             ) : (
               <button
                 className="action-btn danger-btn"
-                onClick={() => setConfirmBulk({ ids: selectedIds, mode: "trash" })}
-                title="Delete items"
-                aria-label="Delete items"
+                onClick={() => setConfirmBulk({ itemIds: selectedItemIds, folderIds: selectedFolderIds, mode: "trash" })}
+                title="Delete"
+                aria-label="Delete"
               >
                 <Icon name="trash" size={16} />
               </button>
@@ -1320,18 +1623,21 @@ export function DriveApp({
             <button
               className="action-btn"
               onClick={() => {
-                if (selectedIds.length === items.length) setSelectedIds([]);
-                else setSelectedIds(items.map((item) => item.id));
+                if (selected.length === visibleKeys.length) clearSelection();
+                else {
+                  setSelected(visibleKeys);
+                  setSelectAnchor(visibleKeys[0] ?? null);
+                }
               }}
-              title={selectedIds.length === items.length ? "Deselect all" : "Select all"}
-              aria-label={selectedIds.length === items.length ? "Deselect all" : "Select all"}
+              title={selected.length === visibleKeys.length ? "Deselect all" : "Select all"}
+              aria-label={selected.length === visibleKeys.length ? "Deselect all" : "Select all"}
             >
-              <Icon name={selectedIds.length === items.length ? "circle" : "check"} size={16} />
+              <Icon name={selected.length === visibleKeys.length ? "circle" : "check"} size={16} />
             </button>
             <button
               className="action-btn"
               style={{ borderLeft: "1px solid var(--line)", paddingLeft: "14px" }}
-              onClick={() => setSelectedIds([])}
+              onClick={clearSelection}
               title="Clear selection"
               aria-label="Clear selection"
             >
@@ -1368,52 +1674,52 @@ export function DriveApp({
         />
       )}
 
-      {/* Move Items to Folder Modal */}
-      {moveTargetIds.length > 0 && (
+      {/* Unified Move Modal — any mix of items + folders, to another folder or across
+          Main ⇄ Private. Targets that would create a cycle are excluded by the modal. */}
+      {moveTarget && (
         <MoveToFolderModal
           folders={folders}
           space={space}
-          mode="item"
-          onClose={() => setMoveTargetIds([])}
+          moveItemIds={moveTarget.itemIds}
+          moveFolderIds={moveTarget.folderIds}
+          onClose={() => setMoveTarget(null)}
           onMove={(targetFolderId) => {
+            const { itemIds, folderIds } = moveTarget;
             startTransition(async () => {
-              await moveItemsToFolder(moveTargetIds, targetFolderId);
-              setSelectedIds([]);
+              if (itemIds.length) await moveItemsToFolder(itemIds, targetFolderId);
+              for (const fid of folderIds) {
+                try {
+                  await moveFolderToFolder(fid, targetFolderId);
+                } catch (err) {
+                  setToast(err instanceof Error ? err.message : "Failed to move folder.");
+                }
+              }
+              clearSelection();
             });
-            setMoveTargetIds([]);
+            setMoveTarget(null);
           }}
           onMoveCrossSpace={() => {
-            const ids = moveTargetIds;
+            const { itemIds, folderIds } = moveTarget;
             startTransition(async () => {
-              await moveItemsPrivacy(ids, space === "main");
-              setSelectedIds([]);
+              if (itemIds.length) await moveItemsPrivacy(itemIds, space === "main");
+              for (const fid of folderIds) await moveFolderPrivacy(fid, space === "main");
+              clearSelection();
             });
-            setMoveTargetIds([]);
+            setMoveTarget(null);
           }}
         />
       )}
 
-      {/* Move Folder Modal (to another folder, or across Main ⇄ Private) */}
-      {moveFolderTarget && (
-        <MoveToFolderModal
-          folders={folders}
-          space={space}
-          mode="folder"
-          movingFolderId={moveFolderTarget.id}
-          onClose={() => setMoveFolderTarget(null)}
-          onMove={(targetFolderId) => {
-            const fid = moveFolderTarget.id;
-            startTransition(async () => {
-              await moveFolderToFolder(fid, targetFolderId);
-            });
-            setMoveFolderTarget(null);
-          }}
-          onMoveCrossSpace={() => {
-            const fid = moveFolderTarget.id;
-            startTransition(async () => {
-              await moveFolderPrivacy(fid, space === "main");
-            });
-            setMoveFolderTarget(null);
+      {/* Folder Details popup (Alt+Enter / kebab Detail / toolbar Details) */}
+      {folderDetail && (
+        <FolderDetailsModal
+          folder={folderDetail}
+          stat={statOf(folderDetail.id)}
+          onClose={() => setFolderDetail(null)}
+          onOpen={() => {
+            setCurrentFolderId(folderDetail.id);
+            clearSelection();
+            setFolderDetail(null);
           }}
         />
       )}

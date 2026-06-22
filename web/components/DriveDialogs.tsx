@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/lib/icons";
 import type { DriveFile, Folder } from "@/lib/types";
+import type { FolderStat } from "./DriveApp";
 
 // Presentational modals + empty state extracted from DriveApp.tsx. Each is driven
 // entirely by props (no DriveApp internals), so they live here to keep the shell lean.
@@ -71,12 +72,14 @@ export function ConfirmDelete({
 }
 
 export function ConfirmBulkDelete({
-  count,
+  itemCount,
+  folderCount = 0,
   mode,
   onCancel,
   onConfirm,
 }: {
-  count: number;
+  itemCount: number;
+  folderCount?: number;
   mode: "trash" | "purge";
   onCancel: () => void;
   onConfirm: () => void;
@@ -90,6 +93,11 @@ export function ConfirmBulkDelete({
   }, [onCancel]);
 
   const purge = mode === "purge";
+  // "3 folders and 5 items" / "5 items" / "3 folders" — whichever the selection holds.
+  const parts: string[] = [];
+  if (folderCount) parts.push(`${folderCount} folder${folderCount > 1 ? "s" : ""}`);
+  if (itemCount) parts.push(`${itemCount} item${itemCount > 1 ? "s" : ""}`);
+  const what = parts.join(" and ") || "items";
 
   return (
     <div
@@ -107,13 +115,14 @@ export function ConfirmBulkDelete({
           <p className="sub" style={{ fontSize: 14, lineHeight: 1.5 }}>
             {purge ? (
               <>
-                Are you sure you want to <strong>permanently delete {count} items</strong> from the
+                Are you sure you want to <strong>permanently delete {what}</strong> from the
                 Telegram channel and the database right now? This cannot be undone.
               </>
             ) : (
               <>
-                Are you sure you want to move <strong>{count} items</strong> to Trash? They will be
-                automatically removed from Telegram after 7 days.
+                Are you sure you want to move <strong>{what}</strong> to Trash?{" "}
+                {folderCount > 0 && "Folders are removed and the files inside them are trashed. "}
+                Trashed files are automatically removed from Telegram after 7 days.
               </>
             )}
           </p>
@@ -213,34 +222,33 @@ export function RenameFolderModal({
 export function MoveToFolderModal({
   folders,
   space = "main",
-  mode = "item",
-  movingFolderId,
+  moveItemIds = [],
+  moveFolderIds = [],
   onClose,
   onMove,
   onMoveCrossSpace,
 }: {
   folders: Folder[];
   space?: "main" | "private";
-  mode?: "item" | "folder";
-  movingFolderId?: number;
+  moveItemIds?: number[];
+  moveFolderIds?: number[];
   onClose: () => void;
   onMove: (folderId: number | null) => void;
   onMoveCrossSpace: () => void;
 }) {
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
 
-  // For folder moves, exclude the folder itself and all its descendants as targets.
+  // When folders are being moved, exclude each moving folder and all its descendants as
+  // targets (a folder can't be dropped into itself or its own subtree).
   const excluded = useMemo(() => {
     const set = new Set<number>();
-    if (mode === "folder" && movingFolderId != null) {
-      const collect = (pid: number) => {
-        set.add(pid);
-        folders.filter((f) => f.parentId === pid).forEach((c) => collect(c.id));
-      };
-      collect(movingFolderId);
-    }
+    const collect = (pid: number) => {
+      set.add(pid);
+      folders.filter((f) => f.parentId === pid).forEach((c) => collect(c.id));
+    };
+    moveFolderIds.forEach(collect);
     return set;
-  }, [mode, movingFolderId, folders]);
+  }, [moveFolderIds, folders]);
 
   const list = useMemo(() => {
     const folderList: { id: number | null; name: string; depth: number }[] = [
@@ -259,7 +267,10 @@ export function MoveToFolderModal({
   }, [folders, excluded, space]);
 
   const crossLabel = space === "main" ? "Move to Private" : "Move to Main drive";
-  const what = mode === "folder" ? "folder" : "items";
+  const parts: string[] = [];
+  if (moveFolderIds.length) parts.push(`${moveFolderIds.length} folder${moveFolderIds.length > 1 ? "s" : ""}`);
+  if (moveItemIds.length) parts.push(`${moveItemIds.length} item${moveItemIds.length > 1 ? "s" : ""}`);
+  const what = parts.join(" + ") || "items";
 
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -311,6 +322,99 @@ export function MoveToFolderModal({
           </button>
           <button className="btn primary" onClick={() => onMove(selectedFolderId)}>
             Move
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Client-only absolute date (avoids a tz hydration mismatch — these modals only ever
+// render post-mount, but keep it consistent with DetailsPane).
+function AbsDate({ ts }: { ts: number }) {
+  const [s, setS] = useState("");
+  useEffect(() => {
+    setS(
+      new Date(ts).toLocaleString("en-US", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    );
+  }, [ts]);
+  return <span suppressHydrationWarning>{s || "—"}</span>;
+}
+
+// Standalone folder "Properties" popup — total items + sub-folders inside, plus dates.
+export function FolderDetailsModal({
+  folder,
+  stat,
+  onClose,
+  onOpen,
+}: {
+  folder: Folder;
+  stat: FolderStat;
+  onClose: () => void;
+  onOpen: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const Row = ({ label, value }: { label: string; value: React.ReactNode }) => (
+    <div className="dp-field">
+      <span className="dp-key">{label}</span>
+      <span className="dp-val">{value}</span>
+    </div>
+  );
+
+  return (
+    <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="dialog" style={{ maxWidth: 380 }}>
+        <div className="dhead">
+          <h2>Folder details</h2>
+        </div>
+        <div className="dbody">
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+            <div
+              style={{
+                width: 48, height: 48, flex: "none", borderRadius: 11, display: "grid", placeItems: "center",
+                color: "var(--accent)", background: "color-mix(in oklab, var(--accent) 12%, var(--card-2))",
+              }}
+            >
+              <Icon name="folder" size={26} stroke={1.5} />
+            </div>
+            <div className="dp-name" style={{ minWidth: 0, wordBreak: "break-word" }} title={folder.name}>
+              {folder.name}
+            </div>
+          </div>
+          <div className="dp-fields">
+            <Row label="Type" value="Folder" />
+            <Row label="Items" value={stat.items} />
+            <Row label="Subfolders" value={stat.subfolders} />
+            {(stat.directItems !== stat.items || stat.directSubfolders !== stat.subfolders) && (
+              <Row
+                label="Direct contents"
+                value={`${stat.directSubfolders} folder${stat.directSubfolders === 1 ? "" : "s"} · ${stat.directItems} item${stat.directItems === 1 ? "" : "s"}`}
+              />
+            )}
+            <Row label="Created" value={<AbsDate ts={folder.createdAt} />} />
+            <Row label="Modified" value={<AbsDate ts={folder.updatedAt} />} />
+          </div>
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onClose}>
+            Close
+          </button>
+          <button className="btn primary" onClick={onOpen}>
+            <Icon name="folder" size={16} />
+            Open
           </button>
         </div>
       </div>

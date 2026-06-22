@@ -51,6 +51,12 @@ the `upload_jobs` table.
 The user uploads one file from a browser; the **server** stages it, splits it, and pushes it.
 No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPLOYMENT.md).
 
+0. **One-click entry (no form):** the drive toolbar's **Upload** button (Main space → *Upload
+   files* / *Upload folder*) skips the `/upload` form entirely. It calls `addFiles(..., autoKind:
+   true)` then `runQueue()` so the upload **starts immediately**; title/tags are auto-filled from
+   the filename + type, and each file's kind is chosen by size — **> ~2 GB → split** (`archive`,
+   default part size), otherwise single `media`. Steps 2–6 below are identical from there. The
+   `/upload` page (below) remains for explicit control (per-item titles/tags, host-path mode).
 1. **Web** (`/upload`, Source = "Upload from this device"): set title/tags/part size, pick a
    file → `FileUploader` sends it to `POST /api/upload` in **16 MB chunks**. A stable per-file
    token lets it **resume**: on a dropped connection it asks `GET /api/upload` for the bytes the

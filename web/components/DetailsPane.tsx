@@ -6,7 +6,8 @@ import { Icon } from "@/lib/icons";
 import { Chip } from "./FileViews";
 import { fileTypeFor, displayName } from "@/lib/fileType";
 import { fmtSize } from "@/lib/format";
-import type { DriveFile, Tag } from "@/lib/types";
+import type { DriveFile, Folder, Tag } from "@/lib/types";
+import type { FolderStat } from "./DriveApp";
 
 // Persistent right-hand details panel (Windows "Details pane"). Shows metadata for the
 // single selected item without hijacking the card click (which still opens the viewer).
@@ -40,11 +41,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 export function DetailsPane({
   item,
+  folder = null,
+  folderStat = null,
   tags,
   showExtensions = false,
   onClose,
 }: {
   item: DriveFile | null;
+  folder?: Folder | null;
+  folderStat?: FolderStat | null;
   tags: Tag[];
   showExtensions?: boolean;
   onClose: () => void;
@@ -63,7 +68,27 @@ export function DetailsPane({
         </button>
       </div>
 
-      {!item || !ft ? (
+      {folder ? (
+        <div className="dp-body scroll">
+          <div className="dp-preview" style={{ background: "color-mix(in oklab, var(--accent) 10%, var(--card-2))" }}>
+            <Icon name="folder" size={56} stroke={1.4} style={{ color: "var(--accent)" }} />
+          </div>
+          <div className="dp-name" title={folder.name}>
+            {folder.name}
+          </div>
+          <div className="dp-fields">
+            <Field label="Type">Folder</Field>
+            <Field label="Items">{folderStat?.items ?? 0}</Field>
+            <Field label="Subfolders">{folderStat?.subfolders ?? 0}</Field>
+            <Field label="Created">
+              <AbsDate ts={folder.createdAt} />
+            </Field>
+            <Field label="Modified">
+              <AbsDate ts={folder.updatedAt} />
+            </Field>
+          </div>
+        </div>
+      ) : !item || !ft ? (
         <div className="dp-empty">
           <Icon name="panelRight" size={30} stroke={1.4} />
           <p>Select a single item to see its details</p>

@@ -360,6 +360,7 @@ button { font-family: inherit; }
 
 .section-h { font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); margin: 18px 2px 12px; font-weight: 600; }
 .section-h:first-child { margin-top: 6px; }
+.section-h .section-count { margin-left: 6px; opacity: .7; font-weight: 500; }
 
 /* grid */
 .grid {
@@ -406,12 +407,9 @@ button { font-family: inherit; }
 .card:hover .kebab { opacity: 1; }
 .card .kebab:hover { background: var(--card-2); color: var(--ink); }
 
-/* folder cards — compact, dense grid (don't waste a full file-card footprint) */
-.grid.folders {
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px;
-  margin-bottom: 18px;
-}
+/* folder cards — compact tile, same column width as file cards (inherits the file
+   grid's columns via the shared .grid + data-layout rules). */
+.grid.folders { margin-bottom: 18px; }
 .card.folder {
   display: flex; align-items: center; gap: 11px;
   padding: 11px 12px; cursor: pointer;
@@ -420,6 +418,7 @@ button { font-family: inherit; }
   width: 38px; height: 38px; flex: none; border-radius: 9px;
   display: grid; place-items: center; color: var(--accent);
   background: color-mix(in oklab, var(--accent) 9%, var(--card-2));
+  transition: border-radius .14s, box-shadow .14s, background .14s;
 }
 .card.folder .folder-info { min-width: 0; flex: 1; }
 .card.folder .folder-info .fname { margin: 0; }
@@ -431,6 +430,16 @@ button { font-family: inherit; }
 }
 .card.folder:hover .folder-kebab { opacity: 1; }
 .card.folder .folder-kebab:hover { background: var(--card-2); color: var(--ink); }
+/* selected folder: no card border (unlike files) — the icon gets a glowing ring instead */
+.card.folder.sel { border-color: var(--line); box-shadow: none; }
+.card.folder.sel:hover { border-color: var(--line-2); }
+.card.folder.sel .folder-ico {
+  border-radius: 50%;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 16%, var(--card-2));
+  box-shadow: 0 0 0 2px var(--accent),
+    0 0 9px 1px color-mix(in oklab, var(--accent) 55%, transparent);
+}
 
 /* tag chip */
 .chip {
@@ -509,6 +518,22 @@ button { font-family: inherit; }
 .menu-item .check { margin-left: auto; color: var(--accent); }
 .menu-sep { height: 1px; background: var(--line); margin: 6px 4px; }
 .menu-label { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); padding: 8px 10px 5px; font-weight: 600; }
+/* side-expanding submenu (Group by ›) */
+.menu-item.has-sub { position: relative; }
+.menu-item.has-sub .sub-caret { margin-left: auto; color: var(--faint); }
+.menu-item.has-sub > .submenu {
+  position: absolute; left: 100%; top: -7px;
+  min-width: 188px; padding: 6px 6px 6px 8px; z-index: 210;
+  background: var(--card); border: 1px solid var(--line-2);
+  border-radius: var(--r-md); box-shadow: var(--sh-3);
+  display: none;
+}
+.menu-item.has-sub:hover > .submenu,
+.menu-item.has-sub:focus-within > .submenu { display: block; animation: pop .12s ease; }
+/* push a near-edge flyout back to the left so it doesn't run off-screen */
+@media (max-width: 560px) {
+  .menu-item.has-sub > .submenu { left: auto; right: 100%; margin: 0; }
+}
 
 /* ===========================================================================
    Modal / dialog
