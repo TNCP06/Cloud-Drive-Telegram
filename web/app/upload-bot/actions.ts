@@ -58,7 +58,7 @@ function thumbFileId(m: TgMessage): string | undefined {
 async function resolveTagId(name: string): Promise<number> {
   const n = name.trim();
   const existing = await db.execute({
-    sql: "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
+    sql: "SELECT id FROM tags WHERE lower(name) = lower(?)",
     args: [n],
   });
   if (existing.rows.length) return Number(existing.rows[0].id);
@@ -106,7 +106,7 @@ async function indexBotDrop(
 
     await db.execute({
       sql: `INSERT INTO items (slug, title, kind, total_parts) VALUES (?, ?, ?, 1)
-            ON CONFLICT(slug) DO UPDATE SET title = excluded.title, kind = excluded.kind, updated_at = datetime('now')`,
+            ON CONFLICT(slug) DO UPDATE SET title = excluded.title, kind = excluded.kind, updated_at = now_text()`,
       args: [slug, title, kind],
     });
     const itemRs = await db.execute({ sql: "SELECT id FROM items WHERE slug = ?", args: [slug] });
@@ -114,7 +114,7 @@ async function indexBotDrop(
 
     await db.execute({
       sql: `INSERT INTO parts (item_id, part_number, channel_msg_id, file_name, file_size, uploaded_at)
-            VALUES (?, 1, ?, ?, ?, datetime('now'))
+            VALUES (?, 1, ?, ?, ?, now_text())
             ON CONFLICT(channel_msg_id) DO UPDATE SET item_id = excluded.item_id,
               file_name = excluded.file_name, file_size = excluded.file_size`,
       args: [itemId, newMsgId, name, size],

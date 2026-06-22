@@ -14,9 +14,9 @@ for components and [`CODE-MAP.md`](./CODE-MAP.md) for function-level detail.
 | Upload large archive (host path mode) | **Yes** | Files are on the host; watcher reads the path locally (Flow A) |
 | Upload small media from phone | No | Post directly to channel; bot indexes |
 | Bot Drop (web upload via PM) | No | Bot holds the file; web triggers `copyMessage` |
-| Browse / search / edit title / edit tags | No | Pure Turso writes |
+| Browse / search / edit title / edit tags | No | Pure Postgres writes |
 | Download | No | Bot serves it with `copy_message` |
-| Delete / restore | No | Soft delete in Turso; bot purges later |
+| Delete / restore | No | Soft delete in Postgres; bot purges later |
 
 ---
 
@@ -180,7 +180,7 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
      d. Evict oldest accessed files from the shared cache directory using a strict LRU cache policy once it reaches `CACHE_MAX_SIZE_GB`.
      e. Skip sparse chunking and prefetching entirely since the whole file is locally available.
    * **Fallback Mode (No Local Bot API Server):**
-     a. First request → query Turso for `parts.channel_msg_id` + `file_size`, create `meta.json`.
+     a. First request → query Postgres for `parts.channel_msg_id` + `file_size`, create `meta.json`.
      b. Download the requested chunk(s) via Telethon `iter_download` on cache miss.
      c. Serve the requested range as `HTTP 206 Partial Content` with `Content-Range`.
      d. Defer background **prefetch** — after successfully yielding the requested chunks, start the background prefetch worker to download chunks ahead up to the buffer limit.
@@ -220,7 +220,7 @@ After a video lands on disk (local Bot API mode, first view), the streamer fires
    segment timestamps are offset per chunk and merged.
 3. The original-language track is written, then translated to **English + Indonesian** via
    `deep-translator` (timestamps preserved; a target equal to the source language is skipped).
-4. WebVTT files are saved to the **persistent** `/subtitles` volume and a `subtitles` Turso row is
+4. WebVTT files are saved to the **persistent** `/subtitles` volume and a `subtitles` Postgres row is
    written per language; a `.done` marker prevents re-runs.
 
 The web player loads them as caption `<track>`s via `/api/subtitles/{partId}` + `/{lang}`. **Subtitle
@@ -280,7 +280,7 @@ A parallel drive distinguished by `items.is_private` / `folders.is_private` (def
 
 ---
 
-## G. Tag / category management (web, pure Turso)
+## G. Tag / category management (web, pure Postgres)
 
 All in [`web/app/actions.ts`](../web/app/actions.ts), no Telegram involved:
 
@@ -296,10 +296,33 @@ All in [`web/app/actions.ts`](../web/app/actions.ts), no Telegram involved:
 
 ---
 
-## H. Watcher lifecycle & control
+## H. Daily database backup ([`bot/db_backup.py`](../bot/db_backup.py))
+
+A JobQueue job in the bot runs once a day (**04:00 UTC**, after the 03:00 purge):
+
+1. `pg_dump --clean --if-exists --no-owner --no-privileges` of the whole database to a temp
+   `.sql`, then gzip → `cdt-db-backup-YYYY-MM-DD.sql.gz` (the date is in the filename).
+2. `send_document` it to the storage channel with the caption contract
+   `Backup/CDT DB/cdt-db-backup-YYYY-MM-DD | 1/1 | backup`.
+3. Index it inline via `index_bot_copy` (the bot gets no `channel_post` update for its own posts),
+   so it appears in the dashboard under the auto-created folder path **Backup → CDT DB**.
+
+Backups are **kept forever** (the dump is tiny); prune one manually from the dashboard Trash if
+ever needed. Restore (disaster recovery), after downloading a backup out of the drive:
+
+```bash
+gunzip -c cdt-db-backup-YYYY-MM-DD.sql.gz | psql "$DATABASE_URL"
+```
+
+`pg_dump`/`psql` (postgresql-client-16) ship in the bot image; the client major matches the
+`postgres:16` server.
+
+---
+
+## I. Watcher lifecycle & control
 
 - **Process control**: The web UI start/stop buttons for the bot and watcher have been completely removed. The processes are started manually (laptop mode) or managed as always-on compose services (Docker mode). The actions `startWatcher`, `stopWatcher`, `startBot`, and `stopBot` are no longer active in the web page.
-- **Startup Back-Indexing**: In Docker/server mode, the watcher service container automatically runs `index_history.py` before starting `watcher.py` on startup. This uses Telethon to back-index any channel messages/updates that occurred while the services were offline, keeping Turso synchronized.
+- **Startup Back-Indexing**: In Docker/server mode, the watcher service container automatically runs `index_history.py` before starting `watcher.py` on startup. This uses Telethon to back-index any channel messages/updates that occurred while the services were offline, keeping Postgres synchronized.
 
 ---
 
@@ -317,6 +340,6 @@ bot\run-all.cmd
 
 - Bot must be **admin** in the storage channel (to receive `channel_post` and to `delete_message`).
 - First Telethon run prompts for phone + code → creates `worker.session` (never commit it).
-- Web env: `TURSO_*`, `NEXT_PUBLIC_BOT_USERNAME` (download link), `BOT_TOKEN` +
+- Web env: `DATABASE_URL`, `NEXT_PUBLIC_BOT_USERNAME` (download link), `BOT_TOKEN` +
   `STORAGE_CHANNEL_ID` (Bot Drop). Bot env adds `OWNER_USER_ID`, `TG_API_ID/HASH`,
   `SEVENZIP_PATH`.

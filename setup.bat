@@ -3,7 +3,8 @@ REM ============================================================================
 REM Telegram Cloud Drive - one-shot setup for LAPTOP mode on Windows.
 REM
 REM Installs Python + Node deps, creates env files, runs the one-time Telethon
-REM logins, and applies the Turso schema. After it finishes, start everything with:
+REM logins, and applies the PostgreSQL schema (set DATABASE_URL to your Postgres).
+REM After it finishes, start everything with:
 REM     bot\run-all.cmd          (bot + watcher + streamer)
 REM     cd web ^&^& npm run dev   (dashboard at http://localhost:3000)
 REM
@@ -46,12 +47,12 @@ echo [ok] Python dependencies installed.
 REM --- 2. Env files ---------------------------------------------------------
 if not exist bot\.env (
   copy /y bot\.env.example bot\.env >nul
-  echo [!] Created bot\.env - FILL IN the values (BOT_TOKEN, TG_API_ID/HASH, STORAGE_CHANNEL_ID, OWNER_USER_ID, TURSO_*).
+  echo [!] Created bot\.env - FILL IN the values (BOT_TOKEN, TG_API_ID/HASH, STORAGE_CHANNEL_ID, OWNER_USER_ID, DATABASE_URL).
   set NEED_EDIT=1
 )
 if not exist web\.env.local (
   copy /y web\.env.local.example web\.env.local >nul
-  echo [!] Created web\.env.local - FILL IN the values (TURSO_*, NEXT_PUBLIC_BOT_USERNAME, BOT_TOKEN, STORAGE_CHANNEL_ID).
+  echo [!] Created web\.env.local - FILL IN the values (DATABASE_URL, NEXT_PUBLIC_BOT_USERNAME, BOT_TOKEN, STORAGE_CHANNEL_ID).
   set NEED_EDIT=1
 )
 if defined NEED_EDIT (
@@ -77,12 +78,11 @@ if not exist bot\streamer.session (
   echo [ok] bot\streamer.session already exists.
 )
 
-REM --- 4. Turso schema (idempotent) ----------------------------------------
+REM --- 4. PostgreSQL schema (idempotent; needs DATABASE_URL reachable) ------
 echo.
-echo --^> Applying Turso schema (safe to re-run)...
+echo --^> Applying PostgreSQL schema (safe to re-run)...
 pushd bot
-python run-migration.py schema.sql
-python run-migration.py migration-folders.sql
+python apply_schema.py
 popd
 echo [ok] Schema applied.
 

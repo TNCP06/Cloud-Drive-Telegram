@@ -24,11 +24,9 @@ from bot import (
     derive_media_meta,
     get_file_meta,
     slugify,
-    TURSO_DATABASE_URL,
-    TURSO_AUTH_TOKEN,
     STORAGE_CHANNEL_ID
 )
-import libsql_client
+from pg_db import create_client
 from telethon import TelegramClient
 
 # Load environment variables
@@ -118,13 +116,8 @@ async def index_message(db, msg):
     return True
 
 async def main():
-    # Convert url for libsql_client
-    url = TURSO_DATABASE_URL
-    if url.startswith("libsql://"):
-        url = "https://" + url[len("libsql://"):]
-        
-    print("Connecting to Turso database...")
-    db = libsql_client.create_client(url=url, auth_token=TURSO_AUTH_TOKEN)
+    print("Connecting to PostgreSQL database...")
+    db = create_client()
     
     # Fetch already indexed message IDs from the database to skip them
     print("Fetching already indexed channel_msg_ids from database...")

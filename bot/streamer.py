@@ -37,7 +37,7 @@ from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 
 import httpx
-import libsql_client
+from pg_db import create_client, PgClient
 import uvicorn
 import telethon.errors
 from dotenv import load_dotenv
@@ -112,19 +112,6 @@ SESSION = os.environ.get("STREAMER_SESSION", "streamer")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 TELEGRAM_API_URL = os.environ.get("TELEGRAM_API_URL")
 
-TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
-
-
-
-def _turso_http_url(url: str) -> str:
-    """Transform libsql:// URL to https:// for Hrana-over-HTTP transport."""
-    if url.startswith("libsql://"):
-        return "https://" + url[len("libsql://"):]
-    return url
-
-
-TURSO_DATABASE_URL = _turso_http_url(os.environ["TURSO_DATABASE_URL"])
-
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/cache"))
 CACHE_MAX_BYTES = int(os.environ.get("CACHE_MAX_SIZE_GB", "15")) * 1073741824
 PREFETCH_BUFFER = int(os.environ.get("PREFETCH_BUFFER_MB", "30")) * 1048576
@@ -183,7 +170,7 @@ VIDEO_EXTS = {ext for ext, mime in MIME_MAP.items() if mime.startswith("video/")
 # Global state (initialised in lifespan)
 # ---------------------------------------------------------------------------
 tg_client: TelegramClient | None = None
-db: libsql_client.Client | None = None
+db: PgClient | None = None
 channel = None  # resolved Telegram channel entity
 
 # Per-part-id asyncio locks to prevent duplicate chunk downloads
@@ -1031,10 +1018,8 @@ async def lifespan(_app: FastAPI):
     channel = await tg_client.get_entity(STORAGE_CHANNEL_ID)
     log.info("Telegram connected — channel resolved")
 
-    db = libsql_client.create_client(
-        url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN,
-    )
-    log.info("Turso client ready")
+    db = create_client()
+    log.info("PostgreSQL client ready")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if VIDEO_COMPRESS:

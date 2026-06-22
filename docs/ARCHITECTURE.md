@@ -9,9 +9,9 @@
 ## 1. One-paragraph summary
 
 Files live as messages in a **private Telegram channel** (effectively unlimited, free
-storage). A **Turso (libSQL)** database is the metadata brain — titles, tags, sizes, and
+storage). A **PostgreSQL** database is the metadata brain — titles, tags, sizes, and
 the `channel_msg_id` pointer back to each Telegram message. A **Next.js dashboard**
-(Vercel) reads/writes Turso only; it never touches Telegram directly for storage. Two
+(Vercel) reads/writes Postgres only; it never touches Telegram directly for storage. Two
 **Python processes** bridge to Telegram: a long-running **bot** (`bot.py`, indexes new
 channel posts + serves downloads + purges trash) and a laptop-side **watcher**
 (`watcher.py`, executes the web's upload queue via MTProto). The glue that makes
@@ -24,17 +24,17 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 | Component | Runs on | File(s) | Responsibility |
 |---|---|---|---|
 | **Storage channel** | Telegram | — | Holds the actual file bytes (one message per part). Bot is admin. |
-| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Turso; serve downloads via `copy_message`; daily trash purge; Bot Drop intake. |
+| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake. |
 | **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
-| **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Turso; runs automatically on watcher container startup. |
+| **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Postgres; runs automatically on watcher container startup. |
 | **Streamer** | Server/VPS (Docker) | `bot/streamer.py` (+ `stream_compress.py`, `stream_subtitles.py`) | Video streaming: if local Bot API server is configured, downloads files on-the-fly to a shared disk cache and streams directly; else falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetch. Also runs background **H.264 compression** (deletes the original once done) and background **subtitle generation** (Groq Whisper STT → original + EN + ID WebVTT). |
 | **Web dashboard** | Vercel (or localhost) | `web/` (Next.js 15) | Browse/search/edit/delete metadata; trigger download/upload; stream video; Bot Drop form. Streaming/subtitles are **proxied** to the streamer at `STREAMER_URL` (default internal `http://streamer:8080`; the Cloudflare-Tunnel hostname when hosted on Vercel), forwarding the optional `X-Streamer-Secret`. |
 | **Cloudflare Tunnel** | Server/VPS (Docker) | `cloudflared` service (compose) | Only when the dashboard runs OFF the VPS (Vercel): exposes the internal `streamer` over public HTTPS with **no open inbound port**, Public-Hostname origin `http://streamer:8080`. The streamer requires the shared `STREAMER_SECRET` so only the dashboard can use the public URL. Dormant unless `CLOUDFLARE_TUNNEL_TOKEN` is set. |
-| **Turso** | Cloud (free tier) | schema in `bot/schema.sql` | All metadata. Always-on, SQLite-compatible. |
+| **PostgreSQL** | Docker (`postgres` service, same host) | schema in `bot/schema.sql` (auto-applied on first init) | All metadata. Self-hosted; data in the `pgdata` volume; backed up daily to Telegram. |
 
 > **Process topology matters.** `bot.py`, `watcher.py`, and `streamer.py` are **separate
-> processes** that only communicate through Turso tables — they never call each other.
+> processes** that only communicate through Postgres tables — they never call each other.
 > `bot/run-all.cmd` starts bot + watcher + streamer (minimized) on the laptop.
 
 ---
@@ -42,7 +42,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 ## 3. Data flow (the big picture)
 
 ```
-                    ┌───────────────────────── Turso (libSQL) ─────────────────────────┐
+                    ┌───────────────────────── PostgreSQL ─────────────────────────┐
                     │  folders · items · parts · tags · item_tags · thumbnails ·       │
                     │  jobs · upload_jobs · subtitles                                  │
                     └──▲───────────▲──────────────▲──────────────▲────────────▲─────────┘
@@ -157,20 +157,22 @@ separate: the bot only obeys `/start` downloads and Bot Drop from `OWNER_USER_ID
 
 ## 8. Tech stack & deployment
 
-- **Web:** Next.js 15 (App Router, React 19, server actions), Tailwind, `@libsql/client`.
+- **Web:** Next.js 15 (App Router, React 19, server actions), Tailwind, `pg`.
   Deployed on Vercel **or** run on the laptop (`npm run dev`). Note: watcher control and the
   laptop file browser (`fs-actions.ts`) only work when the web server runs **on the laptop**,
   since they spawn processes / read the local disk.
 - **Bot/Watcher/Worker:** Python 3.11, `python-telegram-bot` (bot), `Telethon` (watcher/worker,
-  MTProto for >50 MB uploads), `libsql-client`.
-- **DB:** Turso (libSQL). Bot connects over **HTTPS** (Hrana-over-HTTP) — `libsql://` URLs are
-  rewritten to `https://` because the WebSocket transport is rejected (HTTP 400).
+  MTProto for >50 MB uploads), `psycopg`.
+- **DB:** self-hosted **PostgreSQL 16** (the `postgres` compose service). Access goes through a thin
+  compat shim that preserves the old `?` placeholder call sites: `web/lib/db.ts` wraps `pg`
+  (rewrites `?`→`$n`), `bot/pg_db.py` wraps `psycopg` (rewrites `?`→`%s`). SQL is Postgres dialect
+  (`now_text()` for UTC text timestamps, `ON CONFLICT`, `lower()`). Connection via `DATABASE_URL`.
 - **Server/VPS:** the whole stack ships as Docker (`docker-compose.yml` + `web/Dockerfile` +
   `bot/Dockerfile`). web & watcher share a `staging` volume for browser uploads; the `streamer`
   service gets a `cache` volume for expendable video chunks. An optional `telegram-bot-api` local
   server container runs in `--local` mode to bypass the 3Mbps download throttle, sharing its data
   folder (`telegram-bot-api-data`) with the `streamer`, `bot`, and `web` containers (enabling direct filesystem reading of video chunks and thumbnails instead of HTTP downloads). bot, watcher, & streamer run as
-  always-on services. In the watcher service container, `index_history.py` automatically runs on startup before `watcher.py` to back-fill any offline changes. `web/Dockerfile` receives `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
+  always-on services. In the watcher service container, `index_history.py` automatically runs on startup before `watcher.py` to back-fill any offline changes. `web/Dockerfile` receives `DATABASE_URL`
   as build args (Next.js pre-renders API routes at build time). Portable to any host — full guide
   in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
   Under Docker the web's watcher/bot start-stop buttons are inert (processes are compose-managed).

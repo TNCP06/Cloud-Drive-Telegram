@@ -21,7 +21,7 @@ export async function renameFolder(id: number, name: string) {
   if (!n) throw new Error("Folder name cannot be empty.");
 
   await db.execute({
-    sql: "UPDATE folders SET name = ?, updated_at = datetime('now') WHERE id = ?",
+    sql: "UPDATE folders SET name = ?, updated_at = now_text() WHERE id = ?",
     args: [n, id],
   });
   refresh();
@@ -63,7 +63,7 @@ export async function deleteFolder(id: number) {
     // Soft delete items inside recursively.
     for (const itemId of itemIds) {
       await db.execute({
-        sql: "UPDATE items SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+        sql: "UPDATE items SET deleted_at = now_text() WHERE id = ? AND deleted_at IS NULL",
         args: [itemId],
       });
     }
@@ -83,7 +83,7 @@ export async function moveItemsToFolder(itemIds: number[], folderId: number | nu
   if (itemIds.length === 0) return;
   for (const itemId of itemIds) {
     await db.execute({
-      sql: "UPDATE items SET folder_id = ?, updated_at = datetime('now') WHERE id = ?",
+      sql: "UPDATE items SET folder_id = ?, updated_at = now_text() WHERE id = ?",
       args: [folderId, itemId],
     });
   }
@@ -101,7 +101,7 @@ export async function moveFolderToFolder(folderId: number, targetParentId: numbe
     }
   }
   await db.execute({
-    sql: "UPDATE folders SET parent_id = ?, updated_at = datetime('now') WHERE id = ?",
+    sql: "UPDATE folders SET parent_id = ?, updated_at = now_text() WHERE id = ?",
     args: [targetParentId, folderId],
   });
   refresh();

@@ -712,8 +712,8 @@ async def _record_subtitle(db, part_id: int, lang: str) -> None:
         return
     try:
         await db.execute(
-            "INSERT INTO subtitles (part_id, lang, created_at) VALUES (?, ?, datetime('now')) "
-            "ON CONFLICT(part_id, lang) DO UPDATE SET created_at=datetime('now')",
+            "INSERT INTO subtitles (part_id, lang, created_at) VALUES (?, ?, now_text()) "
+            "ON CONFLICT(part_id, lang) DO UPDATE SET created_at=now_text()",
             [part_id, lang],
         )
     except Exception as e:  # noqa: BLE001

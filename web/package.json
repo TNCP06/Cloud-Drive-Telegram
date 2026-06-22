@@ -9,9 +9,9 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@libsql/client": "^0.14.0",
     "mammoth": "^1.8.0",
     "next": "^15.5.19",
+    "pg": "^8.13.1",
     "plyr": "^3.8.4",
     "react": "19.0.0",
     "react-dom": "19.0.0",
@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
     "eslint": "^9.39.4",

@@ -1,14 +1,16 @@
 # Telegram Cloud Drive — full stack for a VPS / AWS EC2.
 #
 # Portable by design: to move to ANOTHER host later, copy this repo + your `.env` +
-# `bot/worker.session`, then run `docker compose up -d --build`. Nothing is tied to a
-# specific cloud — only Turso (managed) lives outside.
+# `bot/worker.session` + a DB dump (or migrate fresh), then run
+# `docker compose up -d --build`. The whole stack — including the PostgreSQL database —
+# runs in these containers; nothing is tied to a specific managed cloud.
 #
 # Before first run:
-#   1) cp .env.example .env   and fill it in
+#   1) cp .env.example .env   and fill it in (set a strong POSTGRES_PASSWORD).
 #   2) make sure bot/worker.session exists (run the Telethon login once) — it is
 #      bind-mounted into the watcher so it survives rebuilds.
-#   3) apply bot/migration-staged-uploads.sql to your Turso DB.
+#   3) The `postgres` service auto-applies bot/schema.sql on first init. To carry over
+#      existing data from the old Turso DB, run `python bot/migrate_turso_to_pg.py` once.
 #
 # web & watcher share the `staging` volume: the browser uploads land in /staging,
 # the watcher reads them there and deletes them after pushing to Telegram.
@@ -20,8 +22,7 @@ services:
       dockerfile: web/Dockerfile
       args:
         NEXT_PUBLIC_BOT_USERNAME: ${NEXT_PUBLIC_BOT_USERNAME:-}
-        TURSO_DATABASE_URL: ${TURSO_DATABASE_URL}
-        TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN}
+        DATABASE_URL: ${DATABASE_URL}
     env_file: .env
     environment:
       UPLOAD_STAGING_DIR: /staging
@@ -32,6 +33,28 @@ services:
     volumes:
       - staging:/staging
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Self-hosted metadata database (replaces Turso). schema.sql is applied automatically
+  # on first init (empty data dir). Data lives in the `pgdata` named volume and is backed
+  # up daily to Telegram by the bot (folder Backup → CDT DB).
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cdt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-cdt}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./bot/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cdt} -d ${POSTGRES_DB:-cdt}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
 
   telegram-bot-api:
@@ -54,6 +77,9 @@ services:
     env_file: .env
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   watcher:
@@ -67,6 +93,9 @@ services:
     volumes:
       - staging:/staging
       - ./bot/worker.session:/app/worker.session
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   streamer:
@@ -126,6 +155,9 @@ services:
       - subtitles:/subtitles             # PERSISTENT — generated subtitle tracks live here
       - ./bot/streamer.session:/app/streamer.session
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   # Cloudflare Tunnel — gives the internal `streamer` a public HTTPS URL with NO open inbound port,
@@ -142,6 +174,7 @@ services:
 
 volumes:
   staging:
+  pgdata:        # PostgreSQL data — persistent (the metadata brain; backed up daily to Telegram)
   cache:         # video streaming cache — expendable, data lives in Telegram
   compressed:    # compressed video copies — persistent (CPU-expensive to rebuild)
   subtitles:     # generated subtitle tracks — persistent (kept while video is indexed)
