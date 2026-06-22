@@ -82,9 +82,9 @@ export async function POST(req: NextRequest) {
   const rs = await db.execute({
     sql:
       "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) " +
-      "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'queued')",
+      "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'queued') RETURNING id",
     args: [kind, title, tags, dir, partSize, onDisk],
   });
 
-  return NextResponse.json({ ok: true, jobId: Number(rs.lastInsertRowid ?? 0) });
+  return NextResponse.json({ ok: true, jobId: Number(rs.rows[0]?.id ?? 0) });
 }

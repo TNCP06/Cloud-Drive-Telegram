@@ -8,18 +8,20 @@ approximate and will drift — treat function names as the stable anchor.
 
 ## `bot/` — Python (Telegram bridge)
 
-> **Module layout (bot.py was split for size):** `bot_config.py` (env, logging, Turso URL
-> rewrite), `tg_helpers.py` (pure helpers), `db_ops.py` (idempotent Turso ops), `indexing.py`
-> (channel indexing + thumbnail harvest + `index_bot_copy`). `bot.py` keeps the interactive
-> handlers + `main()` and **re-exports** the names `index_history.py` imports (`from bot import …`).
-> The streamer's background compression lives in `stream_compress.py`.
+> **Module layout (bot.py was split for size):** `bot_config.py` (env, logging, `DATABASE_URL`),
+> `pg_db.py` (Postgres client shim: `?`→`%s`, autocommit pool, `.execute().rows`),
+> `tg_helpers.py` (pure helpers), `db_ops.py` (idempotent Postgres ops), `indexing.py`
+> (channel indexing + thumbnail harvest + `index_bot_copy`), `db_backup.py` (daily DB backup
+> → Telegram). `bot.py` keeps the interactive handlers + `main()` and **re-exports** the names
+> `index_history.py` imports (`from bot import …`). The streamer's background compression lives in
+> `stream_compress.py`.
 
 ### `bot.py` (+ `bot_config` / `tg_helpers` / `db_ops` / `indexing`) — indexer + download server + purge
 Pure helpers (`tg_helpers.py`, no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
 (`media` vs `archive`), `get_file_meta`, `derive_media_meta` (media caption fallback),
 `pick_thumb_file_id`, `encode_thumbnail` (raw image bytes → compact **WebP** base64 via
 Pillow, JPEG passthrough fallback). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
-Turso ops (`db_ops.py`, idempotent): `upsert_item` (`set_title` guard for albums; preserves user-modified metadata on conflict), `upsert_part` (keyed on
+Postgres ops (`db_ops.py`, idempotent): `upsert_item` (`set_title` guard for albums; preserves user-modified metadata on conflict), `upsert_part` (keyed on
 `channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**: reuses an existing tag that differs only in capitalization), `upsert_thumbnail`, `is_user_authorized`.
 `index_bot_copy` (`indexing.py`): indexes a channel post the **bot created itself** (`copy_message`/`copy_messages`)
 inline — Telegram sends no `channel_post` update for a bot's own messages, so `on_channel_post`
@@ -33,9 +35,9 @@ forward), `on_start` (download via `copy_message` for authorized users), `on_aut
 `on_revoke` / `on_list_users` / `on_set_web_url` (user authorization, management, and settings), `send_main_menu` / `on_menu` (button-driven main menu and guide),
 `on_cancel` (cancel active file upload), `on_private_file` (interactive PM upload & Bot Drop intake),
 `on_private_text` / `on_callback_query` (interactive questionnaire and menu callbacks), `purge_job` (daily trash purge).
-Lifecycle: `post_init`/`post_shutdown` (Turso client, auto-migration for `authorized_users` table, and commands menu registration), `main` (handler registration +
+Lifecycle: `post_init`/`post_shutdown` (Postgres client, auto-migration for `authorized_users` table, and commands menu registration), `main` (handler registration +
 `run_daily`). **Env:** `BOT_TOKEN`, `STORAGE_CHANNEL_ID`,
-`OWNER_USER_ID`, `TURSO_*`, `AUTH_PASSWORD`/`APP_PASSWORD`.
+`OWNER_USER_ID`, `DATABASE_URL`, `AUTH_PASSWORD`/`APP_PASSWORD`.
 
 ### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
 Handles two job origins (`upload_jobs.origin`):
@@ -62,7 +64,7 @@ contrast watcher's `split_archive` which raises), `collect_parts`, `make_progres
 `run`, `main`.
 
 ### `index_history.py` — manual/automatic history back-indexer (Telethon, **laptop or server**)
-Utility to fetch channel messages using Telethon (via `worker.session`) and sync them back to the Turso catalog. Runs on-demand or automatically inside the watcher container on startup to back-fill any updates missed while the bot was offline.
+Utility to fetch channel messages using Telethon (via `worker.session`) and sync them back to the Postgres catalog. Runs on-demand or automatically inside the watcher container on startup to back-fill any updates missed while the bot was offline.
 
 ### `streamer.py` — video streaming server (FastAPI + Telethon, **server/VPS**)
 HTTP 206 Partial Content server for single-part and multi-part media items. If `TELEGRAM_API_URL` is set,
@@ -78,10 +80,10 @@ the browser previews them inline with the correct `Content-Type` (default stays 
 unknown extensions). Background **transcode is guarded to `mime.startswith("video/")`** so a previewed
 PDF/doc is never fed to ffmpeg, and subtitle backfill is gated by a video-only `VIDEO_EXTS` set
 (derived from `MIME_MAP`) so the expanded map doesn't let the STT loop pick up images/documents.
-Key functions: `_turso_http_url` (libsql→https), `download_via_local_bot_api` (requests file download
+Key functions: `download_via_local_bot_api` (requests file download
 from local Bot API server), `_evict_local_api_cache_if_needed` (scans shared volume and deletes oldest files
 using mtime LRU policy), `_ensure_chunk_stream` (fallback Telethon disk-or-download),
-`_init_part_meta` (Turso query → `meta.json` creation), `_prefetch_worker` (fallback background prefetch),
+`_init_part_meta` (Postgres query → `meta.json` creation), `_prefetch_worker` (fallback background prefetch),
 `_get_tg_message` (in-memory message cache), `stream` (main route: parse Range, downloads via local Bot API
 and streams local file if active, else chunk-streams via Telethon).
 **Background video compression** (local Bot API mode) lives in **`stream_compress.py`**: `_transcode_worker`
@@ -114,7 +116,7 @@ via `_make_translator` — `zh`→`zh-CN` — because Google's auto-detect silen
 text as a translation** — a failed segment is dropped, an all-failed/all-unchanged track returns None;
 `_translate_track` wraps it with retry/back-off so a transient Google no-op throttle doesn't drop a language),
 `_build_vtt`/`_parse_vtt`/`_parse_ts` (VTT ↔ segments), `_subtitle_worker`/`run_subtitle_job` (single-job,
-dedup'd via a `.done` marker), writes WebVTT to the **persistent** `SUBTITLES_DIR` + a `subtitles` Turso row per
+dedup'd via a `.done` marker), writes WebVTT to the **persistent** `SUBTITLES_DIR` + a `subtitles` Postgres row per
 lang. **`repair_translations_on_disk`** (run at backfill start + each idle rescan; per-part `.tlok` marker holds
 `ok`/`noop` when finalised or an attempt count while still missing a target) fixes videos whose translations
 failed under the old logic — re-translating straight from the on-disk original VTT (`_repair_one_translation`),
@@ -133,7 +135,7 @@ independently; failed chunks don't abort the rest — the successes are cached (
 **partial** subtitles are written, and a `.partial` marker (`partial_part_ids`/`_bump_partial`) makes
 `_next_backfill_part`'s **repair pass** re-run ONLY the missing chunks on a later pass (resuming from cache),
 until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised with whatever partial exists).
-**Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `TURSO_*`, `BOT_TOKEN`, `TELEGRAM_API_URL`
+**Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `DATABASE_URL`, `BOT_TOKEN`, `TELEGRAM_API_URL`
 (enables local Bot API mode), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (cache limit),
 `COMPRESSED_DIR`, `VIDEO_COMPRESS` (1/0), `VIDEO_CRF`, `VIDEO_PRESET` (default `veryfast`),
 `VIDEO_MIN_COMPRESS_MB`, `VIDEO_TRANSCODE_CONCURRENCY`, `VIDEO_TRANSCODE_THREADS` (0 = auto),
@@ -149,10 +151,14 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 
 
 ### Supporting scripts
+- `db_backup.py` — `run_backup` JobQueue job: `pg_dump` → gzip → `send_document` to the channel →
+  `index_bot_copy` under **Backup/CDT DB** (scheduled daily in `bot.py`). See BUSINESS-FLOWS § H.
 - `login.py` — one-time Telethon login → creates `worker.session` (or any custom session, e.g. `streamer.session` via CLI argument).
-- `schema.sql` — full Turso schema (run once; already includes `tags.color`). `run-migration.py`
-  — generic one-off SQL migration runner (`python run-migration.py <file.sql>`).
-  `migration-folders.sql` — the folders-feature migration. `status.py` — quick DB status dump.
+- `schema.sql` — full PostgreSQL schema (auto-applied by the `postgres` service on first init;
+  includes `now_text()`, `tags.color`, `bot_settings`, `authorized_users`). `apply_schema.py` —
+  apply schema.sql to a non-Docker Postgres (`DATABASE_URL`). `migrate_turso_to_pg.py` — one-time
+  Turso→Postgres data import (reads Turso over its HTTP API, writes via psycopg). `status.py` —
+  quick DB status dump.
 - `run-all.cmd` — start bot + watcher minimized (Windows). `uninstall-autostart.ps1` — Windows startup deregistration.
 - `Dockerfile` — shared image for bot + watcher (ffmpeg + p7zip). See root
   `docker-compose.yml` and [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the server/VPS deployment.
@@ -162,7 +168,8 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 ## `web/` — Next.js 15 (App Router, React 19, server actions)
 
 ### `web/lib/` — server-side data & helpers
-- `db.ts` — `@libsql/client` singleton (`server-only`; auth token never reaches the browser).
+- `db.ts` — `pg` Pool wrapped to expose the libSQL-style `db.execute(sql | {sql,args})` → `{rows}`
+  surface (rewrites `?`→`$n`; BIGINT→Number). `server-only` keeps `DATABASE_URL` out of the browser.
 - `types.ts` — `Kind`, `Tag`, `DriveFile` (UI shape; incl. `firstPartId` + `fileName` for
   streaming), `GalleryPart` (part ID, file name, and thumbnail data URL), `UploadJob` (now incl. `origin`,
   `partsDone`, `totalBytes`), `UploadOrigin`, `UploadStatus`, `WatcherStatus`, `FsEntry`/`FsListing`/`FsShortcut`.
@@ -178,7 +185,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   derive the document type + drive preview), and for archives, splits title into `family`/`version`
   via `parseTitle`. The shaped
   result is wrapped in **`unstable_cache`** (30s window, tag `drive-<space>`) so repeat loads skip
-  the six Turso queries; mutations bust it via `revalidateTag` (see `actions/_shared.ts` `refresh()`).
+  the six Postgres queries; mutations bust it via `revalidateTag` (see `actions/_shared.ts` `refresh()`).
 - `version.ts` — `parseTitle()`: split an archive title into `family` + `version` (e.g.
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Archives only.
 - `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and coarse kind metadata
@@ -406,5 +413,5 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `items.slug` (multi-part grouping + download deep link; never re-written).
 - **Error surfacing:** the bot DMs `OWNER_USER_ID` on un-indexable game captions and on purge
   summaries, so nothing fails silently.
-- **Turso connection:** `libsql://` is rewritten to `https://` in the Python side (WebSocket
-  transport is rejected with HTTP 400).
+- **DB connection:** self-hosted Postgres via `DATABASE_URL`. SQL keeps `?` placeholders; the
+  shims (`web/lib/db.ts` → `pg`, `bot/pg_db.py` → `psycopg`) rewrite them to `$n`/`%s`.

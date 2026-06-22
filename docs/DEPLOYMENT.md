@@ -20,10 +20,11 @@ browser. It's written for anyone deploying their own copy — not just the origi
 | `watcher` | — | Runs `index_history.py` (back-fill) then `watcher.py` (executes the upload queue via MTProto) |
 | `streamer` | 8080 (internal) | Range-streams video; background H.264 compression to a persistent volume |
 
-**Volumes:** `staging` (browser uploads, web↔watcher), `cache` (expendable video chunks),
-`compressed` (**persistent** compressed videos), `telegram-bot-api-data` (local Bot API files,
-shared by bot/web/streamer). Nothing user-critical lives only on the VPS disk — **metadata is in
-Turso (managed), file bytes are in Telegram** — so the VPS is disposable.
+**Volumes:** `pgdata` (**persistent** PostgreSQL data), `staging` (browser uploads, web↔watcher),
+`cache` (expendable video chunks), `compressed` (**persistent** compressed videos),
+`telegram-bot-api-data` (local Bot API files, shared by bot/web/streamer). File bytes live in
+Telegram; the only user-critical disk state is `pgdata`, which the bot **backs up daily to Telegram**
+(folder Backup → CDT DB) — so the VPS stays effectively disposable.
 
 ---
 
@@ -31,7 +32,8 @@ Turso (managed), file bytes are in Telegram** — so the VPS is disposable.
 
 - A Telegram **bot token**, a private **storage channel** (bot is admin) + its `-100…` id, your
   **Telegram user id**, and **`TG_API_ID`/`TG_API_HASH`** from [my.telegram.org](https://my.telegram.org).
-- A **Turso** database URL + auth token ([turso.tech](https://turso.tech)).
+- A strong **`POSTGRES_PASSWORD`** (and matching `DATABASE_URL`) — the PostgreSQL database is
+  self-hosted as the `postgres` compose service, nothing to sign up for.
 - A server (EC2 or any VPS) with SSH access. Open inbound **22** (SSH) and **3000** (dashboard);
   add 80/443 only if you put a reverse proxy in front.
 
@@ -88,8 +90,9 @@ bash setup.sh
 
 `setup.sh` installs Docker + Compose (via get.docker.com, works on Amazon Linux/Ubuntu/Debian),
 creates `.env` from `.env.example` (opens it for you to fill in), runs the one-time Telethon logins
-(→ `bot/worker.session`, `bot/streamer.session`), applies the Turso schema, and runs
-`docker compose up -d --build`. Re-run it any time; it skips completed steps.
+(→ `bot/worker.session`, `bot/streamer.session`), runs `docker compose up -d --build` (the
+`postgres` service applies `bot/schema.sql` on first init), and optionally imports old Turso data.
+Re-run it any time; it skips completed steps.
 
 Then open `http://<server-ip>:3000` (log in with `APP_PASSWORD`).
 
@@ -118,13 +121,13 @@ docker build -t tcd-login -f bot/Dockerfile .
 docker run --rm -it --env-file .env -v "$PWD/bot:/login" -w /login tcd-login python login.py worker
 docker run --rm -it --env-file .env -v "$PWD/bot:/login" -w /login tcd-login python login.py streamer
 
-# 4) Apply the Turso schema (idempotent)
-docker run --rm --env-file .env -v "$PWD/bot:/app" -w /app tcd-login \
-  sh -c "python run-migration.py schema.sql && python run-migration.py migration-folders.sql"
-
-# 5) Build + start
+# 4) Build + start (the postgres service applies bot/schema.sql on first init)
 docker compose up -d --build
-docker compose logs -f                   # confirm bot/watcher/streamer connect, web is ready
+docker compose logs -f                   # confirm postgres is healthy, bot/watcher/streamer connect, web is ready
+
+# 5) (Optional) one-time import of existing Turso data into Postgres
+#    Set TURSO_DATABASE_URL/TURSO_AUTH_TOKEN in .env first; runs on the compose network.
+docker compose run --rm bot python migrate_turso_to_pg.py
 ```
 
 Notes:
@@ -139,19 +142,25 @@ Notes:
 
 ## 7. Moving to another VPS later
 
-Everything is Docker + external Turso, so migrating is: copy 3 things and bring up the stack.
+Everything is Docker; file bytes stay in Telegram. The only state to carry is the Postgres data —
+either restore the latest daily backup from the drive (Backup → CDT DB) on the new host, or copy the
+`pgdata` volume across. Steps:
 
 ```bash
-# from the old server (data lives in Turso + Telegram, not here):
-scp .env bot/worker.session bot/streamer.session user@new-vps:~/tcd/
+# from the old server — capture a fresh dump (or just download the latest Backup/CDT DB file):
+docker compose exec -T postgres pg_dump --clean --if-exists --no-owner --no-privileges \
+  -U "$POSTGRES_USER" "$POSTGRES_DB" | gzip > cdt-db.sql.gz
+scp .env bot/worker.session bot/streamer.session cdt-db.sql.gz user@new-vps:~/tcd/
 
 # on the new VPS:
 git clone <your-repo-url> tcd && cd tcd
-# place .env + the two .session files, then:
+# place .env + the two .session files, then bring up the DB + stack:
 docker compose up -d --build
+# restore the data:
+gunzip -c cdt-db.sql.gz | docker compose exec -T postgres psql -U "$POSTGRES_USER" "$POSTGRES_DB"
 ```
 
-No database migration (Turso stays), no file migration (Telegram stays). Repoint your domain to the
+No file migration (Telegram stays). Repoint your domain to the
 new IP. The `compressed` videos are rebuilt on demand, so they don't need migrating.
 
 ---
@@ -183,7 +192,8 @@ See [`.env.example`](../.env.example). Key ones for server mode:
 
 | Var | Used by | Note |
 |---|---|---|
-| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | all | metadata brain |
+| `DATABASE_URL` | all | Postgres connection (metadata brain) |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | postgres, all | self-hosted DB credentials (must match `DATABASE_URL`) |
 | `BOT_TOKEN`, `STORAGE_CHANNEL_ID`, `OWNER_USER_ID` | bot, web | index / download / purge |
 | `TG_API_ID`, `TG_API_HASH` | watcher, streamer | Telethon (MTProto) |
 | `NEXT_PUBLIC_BOT_USERNAME` | web (build) | download deep link — inlined at build time |

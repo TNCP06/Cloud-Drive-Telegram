@@ -42,7 +42,7 @@ _VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", 
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
-import libsql_client
+from pg_db import create_client
 
 from worker import normalize_tags, build_caption, safe_name, collect_parts
 
@@ -55,12 +55,6 @@ SESSION = os.environ.get("WORKER_SESSION", "worker")
 SEVENZIP = os.environ.get("SEVENZIP_PATH", "7z")
 OUT_DIR = os.environ.get("WORKER_OUT_DIR", os.path.join(tempfile.gettempdir(), "tcd_upload_parts"))
 POLL_INTERVAL = 5
-
-_turso = os.environ["TURSO_DATABASE_URL"]
-if _turso.startswith("libsql://"):
-    _turso = "https://" + _turso[len("libsql://"):]
-TURSO_URL = _turso
-TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +110,9 @@ async def _store_thumbnails(db, thumb_b64: str, thumb_mime: str, channel_msg_ids
             await asyncio.sleep(5 if attempt == 0 else 10)
             try:
                 result = await db.execute(
-                    "INSERT OR IGNORE INTO thumbnails (part_id, mime, data) "
-                    "SELECT id, ?, ? FROM parts WHERE channel_msg_id = ?",
+                    "INSERT INTO thumbnails (part_id, mime, data) "
+                    "SELECT id, ?, ? FROM parts WHERE channel_msg_id = ? "
+                    "ON CONFLICT (part_id) DO NOTHING",
                     [thumb_mime, thumb_b64, channel_msg_id],
                 )
                 if getattr(result, "rows_affected", 0):
@@ -146,7 +141,7 @@ async def claim_next(db):
     # Keep parts_done so a retried/resumed job continues from its checkpoint.
     await db.execute(
         "UPDATE upload_jobs SET status='running', message='starting...', "
-        "updated_at=datetime('now') WHERE id=? AND status='pending'",
+        "updated_at=now_text() WHERE id=? AND status='pending'",
         [job["id"]],
     )
     return job
@@ -154,25 +149,25 @@ async def claim_next(db):
 
 async def set_parts_done(db, jid, n):
     await db.execute(
-        "UPDATE upload_jobs SET parts_done=?, updated_at=datetime('now') WHERE id=?", [n, jid]
+        "UPDATE upload_jobs SET parts_done=?, updated_at=now_text() WHERE id=?", [n, jid]
     )
 
 
 async def set_progress(db, jid, pct):
     await db.execute(
-        "UPDATE upload_jobs SET progress=?, updated_at=datetime('now') WHERE id=?", [pct, jid]
+        "UPDATE upload_jobs SET progress=?, updated_at=now_text() WHERE id=?", [pct, jid]
     )
 
 
 async def set_status(db, jid, status, message, pct=None):
     if pct is None:
         await db.execute(
-            "UPDATE upload_jobs SET status=?, message=?, updated_at=datetime('now') WHERE id=?",
+            "UPDATE upload_jobs SET status=?, message=?, updated_at=now_text() WHERE id=?",
             [status, message, jid],
         )
     else:
         await db.execute(
-            "UPDATE upload_jobs SET status=?, message=?, progress=?, updated_at=datetime('now') WHERE id=?",
+            "UPDATE upload_jobs SET status=?, message=?, progress=?, updated_at=now_text() WHERE id=?",
             [status, message, pct, jid],
         )
 
@@ -415,7 +410,7 @@ async def resolve_channel(client):
 
 
 async def main():
-    db = libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN)
+    db = create_client()
     async with TelegramClient(SESSION, API_ID, API_HASH) as client:
         channel = await resolve_channel(client)
         print(f"Watcher ready. Channel: {getattr(channel, 'title', channel)}")

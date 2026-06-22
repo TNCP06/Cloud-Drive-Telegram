@@ -10,7 +10,7 @@ import { refresh, resolveTagId } from "./_shared";
 
 export async function toggleFavorite(id: number, next: boolean) {
   await db.execute({
-    sql: "UPDATE items SET is_favorite = ?, updated_at = datetime('now') WHERE id = ?",
+    sql: "UPDATE items SET is_favorite = ?, updated_at = now_text() WHERE id = ?",
     args: [next ? 1 : 0, id],
   });
   refresh();
@@ -23,7 +23,7 @@ export async function toggleFavorite(id: number, next: boolean) {
 // tracked solely by `deleted_at`.
 export async function softDelete(id: number) {
   await db.execute({
-    sql: "UPDATE items SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+    sql: "UPDATE items SET deleted_at = now_text() WHERE id = ? AND deleted_at IS NULL",
     args: [id],
   });
   refresh();
@@ -104,7 +104,7 @@ export async function updateMetadata(
   }
 
   await db.execute({
-    sql: "UPDATE items SET title = ?, kind = ?, updated_at = datetime('now') WHERE id = ?",
+    sql: "UPDATE items SET title = ?, kind = ?, updated_at = now_text() WHERE id = ?",
     args: [title, input.kind, id],
   });
 
@@ -135,7 +135,7 @@ export async function bulkToggleFavorite(itemIds: number[], starred: boolean) {
   if (itemIds.length === 0) return;
   for (const itemId of itemIds) {
     await db.execute({
-      sql: "UPDATE items SET is_favorite = ?, updated_at = datetime('now') WHERE id = ?",
+      sql: "UPDATE items SET is_favorite = ?, updated_at = now_text() WHERE id = ?",
       args: [starred ? 1 : 0, itemId],
     });
   }
@@ -146,7 +146,7 @@ export async function bulkSoftDelete(itemIds: number[]) {
   if (itemIds.length === 0) return;
   for (const itemId of itemIds) {
     await db.execute({
-      sql: "UPDATE items SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+      sql: "UPDATE items SET deleted_at = now_text() WHERE id = ? AND deleted_at IS NULL",
       args: [itemId],
     });
   }

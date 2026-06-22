@@ -16,7 +16,7 @@ function resolveColor(stored: string | null | undefined, name: string): string {
 }
 
 export async function listTags(): Promise<Tag[]> {
-  const rs = await db.execute("SELECT id, name, color FROM tags ORDER BY name COLLATE NOCASE");
+  const rs = await db.execute("SELECT id, name, color FROM tags ORDER BY lower(name)");
   return rs.rows.map((r) => ({
     id: Number(r.id),
     name: String(r.name),
@@ -29,7 +29,7 @@ export async function createTag(name: string, color = "") {
   if (!n) throw new Error("Category name cannot be empty.");
   // Don't create a near-duplicate that differs only in capitalization.
   const existing = await db.execute({
-    sql: "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
+    sql: "SELECT id FROM tags WHERE lower(name) = lower(?)",
     args: [n],
   });
   if (existing.rows.length) {
@@ -57,7 +57,7 @@ export async function renameTag(id: number, name: string) {
   if (!n) throw new Error("Category name cannot be empty.");
 
   const existing = await db.execute({
-    sql: "SELECT id FROM tags WHERE name = ? COLLATE NOCASE AND id != ?",
+    sql: "SELECT id FROM tags WHERE lower(name) = lower(?) AND id != ?",
     args: [n, id],
   });
 

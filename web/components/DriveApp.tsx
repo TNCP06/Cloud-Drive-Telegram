@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useOptimistic, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/lib/icons";
 import { fmtSize, relGroup } from "@/lib/format";
@@ -189,10 +189,61 @@ const SORTS: Record<string, { label: string; fn: (a: DriveFile, b: DriveFile, or
   },
 };
 
+// ---- Optimistic UI reducers ----
+// Mutations update these overlays instantly; the server action then revalidates and the
+// real props replace the overlay (a failed action just drops the overlay → auto-rollback).
+type FileAction =
+  | { type: "star"; ids: number[]; starred: boolean }
+  | { type: "trash"; ids: number[] }
+  | { type: "restore"; ids: number[] }
+  | { type: "remove"; ids: number[] }
+  | { type: "meta"; id: number; title: string; kind: DriveFile["kind"] }
+  | { type: "move"; ids: number[]; folderId: number | null };
+
+function fileReducer(state: DriveFile[], a: FileAction): DriveFile[] {
+  switch (a.type) {
+    case "star":
+      return state.map((f) => (a.ids.includes(f.id) ? { ...f, starred: a.starred } : f));
+    case "trash":
+      return state.map((f) => (a.ids.includes(f.id) ? { ...f, trashed: true, deletedAt: Date.now() } : f));
+    case "restore":
+      return state.map((f) => (a.ids.includes(f.id) ? { ...f, trashed: false, deletedAt: null } : f));
+    case "remove":
+      return state.filter((f) => !a.ids.includes(f.id));
+    case "meta":
+      return state.map((f) => (f.id === a.id ? { ...f, name: a.title, family: a.title, kind: a.kind } : f));
+    case "move":
+      return state.map((f) => (a.ids.includes(f.id) ? { ...f, folderId: a.folderId } : f));
+    default:
+      return state;
+  }
+}
+
+type FolderAction =
+  | { type: "create"; folder: Folder }
+  | { type: "rename"; id: number; name: string }
+  | { type: "delete"; ids: number[] }
+  | { type: "move"; id: number; parentId: number | null };
+
+function folderReducer(state: Folder[], a: FolderAction): Folder[] {
+  switch (a.type) {
+    case "create":
+      return [...state, a.folder];
+    case "rename":
+      return state.map((f) => (f.id === a.id ? { ...f, name: a.name } : f));
+    case "delete":
+      return state.filter((f) => !a.ids.includes(f.id));
+    case "move":
+      return state.map((f) => (f.id === a.id ? { ...f, parentId: a.parentId } : f));
+    default:
+      return state;
+  }
+}
+
 export function DriveApp({
-  files,
+  files: baseFiles,
   tags,
-  folders = [],
+  folders: baseFolders = [],
   initialView = "all",
   space = "main",
 }: {
@@ -204,6 +255,9 @@ export function DriveApp({
 }) {
   const router = useRouter();
   const isPrivate = space === "private";
+  // Optimistic overlays — every downstream read of `files`/`folders` sees these.
+  const [files, optimizeFiles] = useOptimistic(baseFiles, fileReducer);
+  const [folders, optimizeFolders] = useOptimistic(baseFolders, folderReducer);
   const [view, setView] = useState<View>(initialView);
   const [activeTag, setActiveTag] = useState<number | null>(null);
   const [query, setQuery] = useState("");
@@ -401,19 +455,23 @@ export function DriveApp({
 
   /* ---- mutations (server actions) ---- */
   const doStar = (item: DriveFile) =>
-    startTransition(() => {
-      toggleFavorite(item.id, !item.starred);
+    startTransition(async () => {
+      optimizeFiles({ type: "star", ids: [item.id], starred: !item.starred });
+      await toggleFavorite(item.id, !item.starred);
     });
   const doTrash = (item: DriveFile) =>
-    startTransition(() => {
-      softDelete(item.id);
+    startTransition(async () => {
+      optimizeFiles({ type: "trash", ids: [item.id] });
+      await softDelete(item.id);
     });
   const doRestore = (item: DriveFile) =>
-    startTransition(() => {
-      restore(item.id);
+    startTransition(async () => {
+      optimizeFiles({ type: "restore", ids: [item.id] });
+      await restore(item.id);
     });
   const doPurge = (item: DriveFile) =>
     startTransition(async () => {
+      optimizeFiles({ type: "remove", ids: [item.id] });
       const r = await purgeNow(item.id);
       if (!r.ok) setToast(r.error ?? "Failed to delete permanently.");
     });
@@ -430,8 +488,9 @@ export function DriveApp({
     item: DriveFile,
     input: { title: string; kind: DriveFile["kind"]; tags: string }
   ) =>
-    startTransition(() => {
-      updateMetadata(item.id, input);
+    startTransition(async () => {
+      optimizeFiles({ type: "meta", id: item.id, title: input.title, kind: input.kind });
+      await updateMetadata(item.id, input);
     });
 
   /* ---- counts ---- */
@@ -1527,12 +1586,15 @@ export function DriveApp({
             const { itemIds, folderIds, mode } = confirmBulk;
             if (mode === "purge") {
               startTransition(async () => {
+                optimizeFiles({ type: "remove", ids: itemIds });
                 const r = await bulkPurgeNow(itemIds);
                 if (!r.ok) setToast(r.error ?? "Failed to delete permanently.");
                 clearSelection();
               });
             } else {
               startTransition(async () => {
+                if (itemIds.length) optimizeFiles({ type: "trash", ids: itemIds });
+                if (folderIds.length) optimizeFolders({ type: "delete", ids: folderIds });
                 if (itemIds.length) await bulkSoftDelete(itemIds);
                 for (const fid of folderIds) await deleteFolder(fid);
                 clearSelection();
@@ -1567,6 +1629,7 @@ export function DriveApp({
                 onClick={() => {
                   const allStarred = selectedItemIds.every((id) => files.find((f) => f.id === id)?.starred);
                   startTransition(async () => {
+                    optimizeFiles({ type: "star", ids: selectedItemIds, starred: !allStarred });
                     await bulkToggleFavorite(selectedItemIds, !allStarred);
                   });
                 }}
@@ -1592,6 +1655,7 @@ export function DriveApp({
                   className="action-btn"
                   onClick={() => {
                     startTransition(async () => {
+                      optimizeFiles({ type: "restore", ids: selectedItemIds });
                       await bulkRestore(selectedItemIds);
                       clearSelection();
                     });
@@ -1653,6 +1717,11 @@ export function DriveApp({
           onClose={() => setShowCreateFolder(false)}
           onCreate={(name) => {
             startTransition(async () => {
+              const now = Date.now();
+              optimizeFolders({
+                type: "create",
+                folder: { id: -now, name, parentId: currentFolderId, createdAt: now, updatedAt: now },
+              });
               await createFolder(name, currentFolderId);
             });
             setShowCreateFolder(false);
@@ -1666,8 +1735,10 @@ export function DriveApp({
           folder={showRenameFolder}
           onClose={() => setShowRenameFolder(null)}
           onRename={(name) => {
+            const fid = showRenameFolder.id;
             startTransition(async () => {
-              await renameFolder(showRenameFolder.id, name);
+              optimizeFolders({ type: "rename", id: fid, name });
+              await renameFolder(fid, name);
             });
             setShowRenameFolder(null);
           }}
@@ -1686,6 +1757,8 @@ export function DriveApp({
           onMove={(targetFolderId) => {
             const { itemIds, folderIds } = moveTarget;
             startTransition(async () => {
+              if (itemIds.length) optimizeFiles({ type: "move", ids: itemIds, folderId: targetFolderId });
+              for (const fid of folderIds) optimizeFolders({ type: "move", id: fid, parentId: targetFolderId });
               if (itemIds.length) await moveItemsToFolder(itemIds, targetFolderId);
               for (const fid of folderIds) {
                 try {
@@ -1701,6 +1774,9 @@ export function DriveApp({
           onMoveCrossSpace={() => {
             const { itemIds, folderIds } = moveTarget;
             startTransition(async () => {
+              // Moving across the Main ⇄ Private boundary removes the rows from this space.
+              if (itemIds.length) optimizeFiles({ type: "remove", ids: itemIds });
+              if (folderIds.length) optimizeFolders({ type: "delete", ids: folderIds });
               if (itemIds.length) await moveItemsPrivacy(itemIds, space === "main");
               for (const fid of folderIds) await moveFolderPrivacy(fid, space === "main");
               clearSelection();

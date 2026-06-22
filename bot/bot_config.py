@@ -14,18 +14,12 @@ load_dotenv()  # loads bot/.env when run from the bot/ directory
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 STORAGE_CHANNEL_ID = int(os.environ["STORAGE_CHANNEL_ID"])
 OWNER_USER_ID = int(os.environ["OWNER_USER_ID"])
-TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 TELEGRAM_API_URL = os.environ.get("TELEGRAM_API_URL")
 
+# Postgres DSN (self-hosted). pg_db.database_url() also falls back to POSTGRES_* parts.
+from pg_db import database_url as _database_url  # noqa: E402
 
-def _turso_http_url(url: str) -> str:
-    # libsql_client WebSocket transport is rejected by Turso (HTTP 400) → use HTTPS (Hrana over HTTP).
-    if url.startswith("libsql://"):
-        return "https://" + url[len("libsql://") :]
-    return url
-
-
-TURSO_DATABASE_URL = _turso_http_url(os.environ["TURSO_DATABASE_URL"])
+DATABASE_URL = _database_url()
 
 logging.basicConfig(
     format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",

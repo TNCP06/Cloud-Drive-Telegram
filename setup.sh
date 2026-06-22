@@ -6,8 +6,9 @@
 #   1. Installs Docker + the Compose plugin (via get.docker.com) if missing.
 #   2. Creates .env from .env.example (and lets you edit it) if missing.
 #   3. Runs the one-time Telethon logins → bot/worker.session + bot/streamer.session.
-#   4. Applies the Turso schema (schema.sql + migration-folders.sql) — idempotent.
-#   5. Builds and starts the whole stack: docker compose up -d --build.
+#   4. Builds and starts the whole stack: docker compose up -d --build. The self-hosted
+#      postgres service applies bot/schema.sql automatically on first init.
+#   5. (Optional) offers to import existing data from an old Turso DB.
 #
 # Usage:   bash setup.sh        (run from the repository root)
 # Re-run any time — it skips steps already done.
@@ -54,7 +55,7 @@ ok "Using: $DC"
 if [ ! -f .env ]; then
   say "Creating .env from .env.example…"
   cp .env.example .env
-  warn "Fill in .env (BOT_TOKEN, TG_API_ID/HASH, STORAGE_CHANNEL_ID, OWNER_USER_ID, TURSO_*, APP_PASSWORD…)."
+  warn "Fill in .env (BOT_TOKEN, TG_API_ID/HASH, STORAGE_CHANNEL_ID, OWNER_USER_ID, POSTGRES_PASSWORD, DATABASE_URL, APP_PASSWORD…)."
   if [ -t 0 ]; then
     read -r -p "Open .env in an editor now? [Y/n] " a
     [ "${a:-Y}" = "n" ] || [ "${a:-Y}" = "N" ] || "${EDITOR:-nano}" .env
@@ -64,7 +65,7 @@ fi
 # Load .env and verify the essentials are present.
 set -a; . ./.env; set +a
 missing=""
-for v in BOT_TOKEN TG_API_ID TG_API_HASH STORAGE_CHANNEL_ID OWNER_USER_ID TURSO_DATABASE_URL TURSO_AUTH_TOKEN; do
+for v in BOT_TOKEN TG_API_ID TG_API_HASH STORAGE_CHANNEL_ID OWNER_USER_ID POSTGRES_PASSWORD DATABASE_URL; do
   [ -n "${!v:-}" ] || missing="$missing $v"
 done
 [ -z "$missing" ] || die "Missing required .env values:$missing — edit .env and re-run."
@@ -96,17 +97,20 @@ else
   ok "Telethon sessions already present."
 fi
 
-# --- 4. Turso schema (idempotent: CREATE TABLE IF NOT EXISTS) ---------------
-say "Applying Turso schema…"
-$DOCKER build -t tcd-login -f bot/Dockerfile . >/dev/null 2>&1 || true
-$DOCKER run --rm --env-file .env -v "$PWD/bot:/app" -w /app tcd-login \
-  sh -c "python run-migration.py schema.sql && python run-migration.py migration-folders.sql" \
-  && ok "Schema applied." || warn "Schema step failed (it may already be applied) — continuing."
-
-# --- 5. Build & start ------------------------------------------------------
+# --- 4. Build & start (postgres applies bot/schema.sql on first init) -------
 say "Building and starting the stack…"
 $DC up -d --build
-ok "Stack is up."
+ok "Stack is up (PostgreSQL schema auto-applied on first init)."
+
+# --- 5. Optional: import existing data from an old Turso DB -----------------
+if [ -n "${TURSO_DATABASE_URL:-}" ] && [ -t 0 ]; then
+  read -r -p "TURSO_* found in .env — import that data into Postgres now? [y/N] " a
+  if [ "${a:-N}" = "y" ] || [ "${a:-N}" = "Y" ]; then
+    say "Migrating data from Turso → Postgres…"
+    $DC run --rm bot python migrate_turso_to_pg.py \
+      && ok "Data migrated." || warn "Migration failed — check output above."
+  fi
+fi
 
 ip="$(curl -fsS https://api.ipify.org 2>/dev/null || echo "<server-ip>")"
 echo

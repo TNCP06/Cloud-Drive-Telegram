@@ -44,12 +44,12 @@ export async function updateUploadJob(
   const tags = input.tags.trim();
   if (typeof input.partSize === "number" && input.partSize > 0) {
     await db.execute({
-      sql: "UPDATE upload_jobs SET title=?, tags=?, part_size=?, updated_at=datetime('now') WHERE id=? AND status='queued'",
+      sql: "UPDATE upload_jobs SET title=?, tags=?, part_size=?, updated_at=now_text() WHERE id=? AND status='queued'",
       args: [title, tags, input.partSize, id],
     });
   } else {
     await db.execute({
-      sql: "UPDATE upload_jobs SET title=?, tags=?, updated_at=datetime('now') WHERE id=? AND status='queued'",
+      sql: "UPDATE upload_jobs SET title=?, tags=?, updated_at=now_text() WHERE id=? AND status='queued'",
       args: [title, tags, id],
     });
   }
@@ -58,7 +58,7 @@ export async function updateUploadJob(
 
 export async function cancelUpload(id: number) {
   await db.execute({
-    sql: "UPDATE upload_jobs SET status = 'canceled', updated_at = datetime('now') WHERE id = ? AND status IN ('queued','pending')",
+    sql: "UPDATE upload_jobs SET status = 'canceled', updated_at = now_text() WHERE id = ? AND status IN ('queued','pending')",
     args: [id],
   });
   revalidatePath("/upload");
@@ -67,7 +67,7 @@ export async function cancelUpload(id: number) {
 // Trigger execution: queued → pending (the watcher will pick it up).
 export async function startUpload(id: number) {
   await db.execute({
-    sql: "UPDATE upload_jobs SET status='pending', message='start requested...', updated_at=datetime('now') WHERE id = ? AND status='queued'",
+    sql: "UPDATE upload_jobs SET status='pending', message='start requested...', updated_at=now_text() WHERE id = ? AND status='queued'",
     args: [id],
   });
   revalidatePath("/upload");
@@ -77,7 +77,7 @@ export async function startUpload(id: number) {
 // part already pushed to Telegram instead of re-uploading everything.
 export async function retryUpload(id: number) {
   await db.execute({
-    sql: "UPDATE upload_jobs SET status='pending', message='retry requested...', updated_at=datetime('now') WHERE id = ? AND status='error'",
+    sql: "UPDATE upload_jobs SET status='pending', message='retry requested...', updated_at=now_text() WHERE id = ? AND status='error'",
     args: [id],
   });
   revalidatePath("/upload");
@@ -85,7 +85,7 @@ export async function retryUpload(id: number) {
 
 export async function startAllUploads() {
   await db.execute(
-    "UPDATE upload_jobs SET status='pending', message='start requested...', updated_at=datetime('now') WHERE status='queued'"
+    "UPDATE upload_jobs SET status='pending', message='start requested...', updated_at=now_text() WHERE status='queued'"
   );
   revalidatePath("/upload");
 }

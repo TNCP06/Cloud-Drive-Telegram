@@ -38,7 +38,7 @@ async function fetchDriveData(
     db.execute(
       `SELECT id, name, color FROM tags
        WHERE id IN (SELECT DISTINCT it.tag_id FROM item_tags it JOIN items i ON i.id = it.item_id WHERE i.is_private = ${priv})
-       ORDER BY name COLLATE NOCASE`
+       ORDER BY lower(name)`
     ),
     db.execute(
       `SELECT it.item_id AS item_id, it.tag_id AS tag_id FROM item_tags it
@@ -63,7 +63,7 @@ async function fetchDriveData(
        )
        SELECT item_id, part_id, file_name FROM first_part WHERE rn = 1`
     ),
-    db.execute(`SELECT id, name, parent_id, created_at, updated_at FROM folders WHERE is_private = ${priv} ORDER BY name COLLATE NOCASE`),
+    db.execute(`SELECT id, name, parent_id, created_at, updated_at FROM folders WHERE is_private = ${priv} ORDER BY lower(name)`),
   ]);
 
   const tags: Tag[] = tagsRs.rows.map((r) => {

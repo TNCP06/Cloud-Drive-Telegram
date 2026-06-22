@@ -1,4 +1,5 @@
-"""Idempotent Turso operations. Each takes a libsql `db` client as its first arg."""
+"""Idempotent PostgreSQL operations. Each takes a `db` client (pg_db.PgClient) as its
+first arg. SQL uses `?` placeholders (the client rewrites them to psycopg `%s`)."""
 
 import os
 import re
@@ -95,11 +96,11 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
         INSERT INTO items (slug, title, kind, total_parts, folder_id)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(slug) DO UPDATE SET
-            title       = CASE WHEN ? THEN excluded.title ELSE items.title END,
+            title       = CASE WHEN ? = 1 THEN excluded.title ELSE items.title END,
             kind        = excluded.kind,
-            total_parts = MAX(items.total_parts, excluded.total_parts),
-            folder_id   = CASE WHEN ? THEN excluded.folder_id ELSE items.folder_id END,
-            updated_at  = datetime('now')
+            total_parts = GREATEST(items.total_parts, excluded.total_parts),
+            folder_id   = CASE WHEN ? = 1 THEN excluded.folder_id ELSE items.folder_id END,
+            updated_at  = now_text()
         """,
         [slug, title, kind, total, folder_id, 1 if set_title else 0, 1 if set_title else 0],
     )
@@ -119,7 +120,7 @@ async def upsert_part(db, item_id, part_number, channel_msg_id, file_name, file_
         """
         INSERT INTO parts (item_id, part_number, channel_msg_id,
                            file_name, file_size, file_id, uploaded_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, now_text())
         ON CONFLICT(channel_msg_id) DO UPDATE SET
             item_id     = excluded.item_id,
             part_number = excluded.part_number,
@@ -150,8 +151,8 @@ async def recompute_totals(db, item_id):
         """
         UPDATE items SET
             total_size  = (SELECT COALESCE(SUM(file_size), 0) FROM parts WHERE item_id = ?),
-            total_parts = MAX(total_parts, (SELECT COUNT(*) FROM parts WHERE item_id = ?)),
-            updated_at  = datetime('now')
+            total_parts = GREATEST(total_parts, (SELECT COUNT(*) FROM parts WHERE item_id = ?)),
+            updated_at  = now_text()
         WHERE id = ?
         """,
         [item_id, item_id, item_id],
@@ -168,7 +169,7 @@ async def sync_tags(db, item_id, tags):
         name = (name or "").strip()
         if not name:
             continue
-        rs = await db.execute("SELECT id FROM tags WHERE name = ? COLLATE NOCASE", [name])
+        rs = await db.execute("SELECT id FROM tags WHERE lower(name) = lower(?)", [name])
         if rs.rows:
             tag_id = rs.rows[0][0]
         else:
@@ -176,7 +177,7 @@ async def sync_tags(db, item_id, tags):
             rs = await db.execute("SELECT id FROM tags WHERE name = ?", [name])
             tag_id = rs.rows[0][0]
         await db.execute(
-            "INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)",
+            "INSERT INTO item_tags (item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
             [item_id, tag_id],
         )
 

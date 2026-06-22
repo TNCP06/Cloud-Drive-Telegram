@@ -8,13 +8,13 @@ FROM node:20-slim AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY web/ ./
-# NEXT_PUBLIC_* are inlined at build time → must be present when building.
+# NEXT_PUBLIC_* are inlined at build time → must be present when building. Pages are
+# force-dynamic so the DB is never queried at build, but DATABASE_URL is provided so the
+# pg client module can construct without throwing during the build.
 ARG NEXT_PUBLIC_BOT_USERNAME
-ARG TURSO_DATABASE_URL
-ARG TURSO_AUTH_TOKEN
+ARG DATABASE_URL
 ENV NEXT_PUBLIC_BOT_USERNAME=$NEXT_PUBLIC_BOT_USERNAME \
-    TURSO_DATABASE_URL=$TURSO_DATABASE_URL \
-    TURSO_AUTH_TOKEN=$TURSO_AUTH_TOKEN \
+    DATABASE_URL=$DATABASE_URL \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

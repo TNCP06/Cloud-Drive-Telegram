@@ -1,22 +1,18 @@
 """
-View the Turso catalog contents (manual monitoring).
+View the PostgreSQL catalog contents (manual monitoring).
 Usage:  python status.py
 """
 
 import asyncio
-import os
 
 from dotenv import load_dotenv
-import libsql_client
+from pg_db import create_client
 
 load_dotenv()
-url = os.environ["TURSO_DATABASE_URL"]
-if url.startswith("libsql://"):
-    url = "https://" + url[len("libsql://"):]
 
 
 async def main():
-    db = libsql_client.create_client(url=url, auth_token=os.environ.get("TURSO_AUTH_TOKEN"))
+    db = create_client()
     items = await db.execute(
         "SELECT id, slug, title, kind, total_parts, total_size, is_favorite, deleted_at "
         "FROM items ORDER BY id"

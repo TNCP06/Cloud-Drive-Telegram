@@ -23,7 +23,7 @@ export function refresh() {
 export async function resolveTagId(name: string): Promise<number> {
   const n = name.trim();
   const existing = await db.execute({
-    sql: "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
+    sql: "SELECT id FROM tags WHERE lower(name) = lower(?)",
     args: [n],
   });
   if (existing.rows.length) return Number(existing.rows[0].id);

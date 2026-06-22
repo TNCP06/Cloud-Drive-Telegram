@@ -23,7 +23,7 @@ import os
 from datetime import time as dtime
 
 import httpx
-import libsql_client
+from pg_db import create_client
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from telegram.ext import (
     Application,
@@ -42,9 +42,8 @@ from bot_config import (  # noqa: F401  (re-exported for index_history.py)
     BOT_TOKEN,
     STORAGE_CHANNEL_ID,
     OWNER_USER_ID,
-    TURSO_AUTH_TOKEN,
     TELEGRAM_API_URL,
-    TURSO_DATABASE_URL,
+    DATABASE_URL,
     log,
 )
 from tg_helpers import (  # noqa: F401  (re-exported)
@@ -74,6 +73,7 @@ from indexing import (  # noqa: F401  (re-exported)
     harvest_thumbnail,
     index_bot_copy,
 )
+from db_backup import run_backup
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,8 @@ async def purge_job(context: ContextTypes.DEFAULT_TYPE):
     db = context.bot_data["db"]
     rs = await db.execute(
         "SELECT id FROM items "
-        "WHERE deleted_at IS NOT NULL AND deleted_at <= datetime('now', '-7 days')"
+        "WHERE deleted_at IS NOT NULL AND deleted_at <= "
+        "to_char((now() AT TIME ZONE 'UTC') - interval '7 days', 'YYYY-MM-DD HH24:MI:SS')"
     )
     ids = [r[0] for r in rs.rows]
     if not ids:
@@ -194,16 +195,14 @@ async def purge_job(context: ContextTypes.DEFAULT_TYPE):
 # Turso lifecycle
 # ---------------------------------------------------------------------------
 async def post_init(app: Application):
-    db = libsql_client.create_client(
-        url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN
-    )
+    db = create_client(DATABASE_URL)
     app.bot_data["db"] = db
-    log.info("Turso connection ready")
+    log.info("PostgreSQL connection ready")
 
     # Auto-migration: ensure parts table has file_id column
     try:
-        await db.execute("ALTER TABLE parts ADD COLUMN file_id TEXT")
-        log.info("Migration: Added file_id column to parts table successfully")
+        await db.execute("ALTER TABLE parts ADD COLUMN IF NOT EXISTS file_id TEXT")
+        log.info("Migration: ensured file_id column on parts table")
     except Exception as e:
         pass
 
@@ -211,13 +210,13 @@ async def post_init(app: Application):
     try:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS authorized_users (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
-                added_at TEXT NOT NULL DEFAULT (datetime('now'))
+                added_at TEXT NOT NULL DEFAULT now_text()
             )
         """)
-        log.info("Migration: Created authorized_users table successfully")
+        log.info("Migration: ensured authorized_users table")
     except Exception as e:
         log.warning("Migration failed for authorized_users: %s", e)
 
@@ -231,7 +230,7 @@ async def post_init(app: Application):
         else:
             default_url = os.environ.get("NEXT_PUBLIC_WEB_URL", "http://localhost:3000").rstrip("/")
             app.bot_data["web_url"] = default_url
-            await db.execute("INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('web_url', ?)", [default_url])
+            await db.execute("INSERT INTO bot_settings (key, value) VALUES ('web_url', ?) ON CONFLICT (key) DO NOTHING", [default_url])
             log.info("Initialized web_url in DB: %s", default_url)
     except Exception as e:
         log.warning("Failed to initialize bot_settings: %s", e)
@@ -307,7 +306,7 @@ async def on_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if password == auth_password:
         try:
             await db.execute(
-                "INSERT OR IGNORE INTO authorized_users (user_id, username, first_name) VALUES (?, ?, ?)",
+                "INSERT INTO authorized_users (user_id, username, first_name) VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING",
                 [user.id, user.username, user.first_name]
             )
             await message.reply_text("🎉 Authorization successful! You can now use the bot.")
@@ -345,7 +344,7 @@ async def on_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = context.bot_data["db"]
     try:
         await db.execute(
-            "INSERT OR IGNORE INTO authorized_users (user_id, username, first_name) VALUES (?, ?, ?)",
+            "INSERT INTO authorized_users (user_id, username, first_name) VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING",
             [target_id, "Approved by Owner", "User"]
         )
         await message.reply_text(f"✅ User {target_id} has been authorized.")
@@ -454,7 +453,7 @@ async def on_set_web_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = context.bot_data["db"]
     try:
         await db.execute(
-            "INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('web_url', ?)",
+            "INSERT INTO bot_settings (key, value) VALUES ('web_url', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             [new_url]
         )
         context.bot_data["web_url"] = new_url
@@ -1162,6 +1161,9 @@ def main():
 
     # Daily purge of trashed items older than 7 days (03:00 UTC).
     app.job_queue.run_daily(purge_job, time=dtime(hour=3, minute=0))
+
+    # Daily PostgreSQL backup → Telegram, indexed under Backup / CDT DB (04:00 UTC).
+    app.job_queue.run_daily(run_backup, time=dtime(hour=4, minute=0))
 
     log.info("Bot starting polling…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

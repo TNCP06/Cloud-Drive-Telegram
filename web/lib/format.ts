@@ -12,10 +12,10 @@ export function fmtSize(bytes: number | null | undefined): string {
   return (gb < 10 ? gb.toFixed(2) : gb.toFixed(1)) + " GB";
 }
 
-/** SQLite "YYYY-MM-DD HH:MM:SS" (UTC) → epoch ms. */
+/** DB timestamp text "YYYY-MM-DD HH:MM:SS" (UTC) → epoch ms. */
 export function sqliteToMs(s: string | null | undefined): number {
   if (!s) return 0;
-  // datetime('now') in SQLite is always UTC without offset — append 'Z'.
+  // now_text() (Postgres) writes UTC without offset — append 'Z'.
   return new Date(s.replace(" ", "T") + "Z").getTime();
 }
 
