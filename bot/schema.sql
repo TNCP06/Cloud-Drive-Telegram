@@ -141,3 +141,36 @@ CREATE INDEX IF NOT EXISTS idx_items_favorite  ON items(is_favorite) WHERE is_fa
 CREATE INDEX IF NOT EXISTS idx_items_private   ON items(is_private);
 CREATE INDEX IF NOT EXISTS idx_folders_private ON folders(is_private);
 CREATE INDEX IF NOT EXISTS idx_subtitles_part  ON subtitles(part_id);
+
+-- ---------------------------------------------------------------------------
+-- Realtime change notification (web SSE) ----------------------------------
+-- Any change to the drive's visible data emits a NOTIFY on the 'drive_changed'
+-- channel. The web endpoint /api/events holds ONE shared LISTEN connection and
+-- pushes a tiny signal to every connected browser, which then refreshes — so
+-- files indexed by the bot/watcher (or edits from another session) appear live,
+-- without polling. Statement-level so a bulk write (e.g. indexing many parts,
+-- which UPDATEs items) fires once per statement, not once per row. Triggers cover
+-- the tables the drive view enumerates; parts/thumbnails are intentionally omitted
+-- (adding parts UPDATEs items.total_* → already fires; covers load lazily anyway).
+CREATE OR REPLACE FUNCTION notify_drive_change() RETURNS trigger
+    LANGUAGE plpgsql AS
+$$ BEGIN
+    PERFORM pg_notify('drive_changed', TG_TABLE_NAME);
+    RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_notify_items ON items;
+CREATE TRIGGER trg_notify_items AFTER INSERT OR UPDATE OR DELETE ON items
+    FOR EACH STATEMENT EXECUTE FUNCTION notify_drive_change();
+
+DROP TRIGGER IF EXISTS trg_notify_folders ON folders;
+CREATE TRIGGER trg_notify_folders AFTER INSERT OR UPDATE OR DELETE ON folders
+    FOR EACH STATEMENT EXECUTE FUNCTION notify_drive_change();
+
+DROP TRIGGER IF EXISTS trg_notify_item_tags ON item_tags;
+CREATE TRIGGER trg_notify_item_tags AFTER INSERT OR UPDATE OR DELETE ON item_tags
+    FOR EACH STATEMENT EXECUTE FUNCTION notify_drive_change();
+
+DROP TRIGGER IF EXISTS trg_notify_tags ON tags;
+CREATE TRIGGER trg_notify_tags AFTER INSERT OR UPDATE OR DELETE ON tags
+    FOR EACH STATEMENT EXECUTE FUNCTION notify_drive_change();

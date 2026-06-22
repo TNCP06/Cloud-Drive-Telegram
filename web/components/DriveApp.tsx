@@ -1,12 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useOptimistic, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useOptimistic, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/lib/icons";
-import { fmtSize, relGroup } from "@/lib/format";
-import { fileTypeFor } from "@/lib/fileType";
+import { fmtSize } from "@/lib/format";
 import { TAG_COLORS } from "@/lib/kinds";
 import type { DriveFile, Tag, Folder } from "@/lib/types";
+import {
+  type GroupKey,
+  GROUP_OPTIONS,
+  buildGroups,
+  SORTS,
+  fileReducer,
+  folderReducer,
+} from "@/lib/driveView";
 import { Sidebar, type Counts, type Storage } from "./Sidebar";
 import {
   FileCard,
@@ -90,156 +97,6 @@ const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME;
 const deepLink = (slug: string): string | null =>
   BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=${slug}` : null;
 
-/* ---- Group by (Windows-Explorer-style section grouping) ----
-   Splits the visible files into labelled sections. Items keep the active sort order
-   within each section; grouping is suppressed while searching. */
-type GroupKey = "none" | "name" | "type" | "tag" | "modified" | "size";
-const GROUP_OPTIONS: { key: GroupKey; label: string }[] = [
-  { key: "none", label: "(None)" },
-  { key: "name", label: "Name" },
-  { key: "type", label: "Type" },
-  { key: "tag", label: "Tag" },
-  { key: "modified", label: "Date modified" },
-  { key: "size", label: "Size" },
-];
-
-const SIZE_BUCKET_ORDER = [
-  "Tiny (< 1 MB)",
-  "Small (1–10 MB)",
-  "Medium (10–100 MB)",
-  "Large (100 MB – 1 GB)",
-  "Huge (> 1 GB)",
-  "Unknown",
-];
-function sizeBucket(bytes: number): string {
-  if (!bytes) return "Unknown";
-  const MB = 1024 * 1024;
-  const GB = 1024 * MB;
-  if (bytes < MB) return "Tiny (< 1 MB)";
-  if (bytes < 10 * MB) return "Small (1–10 MB)";
-  if (bytes < 100 * MB) return "Medium (10–100 MB)";
-  if (bytes < GB) return "Large (100 MB – 1 GB)";
-  return "Huge (> 1 GB)";
-}
-
-// Build ordered { label, items } sections for a (pre-sorted) list. Items stay in the
-// incoming order within each section. Returns null for "none".
-function buildGroups(
-  list: DriveFile[],
-  key: GroupKey,
-  tags: Tag[]
-): { label: string; items: DriveFile[] }[] | null {
-  if (key === "none") return null;
-  const groups = new Map<string, DriveFile[]>();
-  const push = (label: string, f: DriveFile) => {
-    const arr = groups.get(label);
-    if (arr) arr.push(f);
-    else groups.set(label, [f]);
-  };
-
-  if (key === "modified") {
-    list.forEach((f) => push(relGroup(f.modified), f));
-    const order = ["Today", "Yesterday", "This week", "This month", "Older"];
-    return order.filter((g) => groups.has(g)).map((g) => ({ label: g, items: groups.get(g)! }));
-  }
-  if (key === "size") {
-    list.forEach((f) => push(sizeBucket(f.size), f));
-    return SIZE_BUCKET_ORDER.filter((g) => groups.has(g)).map((g) => ({ label: g, items: groups.get(g)! }));
-  }
-  if (key === "name") {
-    list.forEach((f) => {
-      const c = (f.name.trim()[0] || "#").toUpperCase();
-      push(/[A-Z]/.test(c) ? c : "#", f);
-    });
-  } else if (key === "type") {
-    list.forEach((f) => push(fileTypeFor(f).label, f));
-  } else {
-    // tag → first tag (or "Untagged"); a file lands in exactly one section to avoid dupes.
-    const nameOf = new Map(tags.map((t) => [t.id, t.name]));
-    list.forEach((f) => push(f.tags.length ? nameOf.get(f.tags[0]) ?? "Untagged" : "Untagged", f));
-  }
-  // Alphabetical, with the catch-all bucket ("#" / "Untagged") pinned last.
-  const catchAll = key === "tag" ? "Untagged" : "#";
-  const labels = [...groups.keys()].sort((a, b) =>
-    a === catchAll ? 1 : b === catchAll ? -1 : a.localeCompare(b, "en")
-  );
-  return labels.map((l) => ({ label: l, items: groups.get(l)! }));
-}
-
-const SORTS: Record<string, { label: string; fn: (a: DriveFile, b: DriveFile, order: "asc" | "desc") => number }> = {
-  modified: {
-    label: "Last modified",
-    fn: (a, b, order) => (order === "asc" ? a.modified - b.modified : b.modified - a.modified),
-  },
-  name: {
-    label: "Name",
-    fn: (a, b, order) => (order === "asc" ? a.name.localeCompare(b.name, "en") : b.name.localeCompare(a.name, "en")),
-  },
-  size: {
-    label: "Size",
-    fn: (a, b, order) => {
-      const szA = a.size || 0;
-      const szB = b.size || 0;
-      return order === "asc" ? szA - szB : szB - szA;
-    },
-  },
-  kind: {
-    label: "Type",
-    fn: (a, b, order) => (order === "asc" ? a.kind.localeCompare(b.kind) : b.kind.localeCompare(a.kind)),
-  },
-};
-
-// ---- Optimistic UI reducers ----
-// Mutations update these overlays instantly; the server action then revalidates and the
-// real props replace the overlay (a failed action just drops the overlay → auto-rollback).
-type FileAction =
-  | { type: "star"; ids: number[]; starred: boolean }
-  | { type: "trash"; ids: number[] }
-  | { type: "restore"; ids: number[] }
-  | { type: "remove"; ids: number[] }
-  | { type: "meta"; id: number; title: string; kind: DriveFile["kind"] }
-  | { type: "move"; ids: number[]; folderId: number | null };
-
-function fileReducer(state: DriveFile[], a: FileAction): DriveFile[] {
-  switch (a.type) {
-    case "star":
-      return state.map((f) => (a.ids.includes(f.id) ? { ...f, starred: a.starred } : f));
-    case "trash":
-      return state.map((f) => (a.ids.includes(f.id) ? { ...f, trashed: true, deletedAt: Date.now() } : f));
-    case "restore":
-      return state.map((f) => (a.ids.includes(f.id) ? { ...f, trashed: false, deletedAt: null } : f));
-    case "remove":
-      return state.filter((f) => !a.ids.includes(f.id));
-    case "meta":
-      return state.map((f) => (f.id === a.id ? { ...f, name: a.title, family: a.title, kind: a.kind } : f));
-    case "move":
-      return state.map((f) => (a.ids.includes(f.id) ? { ...f, folderId: a.folderId } : f));
-    default:
-      return state;
-  }
-}
-
-type FolderAction =
-  | { type: "create"; folder: Folder }
-  | { type: "rename"; id: number; name: string }
-  | { type: "delete"; ids: number[] }
-  | { type: "move"; id: number; parentId: number | null };
-
-function folderReducer(state: Folder[], a: FolderAction): Folder[] {
-  switch (a.type) {
-    case "create":
-      return [...state, a.folder];
-    case "rename":
-      return state.map((f) => (f.id === a.id ? { ...f, name: a.name } : f));
-    case "delete":
-      return state.filter((f) => !a.ids.includes(f.id));
-    case "move":
-      return state.map((f) => (f.id === a.id ? { ...f, parentId: a.parentId } : f));
-    default:
-      return state;
-  }
-}
-
 export function DriveApp({
   files: baseFiles,
   tags,
@@ -287,8 +144,10 @@ export function DriveApp({
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [manageTags, setManageTags] = useState(false);
 
-  // Folder states
+  // Folder states. `folderHistory` is the back-stack of visited folders (drives the
+  // Backspace "go back" shortcut); navigation always goes through `goToFolder`.
   const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
+  const [folderHistory, setFolderHistory] = useState<(number | null)[]>([]);
   const [showCreateFolder, setShowCreateFolder] = useState(false);
 
   // One-click upload (global queue from UploadProvider). The Upload button picks
@@ -359,6 +218,58 @@ export function DriveApp({
   // Transient error notification (e.g. permanent delete failed). Auto-dismisses.
   const [toast, setToast] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  // The "Saving…" pill appears only if a transition runs long enough to notice. Instant
+  // optimistic actions (star/trash/move) update the UI immediately and finish in a blink,
+  // so flashing a loading pill (or dimming the screen) for them just looks like lag.
+  const [showSaving, setShowSaving] = useState(false);
+  useEffect(() => {
+    if (!isPending) {
+      setShowSaving(false);
+      return;
+    }
+    const t = window.setTimeout(() => setShowSaving(true), 600);
+    return () => window.clearTimeout(t);
+  }, [isPending]);
+
+  /* ---- live updates: push via SSE, no polling ----
+     Files indexed outside this tab (Bot Drop, history index, another session) land in
+     Postgres directly. The server pushes a tiny signal over `/api/events` (Postgres
+     NOTIFY → SSE) whenever the drive changes; we `router.refresh()` on each, which re-fetches
+     the server data while preserving all client state (view/folder/selection) and rebases the
+     optimistic overlay. The refresh is debounced (a bulk index emits many NOTIFYs) and skipped
+     while a mutation transition is mid-flight (so it can't clobber an in-progress optimistic
+     update). EventSource auto-reconnects; a refresh on tab focus is the fallback if the stream
+     was ever dropped (e.g. a proxy that buffers SSE). */
+  const pendingRef = useRef(isPending);
+  pendingRef.current = isPending;
+  useEffect(() => {
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const refreshSoon = () => {
+      if (debounce) return;
+      debounce = setTimeout(() => {
+        debounce = null;
+        if (document.visibilityState === "visible" && !pendingRef.current) router.refresh();
+      }, 400);
+    };
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource("/api/events");
+      es.addEventListener("drive", refreshSoon);
+    } catch {
+      /* SSE unsupported — focus refresh below still covers it */
+    }
+    const onVisible = () => {
+      if (document.visibilityState === "visible") router.refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      es?.close();
+      if (debounce) clearTimeout(debounce);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [router]);
 
   const menuClosedTimeRef = useRef<number>(0);
   const previewClosedTimeRef = useRef<number>(0);
@@ -657,6 +568,7 @@ export function DriveApp({
     setQuery("");
     setNavOpen(false);
     setCurrentFolderId(null);
+    setFolderHistory([]);
     clearSelection();
   };
   const goTag = (id: number) => {
@@ -665,6 +577,7 @@ export function DriveApp({
     setQuery("");
     setNavOpen(false);
     setCurrentFolderId(null);
+    setFolderHistory([]);
     clearSelection();
   };
 
@@ -685,34 +598,52 @@ export function DriveApp({
   const previewItem = previewId != null ? files.find((f) => f.id === previewId) ?? null : null;
 
   // Group archives by family → representative = version with the most recent upload (date_added).
-  const collapseVersions = (list: DriveFile[]) => {
-    const counts = new Map<string, number>();
-    if (!groupVersions || query || view === "trash") return { list, counts };
-    const repIdx = new Map<string, number>();
-    const out: DriveFile[] = [];
-    for (const f of list) {
-      if (f.kind !== "archive") {
-        out.push(f);
-        continue;
+  type Collapsed = { list: DriveFile[]; counts: Map<string, number> };
+  const collapseVersions = useCallback(
+    (list: DriveFile[]): Collapsed => {
+      const counts = new Map<string, number>();
+      if (!groupVersions || query || view === "trash") return { list, counts };
+      const repIdx = new Map<string, number>();
+      const out: DriveFile[] = [];
+      for (const f of list) {
+        if (f.kind !== "archive") {
+          out.push(f);
+          continue;
+        }
+        counts.set(f.familyKey, (counts.get(f.familyKey) || 0) + 1);
+        const idx = repIdx.get(f.familyKey);
+        if (idx == null) {
+          repIdx.set(f.familyKey, out.length);
+          out.push(f);
+        } else if (f.added > out[idx].added) {
+          out[idx] = f;
+        }
       }
-      counts.set(f.familyKey, (counts.get(f.familyKey) || 0) + 1);
-      const idx = repIdx.get(f.familyKey);
-      if (idx == null) {
-        repIdx.set(f.familyKey, out.length);
-        out.push(f);
-      } else if (f.added > out[idx].added) {
-        out[idx] = f;
-      }
-    }
-    out.sort((a, b) => SORTS[sort].fn(a, b, sortOrder));
-    return { list: out, counts };
-  };
+      out.sort((a, b) => SORTS[sort].fn(a, b, sortOrder));
+      return { list: out, counts };
+    },
+    [groupVersions, query, view, sort, sortOrder]
+  );
+
+  /* ---- collapsed/ordered lists (memoized) ----
+     These sort the whole library, so they're memoized on their real inputs — otherwise
+     every selection click / arrow keypress (which only changes `selected`) would re-sort
+     the entire list and rebuild the key index, the main source of interaction lag. */
+  const collapsedItems = useMemo(() => collapseVersions(items), [collapseVersions, items]);
+  const groupedCollapsed = useMemo(
+    () =>
+      grouped
+        ? grouped.map((g) => ({ label: g.label, ...collapseVersions(g.items) }))
+        : null,
+    [grouped, collapseVersions]
+  );
 
   // Flat ordered list of items as they appear on screen (respects grouping + version
   // collapsing). Used for prev/next navigation inside the preview drawer.
-  const navList = grouped
-    ? grouped.flatMap((g) => collapseVersions(g.items).list)
-    : collapseVersions(items).list;
+  const navList = useMemo(
+    () => (groupedCollapsed ? groupedCollapsed.flatMap((g) => g.list) : collapsedItems.list),
+    [groupedCollapsed, collapsedItems]
+  );
   const navIndex = previewId == null ? -1 : navList.findIndex((f) => f.id === previewId);
   const hasPrevFile = navIndex > 0;
   const hasNextFile = navIndex >= 0 && navIndex < navList.length - 1;
@@ -736,10 +667,10 @@ export function DriveApp({
   // render above the items in every layout), then items in their displayed order
   // (`navList` already reflects grouping + version collapsing). Drives Ctrl+A,
   // select-all, and Shift-range (which can therefore span folders, files, and groups).
-  const visibleKeys: SelKey[] = [
-    ...currentFolders.map((f) => fk(f.id)),
-    ...navList.map((i) => ik(i.id)),
-  ];
+  const visibleKeys: SelKey[] = useMemo(
+    () => [...currentFolders.map((f) => fk(f.id)), ...navList.map((i) => ik(i.id))],
+    [currentFolders, navList]
+  );
 
   // Shared selection wiring (files + folders, every layout + grouped sections).
   const toggleKey = (key: SelKey) =>
@@ -787,11 +718,32 @@ export function DriveApp({
     setSelectAnchor(ik(it.id));
   };
 
+  /* ---- folder navigation (records a back-stack) ----
+     Every folder change goes through goToFolder so Backspace can step back through the
+     visited path; Alt+Up jumps to the parent of the current folder. */
+  const goToFolder = (id: number | null) => {
+    if (id === currentFolderId) return;
+    setFolderHistory((h) => [...h, currentFolderId]);
+    setCurrentFolderId(id);
+    clearSelection();
+  };
+  const goBackFolder = () => {
+    if (!folderHistory.length) return;
+    const prev = folderHistory[folderHistory.length - 1];
+    setFolderHistory((h) => h.slice(0, -1));
+    setCurrentFolderId(prev);
+    clearSelection();
+  };
+  const goToParentFolder = () => {
+    if (currentFolderId == null) return;
+    const f = folders.find((x) => x.id === currentFolderId);
+    goToFolder(f ? f.parentId : null);
+  };
+
   // Folder-cell wiring — folders share the file selection model.
   const onFolderOpen = (id: number) => {
     if (clickThroughNow()) return;
-    setCurrentFolderId(id);
-    clearSelection();
+    goToFolder(id);
   };
   const folderCell = (folder: Folder) => {
     const s = statOf(folder.id);
@@ -834,6 +786,22 @@ export function DriveApp({
     const ae = document.activeElement as HTMLElement | null;
     const typing = !!ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
     const overlayOpen = previewId != null || !!menu || !!sortMenu || !!viewMenu || !!folderMenu;
+
+    // Folder navigation (Main view only, when not typing/no overlay):
+    //   Backspace → step back through the visited folders
+    //   Alt+Up    → go up one level to the parent folder
+    if (!typing && !overlayOpen && view === "all" && !query) {
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        goBackFolder();
+        return;
+      }
+      if (e.altKey && e.key === "ArrowUp") {
+        e.preventDefault();
+        goToParentFolder();
+        return;
+      }
+    }
 
     // Ctrl/Cmd+A → select every visible folder + item.
     if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
@@ -945,8 +913,8 @@ export function DriveApp({
 
   // Render a list of files (one section). `includeFolders` draws the current folders too
   // (set false for grouped sections, which render the folders once above all groups).
-  function renderItems(list: DriveFile[], includeFolders = true) {
-    const { list: shown, counts } = collapseVersions(list);
+  function renderItems(collapsed: Collapsed, includeFolders = true) {
+    const { list: shown, counts } = collapsed;
     // Shared props for every file-cell component (grid card, tile, content row, list item).
     const cell = (item: DriveFile) => ({
       item,
@@ -1086,7 +1054,7 @@ export function DriveApp({
     .join(" ");
 
   return (
-    <div className={appClass} style={{ opacity: isPending ? 0.7 : 1 }}>
+    <div className={appClass}>
       <div className="scrim-mob" onClick={() => setNavOpen(false)}></div>
 
       <Sidebar
@@ -1123,7 +1091,7 @@ export function DriveApp({
                       fontWeight: crumb.id === currentFolderId ? 600 : 400,
                       color: crumb.id === currentFolderId ? "var(--ink)" : "var(--muted)",
                     }}
-                    onClick={() => crumb.id !== currentFolderId && setCurrentFolderId(crumb.id)}
+                    onClick={() => crumb.id !== currentFolderId && goToFolder(crumb.id)}
                   >
                     {crumb.name}
                   </button>
@@ -1257,21 +1225,21 @@ export function DriveApp({
         <div className="content scroll" ref={contentRef} onClick={onContentClick}>
           {items.length === 0 && currentFolders.length === 0 ? (
             <EmptyState view={view} query={query} />
-          ) : grouped ? (
+          ) : groupedCollapsed ? (
             <>
               {/* folders once, above the grouped sections (each section is files only) */}
               {foldersGrid}
-              {grouped.map((g) => (
+              {groupedCollapsed.map((g) => (
                 <div key={g.label}>
                   <div className="section-h">
-                    {g.label} <span className="section-count">{g.items.length}</span>
+                    {g.label} <span className="section-count">{g.list.length}</span>
                   </div>
-                  {renderItems(g.items, false)}
+                  {renderItems(g, false)}
                 </div>
               ))}
             </>
           ) : (
-            renderItems(items)
+            renderItems(collapsedItems)
           )}
         </div>
       </div>
@@ -1684,20 +1652,19 @@ export function DriveApp({
                 <Icon name="trash" size={16} />
               </button>
             )}
-            <button
-              className="action-btn"
-              onClick={() => {
-                if (selected.length === visibleKeys.length) clearSelection();
-                else {
+            {selected.length !== visibleKeys.length && (
+              <button
+                className="action-btn"
+                onClick={() => {
                   setSelected(visibleKeys);
                   setSelectAnchor(visibleKeys[0] ?? null);
-                }
-              }}
-              title={selected.length === visibleKeys.length ? "Deselect all" : "Select all"}
-              aria-label={selected.length === visibleKeys.length ? "Deselect all" : "Select all"}
-            >
-              <Icon name={selected.length === visibleKeys.length ? "circle" : "check"} size={16} />
-            </button>
+                }}
+                title="Select all"
+                aria-label="Select all"
+              >
+                <Icon name="check" size={16} />
+              </button>
+            )}
             <button
               className="action-btn"
               style={{ borderLeft: "1px solid var(--line)", paddingLeft: "14px" }}
@@ -1793,14 +1760,13 @@ export function DriveApp({
           stat={statOf(folderDetail.id)}
           onClose={() => setFolderDetail(null)}
           onOpen={() => {
-            setCurrentFolderId(folderDetail.id);
-            clearSelection();
+            goToFolder(folderDetail.id);
             setFolderDetail(null);
           }}
         />
       )}
 
-      {isPending && (
+      {showSaving && (
         <div className="saving-pill">
           <span className="spinner" />
           Saving…

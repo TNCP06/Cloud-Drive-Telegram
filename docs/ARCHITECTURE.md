@@ -36,6 +36,12 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 > **Process topology matters.** `bot.py`, `watcher.py`, and `streamer.py` are **separate
 > processes** that only communicate through Postgres tables — they never call each other.
 > `bot/run-all.cmd` starts bot + watcher + streamer (minimized) on the laptop.
+>
+> **Live updates stay in-band too.** The dashboard is kept fresh by Postgres `LISTEN/NOTIFY`,
+> not by any process calling another: statement-level triggers (`notify_drive_change` in
+> `schema.sql`) raise `NOTIFY drive_changed` on writes; the web's `/api/events` SSE endpoint
+> holds one shared `LISTEN` connection and pushes a signal to every open browser, which then
+> refreshes. So a file the bot indexes appears in the dashboard live, still purely through PG.
 
 ---
 

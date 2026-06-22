@@ -45,6 +45,56 @@ export function newToken(): string {
   return (crypto.randomUUID?.() ?? String(Date.now()) + Math.random()).replace(/[-.]/g, "");
 }
 
+// One chunk POST over XMLHttpRequest (not fetch) so we can stream `upload.onprogress`
+// events — fetch exposes no upload-progress API, which is why a fetch-based uploader only
+// advances the bar once per finished chunk (it looks stuck, then jumps 16 MB at a time).
+// `onBytes(loaded)` fires continuously as the chunk's bytes leave the browser.
+type ChunkResult = { status: number; json: () => unknown };
+function postChunk(
+  url: string,
+  blob: Blob,
+  ac: AbortController,
+  onBytes: (loaded: number) => void
+): Promise<ChunkResult> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.responseType = "text";
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onBytes(e.loaded);
+    };
+    xhr.onload = () => {
+      let parsed: unknown = null;
+      let parseErr = false;
+      resolve({
+        status: xhr.status,
+        json: () => {
+          if (!parsed && !parseErr) {
+            try {
+              parsed = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+            } catch {
+              parseErr = true;
+              parsed = {};
+            }
+          }
+          return parsed;
+        },
+      });
+    };
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.ontimeout = () => reject(new Error("timeout"));
+    // Bridge the caller's AbortController to xhr.abort() (pause/cancel).
+    if (ac.signal.aborted) {
+      xhr.abort();
+      reject(new Error("aborted"));
+      return;
+    }
+    ac.signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.onabort = () => reject(new Error("aborted"));
+    xhr.send(blob);
+  });
+}
+
 export async function uploadResumable(
   file: Blob,
   name: string,
@@ -79,27 +129,36 @@ export async function uploadResumable(
       if (ctl.cancel) return { status: "canceled" };
       if (ctl.pause) return { status: "paused" };
       try {
-        const res = await fetch(
+        const chunkStart = offset;
+        const res = await postChunk(
           `/api/upload?token=${token}&name=${encodeURIComponent(name)}&offset=${offset}`,
-          { method: "POST", body: blob, signal: ac.signal }
+          blob,
+          ac,
+          // Live byte progress within this chunk: report the running total and a
+          // rolling speed so the bar + speed track in real time, not in 16 MB jumps.
+          (loaded) => {
+            const sent = chunkStart + loaded;
+            const now = Date.now();
+            let sp = 0;
+            if (now - anchor.t > 500) {
+              sp = ((sent - anchor.bytes) * 1000) / (now - anchor.t);
+              anchor = { t: now, bytes: sent };
+            }
+            onProgress(sent, sp);
+          }
         );
         if (res.status === 409) {
-          const j = await res.json();
+          const j = res.json() as { received?: number };
           offset = Number(j.received ?? offset);
+          anchor = { t: Date.now(), bytes: offset };
           onProgress(offset, 0);
           ok = true;
           break;
         }
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const j = await res.json();
+        if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
+        const j = res.json() as { received?: number };
         offset = Number(j.received ?? end);
-        const now = Date.now();
-        let sp = 0;
-        if (now - anchor.t > 1200) {
-          sp = ((offset - anchor.bytes) * 1000) / (now - anchor.t);
-          anchor = { t: now, bytes: offset };
-        }
-        onProgress(offset, sp);
+        onProgress(offset, 0);
         ok = true;
         break;
       } catch {

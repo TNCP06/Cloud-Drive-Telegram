@@ -14,6 +14,8 @@ export function FloatingUploadPanel() {
   const pathname = usePathname();
   const { items, speed, runQueue, removeLocal, clearDone } = useUpload();
   const [open, setOpen] = useState(true);
+  // Two tabs: "process" (in-flight + queued + failed) and "done" (handed off to Telegram).
+  const [tab, setTab] = useState<"process" | "done">("process");
 
   // The /upload page already renders the full queue — don't double up there.
   if (pathname?.startsWith("/upload")) return null;
@@ -25,6 +27,12 @@ export function FloatingUploadPanel() {
   );
   const done = items.filter((i) => i.stage === "done");
   const errored = items.filter((i) => i.stage === "error");
+  // Everything that isn't finished living under the "Process" tab.
+  const processItems = items.filter((i) => i.stage !== "done");
+  // Auto-fall back to the tab that actually has rows (e.g. once all uploads complete).
+  const effectiveTab: "process" | "done" =
+    tab === "process" && processItems.length === 0 && done.length > 0 ? "done" : tab;
+  const shown = effectiveTab === "done" ? done : processItems;
 
   const totalBytes = uploading.reduce((s, i) => s + i.size, 0);
   const sentBytes = uploading.reduce((s, i) => s + i.sent, 0);
@@ -81,21 +89,43 @@ export function FloatingUploadPanel() {
       )}
 
       {open && (
-        <div className="fup-body scroll">
-          {items.map((it) => (
-            <FloatingRow
-              key={it.id}
-              item={it}
-              onRetry={() => runQueue()}
-              onRemove={() => removeLocal(it.id)}
-            />
-          ))}
-          {done.length > 0 && (
-            <button className="fup-clear" onClick={clearDone}>
-              <Icon name="check" size={14} /> Clear {done.length} completed
+        <>
+          <div className="fup-tabs">
+            <button
+              className={"fup-tab" + (effectiveTab === "process" ? " on" : "")}
+              onClick={() => setTab("process")}
+            >
+              Process{processItems.length > 0 ? ` (${processItems.length})` : ""}
             </button>
-          )}
-        </div>
+            <button
+              className={"fup-tab" + (effectiveTab === "done" ? " on" : "")}
+              onClick={() => setTab("done")}
+            >
+              Completed{done.length > 0 ? ` (${done.length})` : ""}
+            </button>
+          </div>
+          <div className="fup-body scroll">
+            {shown.length === 0 ? (
+              <div className="fup-empty">
+                {effectiveTab === "done" ? "No completed uploads yet." : "Nothing in progress."}
+              </div>
+            ) : (
+              shown.map((it) => (
+                <FloatingRow
+                  key={it.id}
+                  item={it}
+                  onRetry={() => runQueue()}
+                  onRemove={() => removeLocal(it.id)}
+                />
+              ))
+            )}
+            {effectiveTab === "done" && done.length > 0 && (
+              <button className="fup-clear" onClick={clearDone}>
+                <Icon name="check" size={14} /> Clear {done.length} completed
+              </button>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

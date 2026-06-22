@@ -184,8 +184,14 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   uses it for video streaming; non-media uses the first part's `file_name` so `fileTypeFor` can
   derive the document type + drive preview), and for archives, splits title into `family`/`version`
   via `parseTitle`. The shaped
-  result is wrapped in **`unstable_cache`** (30s window, tag `drive-<space>`) so repeat loads skip
+  result is wrapped in **`unstable_cache`** (15s window, tag `drive-<space>`) so repeat loads skip
   the six Postgres queries; mutations bust it via `revalidateTag` (see `actions/_shared.ts` `refresh()`).
+  The client stays live by **push, not polling**: Postgres triggers (`notify_drive_change`, statement-level
+  on `items`/`folders`/`item_tags`/`tags` — see `schema.sql`) raise `NOTIFY drive_changed`; the
+  **`/api/events`** SSE route forwards it and `DriveApp` `router.refresh()`es (debounced; a focus refresh
+  is the fallback). One shared `LISTEN` connection fans out to all tabs via **`lib/driveEvents.ts`**, so
+  N browsers cost 1 Postgres connection. So files indexed outside the tab (Bot Drop, history index) appear
+  live within the cache window.
 - `version.ts` — `parseTitle()`: split an archive title into `family` + `version` (e.g.
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Archives only.
 - `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and coarse kind metadata
@@ -281,7 +287,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 
 ### `web/components/` — UI (client)
 - `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).
-- `DriveApp.tsx` — top-level app shell/state (largest component). Takes a `space` prop ("main"|"private");
+- `DriveApp.tsx` — top-level app shell/state (largest component; its pure view-model logic — section
+  grouping `buildGroups`/`GROUP_OPTIONS`, the `SORTS` comparators, and the optimistic `fileReducer`/
+  `folderReducer` overlays — lives in **`lib/driveView.ts`**). Takes a `space` prop ("main"|"private");
   a navbar **lock/unlock** icon enters/exits the Private space (exit clears the PIN cookie via `lockPrivate`).
   A topbar **"View" button** (replaces the old grid/list segmented toggle) opens `ViewMenu`; the chosen
   `LayoutPrefs` (from `lib/layoutPrefs.ts`, hydrated post-mount to avoid SSR mismatch) drive **8 layouts**
@@ -289,7 +297,12 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   CSS), `list` (`FileListItem` column-flow), `details` (the sortable `FileRow` table), `tiles`
   (`FileTile`), `content` (`FileContent`) — plus the `.app` class flags `no-sidebar`/`with-details`/
   `compact`/`show-checks`. When `detailsPane` is on, `DetailsPane` renders the **single-selected** item.
-  The **sort menu** also carries a Windows-Explorer **"Group by ›"** side-flyout (`SubMenuItem`):
+  **Render perf:** off-screen cells (`.card`/`.row`/`.tile`/`.crow`) use CSS `content-visibility: auto`
+  (+ `contain-intrinsic-size`) so the browser skips layout/paint for what isn't scrolled into view —
+  cheap virtualization across all 8 layouts. The version-collapsing + sorting (`collapseVersions`,
+  `navList`, `visibleKeys`, the per-group collapsed lists) is **memoized** on its real inputs so a
+  selection click / arrow keypress doesn't re-sort the whole library.
+  The **sort menu** also carries a Windows-Explorer "Group by ›" side-flyout (`SubMenuItem`):
   `groupBy` (`none|name|type|tag|modified|size`) feeds `buildGroups()` → labelled sections rendered via
   `renderItems(section, false)` with the folders drawn **once** above all sections (the Recent view still
   defaults to date grouping when `groupBy` is `none`); grouping is suppressed while searching. The
@@ -304,7 +317,10 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   before any click — lands on the selected/first entry; DOM-geometry nav via `[data-key]`, works in every
   layout) — **Shift+arrow** extends the range from the anchor (ranges may span folders + files + groups via the
   `visibleKeys` on-screen order), **Ctrl+arrow** moves focus only (Ctrl+Space toggles), **Ctrl/Cmd+A**
-  selects all (folders + items), **Alt+Enter** opens the detail popup. The floating **selection toolbar is
+  selects all (folders + items), **Alt+Enter** opens the detail popup. Folder navigation has two shortcuts
+  (Main "All files" view, when not typing): **Backspace** steps back through the visited folders
+  (`folderHistory` back-stack — every folder change routes through `goToFolder`), and **Alt+↑** goes up
+  one level to the parent folder (`goToParentFolder`). The floating **selection toolbar is
   icon-only** (tooltip/aria-label per button): **Download**/**Favorite** appear only when the selection
   contains files (folders can't be downloaded/starred; download opens the bot deep link per item, badge
   when >1), **Move** and **Delete** act on the whole mix (delete → `bulkSoftDelete` items + `deleteFolder`
@@ -384,9 +400,11 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   blob, marks the item `done`, and calls `startUpload(jobId)`. `useUpload()` is the consumer hook.
 - `FloatingUploadPanel.tsx` — **global floating upload monitor** (also mounted in `app/layout.tsx`),
   hidden on `/upload` (the full manager is there) and when the queue is empty. Reads `useUpload()` to
-  show overall progress + speed on any page; **expand/collapse** lists each file with per-item stage
-  (uploading %/queued/done/failed), retry/remove, and a "Clear completed" action. Styled with the app's
-  `--card`/`--sh-3` surface (`.fup*` classes in `globals.css`).
+  show overall progress + speed on any page; **expand/collapse** reveals two **tabs** — **Process**
+  (in-flight + queued + failed) and **Completed** (handed off to Telegram) — each listing files with
+  per-item stage (uploading %/queued/done/failed), retry/remove, and a "Clear completed" action on the
+  Completed tab (auto-falls back to the tab that has rows). Styled with the app's `--card`/`--sh-3`
+  surface (`.fup*` classes in `globals.css`).
 - `UploadManager.tsx` — **unified, queue-first** upload UI on `/upload`; now **consumes `UploadProvider`**
   via `useUpload()` for the queue + runner (the local queue state/runner moved out of this component).
   Selecting files (multiple, or a whole **folder** via `webkitdirectory`) adds them to ONE queue as
@@ -399,7 +417,10 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   list collapses to ~6 rows with **Show more / Show less**. The resumable engine lives in
   `lib/uploadClient.ts` (`uploadResumable` 16 MB chunks + server-offset resume; `autoTypeTag`,
   `withTag`, `newToken`; `autoKindFor` + `SPLIT_THRESHOLD_BYTES`/`DEFAULT_PART_MB` for size-based
-  kind selection used by the one-click Upload button).
+  kind selection used by the one-click Upload button). Each chunk POST goes over **`XMLHttpRequest`**
+  (helper `postChunk`) so `upload.onprogress` streams **real-time byte progress + rolling speed**
+  (fetch has no upload-progress API → the bar would only advance once per finished 16 MB chunk); the
+  caller's `AbortController` is bridged to `xhr.abort()` for pause/cancel.
   `TagManager.tsx` / `TagPicker.tsx` — category library + chip picker (picker dedupes existing tags case-insensitively).
   `ThemeToggle.tsx` — light/dark switch (flips `data-theme` on `<html>`, persists to localStorage
   `tcd_theme`; theme is applied pre-paint by an inline script in `layout.tsx`). `AppSkeleton.tsx` — loading skeleton.

@@ -206,6 +206,27 @@ async def post_init(app: Application):
     except Exception as e:
         pass
 
+    # Auto-migration: realtime change-notification triggers for the web SSE endpoint
+    # (/api/events). Statement-level NOTIFY on the tables the drive view enumerates so any
+    # write — by the bot, watcher, or web — pushes a live update to open browsers. Idempotent
+    # (CREATE OR REPLACE FUNCTION + DROP/CREATE TRIGGER), so it self-applies to an existing DB
+    # on the next deploy/restart even though schema.sql's initdb only runs on a fresh volume.
+    try:
+        await db.execute(
+            "CREATE OR REPLACE FUNCTION notify_drive_change() RETURNS trigger "
+            "LANGUAGE plpgsql AS $func$ BEGIN "
+            "PERFORM pg_notify('drive_changed', TG_TABLE_NAME); RETURN NULL; END $func$"
+        )
+        for tbl in ("items", "folders", "item_tags", "tags"):
+            await db.execute(f"DROP TRIGGER IF EXISTS trg_notify_{tbl} ON {tbl}")
+            await db.execute(
+                f"CREATE TRIGGER trg_notify_{tbl} AFTER INSERT OR UPDATE OR DELETE ON {tbl} "
+                "FOR EACH STATEMENT EXECUTE FUNCTION notify_drive_change()"
+            )
+        log.info("Migration: ensured drive_changed NOTIFY triggers")
+    except Exception as e:
+        log.warning("Migration failed for notify triggers: %s", e)
+
     # Auto-migration: create authorized_users table
     try:
         await db.execute("""

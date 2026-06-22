@@ -14,15 +14,18 @@ import type { DriveFile, Folder, Kind, Tag } from "./types";
 // last file moved to Private disappears from Main (and vice-versa). Private items are
 // never sent to the Main page, so their sizes/tags/analytics are hidden there for free.
 //
-// The shaped result is cached server-side (`unstable_cache`, 30s window) so repeat loads and
-// navigations don't re-run these six Turso queries every request. Web mutations bust it instantly
-// via `revalidateTag("drive-<space>")` (see actions/_shared.ts); anything written by the bot shows
-// up within the window. Pages stay `force-dynamic` so the DB is never queried at build time.
+// The shaped result is cached server-side (`unstable_cache`, 15s window) so repeat loads and
+// navigations don't re-run these six queries every request. Web mutations bust it instantly
+// via `revalidateTag("drive-<space>")` (see actions/_shared.ts); anything written by the bot
+// shows up within the window. The client gets live updates by PUSH (no polling): Postgres
+// triggers raise `NOTIFY drive_changed`, the `/api/events` SSE endpoint forwards it, and the
+// client `router.refresh()`es — so bot-indexed files appear without a manual reload. Pages stay
+// `force-dynamic` so the DB is never queried at build time.
 export function getDriveData(
   space: "main" | "private" = "main"
 ): Promise<{ files: DriveFile[]; tags: Tag[]; folders: Folder[] }> {
   return unstable_cache(() => fetchDriveData(space), ["drive-data", space], {
-    revalidate: 30,
+    revalidate: 15,
     tags: [`drive-${space}`],
   })();
 }
