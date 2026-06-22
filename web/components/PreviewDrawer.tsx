@@ -122,7 +122,19 @@ export function PreviewDrawer({
   // Photo viewing affordances (mirror the PikPak bottom box: counter + filmstrip + rotate/fullscreen).
   const [rotation, setRotation] = useState(0);
   // The bottom box is shown by default; "collapse" hides its filmstrip (chevron or the "E" key).
-  const [collapsed, setCollapsed] = useState(false);
+  // The preference is persisted so a chosen expand/collapse survives reloads & other items.
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try { return localStorage.getItem("viewer-strip-collapsed") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("viewer-strip-collapsed", collapsed ? "1" : "0"); } catch {}
+  }, [collapsed]);
+  // Horizontal filmstrip scroller (ref + overflow flag drive the left/right scroll buttons).
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [stripOverflow, setStripOverflow] = useState(false);
+  const scrollStrip = (dir: number) =>
+    stripRef.current?.scrollBy({ left: dir * Math.max(240, stripRef.current.clientWidth * 0.8), behavior: "smooth" });
   // Floating chrome (title bar, control float-row, nav arrows) slides away when the cursor leaves
   // the window, and — in fullscreen — after the mouse sits idle for a few seconds.
   const [chromeHidden, setChromeHidden] = useState(false);
@@ -185,7 +197,7 @@ export function PreviewDrawer({
     const onMove = () => {
       setChromeHidden(false);
       clearIdle();
-      if (document.fullscreenElement) idle = setTimeout(() => setChromeHidden(true), 2500);
+      if (document.fullscreenElement) idle = setTimeout(() => setChromeHidden(true), 1000);
     };
     const onOut = (e: MouseEvent) => { if (!e.relatedTarget) setChromeHidden(true); }; // left the window
     const onOver = () => setChromeHidden(false);
@@ -300,7 +312,7 @@ export function PreviewDrawer({
   // filmstrip stays consistent — and present — even for single/thumbless media.
   const partsList: GalleryPart[] = gallery && gallery.length > 0
     ? gallery
-    : [{ partId: item.firstPartId ?? 0, fileName: item.fileName, thumb: item.thumb }];
+    : [{ partId: item.firstPartId ?? 0, fileName: item.fileName, thumb: item.thumb, size: item.size }];
   const activePart = partsList[Math.min(activeIdx, partsList.length - 1)] as GalleryPart | undefined;
 
   // Items without images (archives/etc.) still display full-screen with a large
@@ -324,6 +336,11 @@ export function PreviewDrawer({
   // The CURRENTLY-OPEN item expands into its individual parts so an album's photos each show as a
   // clickable thumb; every other item shows a single cover thumb. Clicking a part scrubs within the
   // album; clicking another item jumps to it. Falls back to just the current item with no nav list.
+  // Hover tooltip for a strip thumb: the real file name (incl. extension) + its size.
+  const tipFor = (name: string | null, fallback: string, bytes: number) => {
+    const n = (name && name.trim()) || fallback;
+    return bytes > 0 ? `${n} — ${fmtSize(bytes)}` : n;
+  };
   const stripFiles: DriveFile[] = navFiles && navFiles.length > 0 ? navFiles : [item];
   const stripThumbs = stripFiles.flatMap((f) => {
     // Prefer the freshly-loaded current gallery, else the pre-loaded map, to expand an album.
@@ -332,9 +349,10 @@ export function PreviewDrawer({
       return parts.map((part, i) => ({
         key: `${f.id}:${i}`,
         thumb: part.thumb,
-        title: f.version ? f.family : f.name,
+        title: tipFor(part.fileName, f.version ? f.family : f.name, part.size),
         active: f.id === item.id && i === activeIdx,
         icon: isPartStreamableVideo(part, f.kind) ? "video" : "image",
+        isVideo: isPartStreamableVideo(part, f.kind),
         onClick:
           f.id === item.id
             ? () => setActiveIdx(i)
@@ -344,13 +362,31 @@ export function PreviewDrawer({
     return [{
       key: `${f.id}`,
       thumb: f.thumb,
-      title: f.version ? f.family : f.name,
+      title: tipFor(f.fileName, f.version ? f.family : f.name, f.size),
       active: f.id === item.id,
       icon: fileTypeFor(f).icon,
+      isVideo: fileTypeFor(f).preview === "video",
       onClick: () => { if (f.id !== item.id) onJumpToFile?.(f); },
     }];
   });
   const activeThumbIndex = Math.max(0, stripThumbs.findIndex((t) => t.active));
+
+  // Show the left/right scroll buttons only when the filmstrip actually overflows. Re-measured
+  // when the thumb count / collapse state changes and on window resize.
+  const stripCount = stripThumbs.length;
+  useEffect(() => {
+    if (collapsed) {
+      setStripOverflow(false);
+      return;
+    }
+    const measure = () => {
+      const el = stripRef.current;
+      setStripOverflow(!!el && el.scrollWidth > el.clientWidth + 1);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [stripCount, collapsed]);
 
   // Move to the next/previous part; if already at the edge, jump to the next file.
   const go = useCallback((delta: number) => {
@@ -572,7 +608,17 @@ export function PreviewDrawer({
                 (even single media) unless collapsed, where it's removed so the media fills fully. */}
             {!collapsed && (
               <div className="viewer-bottom">
-                <div className="viewer-strip">
+                {stripOverflow && (
+                  <button
+                    className="viewer-strip-scroll left"
+                    onClick={() => scrollStrip(-1)}
+                    title="Scroll left"
+                    aria-label="Scroll filmstrip left"
+                  >
+                    <Icon name="back" size={16} />
+                  </button>
+                )}
+                <div className="viewer-strip" ref={stripRef}>
                   {stripThumbs.map((t) => (
                     <button
                       key={t.key}
@@ -588,9 +634,24 @@ export function PreviewDrawer({
                           <Icon name={t.icon} size={18} />
                         </div>
                       )}
+                      {t.isVideo && (
+                        <span className="viewer-thumb-play" aria-hidden>
+                          <Icon name="play" size={22} />
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
+                {stripOverflow && (
+                  <button
+                    className="viewer-strip-scroll right"
+                    onClick={() => scrollStrip(1)}
+                    title="Scroll right"
+                    aria-label="Scroll filmstrip right"
+                  >
+                    <Icon name="chevright" size={16} />
+                  </button>
+                )}
               </div>
             )}
           </div>

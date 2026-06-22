@@ -81,10 +81,39 @@ export function UploadManager({
     items.filter((i) => i.stage === "uploading" || i.stage === "finalizing").length;
   const hasActive = activeCount > 0;
 
+  // Live job updates by PUSH, not polling: the watcher's progress/status writes to `upload_jobs`
+  // raise a Postgres NOTIFY on the `upload_changed` channel, which `/api/events` forwards as an
+  // `upload` SSE event. We `router.refresh()` on each (debounced — a running upload UPDATEs
+  // progress frequently), which re-fetches the job list while keeping client state. EventSource
+  // auto-reconnects; a refresh on tab focus is the fallback if the stream was ever dropped.
   useEffect(() => {
-    const t = setInterval(() => router.refresh(), hasActive ? 3000 : 6000);
-    return () => clearInterval(t);
-  }, [hasActive, router]);
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const refreshSoon = () => {
+      if (debounce) return;
+      debounce = setTimeout(() => {
+        debounce = null;
+        if (document.visibilityState === "visible") router.refresh();
+      }, 500);
+    };
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource("/api/events");
+      es.addEventListener("upload", refreshSoon);
+    } catch {
+      /* SSE unsupported — focus refresh below still covers it */
+    }
+    const onFocus = () => {
+      if (document.visibilityState === "visible") router.refresh();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      if (debounce) clearTimeout(debounce);
+      es?.close();
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [router]);
 
   const startAll = () => {
     runQueue();

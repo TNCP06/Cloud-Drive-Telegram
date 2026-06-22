@@ -118,10 +118,6 @@ export function DriveApp({
   const [view, setView] = useState<View>(initialView);
   const [activeTag, setActiveTag] = useState<number | null>(null);
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState("modified");
-  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
-  const [groupVersions, setGroupVersions] = useState(true);
-  const [groupBy, setGroupBy] = useState<GroupKey>("none");
   const [navOpen, setNavOpen] = useState(false);
   const [sortMenu, setSortMenu] = useState<HTMLElement | null>(null);
 
@@ -140,6 +136,17 @@ export function DriveApp({
       return next;
     });
   const layout = prefs.layout;
+  // Sort / grouping prefs are persisted alongside the layout (loaded post-mount above).
+  const sort = prefs.sort;
+  const sortOrder = prefs.sortOrder;
+  const groupBy = prefs.groupBy;
+  const groupVersions = prefs.groupVersions;
+  const setSort = (key: string) => updatePrefs({ sort: key });
+  const setSortOrder = (next: "asc" | "desc" | ((o: "asc" | "desc") => "asc" | "desc")) =>
+    updatePrefs({ sortOrder: typeof next === "function" ? next(prefs.sortOrder) : next });
+  const setGroupBy = (key: GroupKey) => updatePrefs({ groupBy: key });
+  const setGroupVersions = (next: boolean | ((v: boolean) => boolean)) =>
+    updatePrefs({ groupVersions: typeof next === "function" ? next(prefs.groupVersions) : next });
   const [menu, setMenu] = useState<{ anchor: HTMLElement; item: DriveFile } | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [manageTags, setManageTags] = useState(false);

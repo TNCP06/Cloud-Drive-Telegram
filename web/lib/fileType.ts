@@ -139,10 +139,13 @@ const ARCHIVE_FALLBACK: FileType = {
   preview: "none",
 };
 
+// Media WITHOUT a usable file name = a Telegram photo (always served as JPEG, no extension),
+// so the fallback is an IMAGE — not a video. Named videos (.mp4/.mkv/…) match the video spec
+// above and keep the video icon; only this extension-less case falls through here.
 const MEDIA_FALLBACK: FileType = {
-  id: "media",
-  label: "Media",
-  icon: "video",
+  id: "image",
+  label: "Image",
+  icon: "image",
   tint: "#A65656",
   badge: null,
   preview: "image",

@@ -19,6 +19,7 @@ from bot import (
     upsert_part,
     recompute_totals,
     sync_tags,
+    sync_album_tags,
     detect_kind,
     parse_caption,
     derive_media_meta,
@@ -95,23 +96,30 @@ async def index_message(db, msg):
     mgid = msg.media_group_id
     
     if kind == "media" and mgid:
-        slug = f"album-{mgid}"
-        part_number = msg.message_id
+        # Album members are individual items (NOT grouped); slug keyed off media_group_id so
+        # siblings stay discoverable for tag-syncing, unique per member via msg_id. Single-part.
+        slug = f"m{mgid}-{msg.message_id}"
+        part_number = 1
+        total = 1
     elif kind == "media":
         slug = f"{slugify(title)}-{msg.message_id}"
         part_number = parsed["part"]
+        total = parsed["total"]
     else:
         slug = slugify(title)
         part_number = parsed["part"]
-        
+        total = parsed["total"]
+
     file_name, file_size = get_file_meta(msg)
     file_id = "" # Streamer resolves file_id on-demand via forwarding if missing
-    
-    item_id = await upsert_item(db, slug, title, kind, parsed["total"], set_title=has_caption)
+
+    item_id = await upsert_item(db, slug, title, kind, total, set_title=has_caption)
     part_id = await upsert_part(db, item_id, part_number, msg.message_id, file_name, file_size, file_id)
-    
+
     await recompute_totals(db, item_id)
     await sync_tags(db, item_id, parsed["tags"])
+    if kind == "media" and mgid:
+        await sync_album_tags(db, mgid, parsed["tags"])
     print(f"✓ Indexed Message {msg.message_id}: {title} (Part {part_number}/{parsed['total']}) -> Slug: {slug}")
     return True
 

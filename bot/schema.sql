@@ -174,3 +174,17 @@ CREATE TRIGGER trg_notify_item_tags AFTER INSERT OR UPDATE OR DELETE ON item_tag
 DROP TRIGGER IF EXISTS trg_notify_tags ON tags;
 CREATE TRIGGER trg_notify_tags AFTER INSERT OR UPDATE OR DELETE ON tags
     FOR EACH STATEMENT EXECUTE FUNCTION notify_drive_change();
+
+-- Upload-queue progress notification: a separate 'upload_changed' channel so the /upload page
+-- can refresh live on job progress/status changes WITHOUT also waking the main drive grid (which
+-- only LISTENs for the data it shows). Statement-level — one signal per UPDATE, not per row.
+CREATE OR REPLACE FUNCTION notify_upload_change() RETURNS trigger
+    LANGUAGE plpgsql AS
+$$ BEGIN
+    PERFORM pg_notify('upload_changed', TG_TABLE_NAME);
+    RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_notify_upload_jobs ON upload_jobs;
+CREATE TRIGGER trg_notify_upload_jobs AFTER INSERT OR UPDATE OR DELETE ON upload_jobs
+    FOR EACH STATEMENT EXECUTE FUNCTION notify_upload_change();

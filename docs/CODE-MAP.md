@@ -21,8 +21,10 @@ Pure helpers (`tg_helpers.py`, no I/O): `slugify`, `parse_caption` (the contract
 (`media` vs `archive`), `get_file_meta`, `derive_media_meta` (media caption fallback),
 `pick_thumb_file_id`, `encode_thumbnail` (raw image bytes → compact **WebP** base64 via
 Pillow, JPEG passthrough fallback). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
-Postgres ops (`db_ops.py`, idempotent): `upsert_item` (`set_title` guard for albums; preserves user-modified metadata on conflict), `upsert_part` (keyed on
-`channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**: reuses an existing tag that differs only in capitalization), `upsert_thumbnail`, `is_user_authorized`.
+Postgres ops (`db_ops.py`, idempotent): `upsert_item` (`set_title` guard; preserves user-modified metadata on conflict), `upsert_part` (keyed on
+`channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**: reuses an existing tag that differs only in capitalization),
+`sync_album_tags` (keeps tags identical across the individual items split from one media album — slug prefix `m<media_group_id>-`),
+`split_media_albums` (one-shot migration: splits any pre-existing multi-part **media** item into N single-part items, preserving tags/folder/privacy/favorite + per-part thumbnails; run from `post_init`, marker-guarded), `upsert_thumbnail`, `is_user_authorized`.
 `index_bot_copy` (`indexing.py`): indexes a channel post the **bot created itself** (`copy_message`/`copy_messages`)
 inline — Telegram sends no `channel_post` update for a bot's own messages, so `on_channel_post`
 never fires for Bot-Drop uploads; idempotent, stores `file_id=NULL` (streamer resolves on demand),
@@ -188,10 +190,12 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   the six Postgres queries; mutations bust it via `revalidateTag` (see `actions/_shared.ts` `refresh()`).
   The client stays live by **push, not polling**: Postgres triggers (`notify_drive_change`, statement-level
   on `items`/`folders`/`item_tags`/`tags` — see `schema.sql`) raise `NOTIFY drive_changed`; the
-  **`/api/events`** SSE route forwards it and `DriveApp` `router.refresh()`es (debounced; a focus refresh
-  is the fallback). One shared `LISTEN` connection fans out to all tabs via **`lib/driveEvents.ts`**, so
-  N browsers cost 1 Postgres connection. So files indexed outside the tab (Bot Drop, history index) appear
-  live within the cache window.
+  **`/api/events`** SSE route forwards it as an `drive` event and `DriveApp` `router.refresh()`es (debounced;
+  a focus refresh is the fallback). A second trigger (`notify_upload_change` on `upload_jobs`) raises
+  `NOTIFY upload_changed`, forwarded as an `upload` event so the **/upload page** (`UploadManager`) refreshes
+  on job progress without polling. One shared `LISTEN` connection (both channels) fans out to all tabs via
+  **`lib/driveEvents.ts`** (`subscribeChanges(fn)` → `(channel, payload)`), so N browsers cost 1 Postgres
+  connection. So files indexed outside the tab (Bot Drop, history index) appear live within the cache window.
 - `version.ts` — `parseTitle()`: split an archive title into `family` + `version` (e.g.
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Archives only.
 - `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and coarse kind metadata
@@ -201,7 +205,10 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `file_name` extension (falls back to title, then coarse kind) — no schema change. Returns
   `{ id, label, icon, tint, badge, preview }` where `preview` (`pdf|text|word|sheet|image|video|none`)
   tells the viewer how to render the file inline; multi-part items are forced to `preview:"none"`.
-  Drives the per-type icon/colour/badge in the grid/list and the inline document preview.
+  Drives the per-type icon/colour/badge in the grid/list and the inline document preview. Media
+  **without** a usable file name (Telegram photos = extension-less JPEGs) falls back to the
+  **image** icon (not video). The list & details rows show the item's **cover thumbnail** when one
+  exists (only thumbless items fall back to the type icon).
   `displayName(item, showExtensions)` — the name shown in the grid (family for archives, title
   otherwise); appends the real extension from the first part's `fileName` when the "File name
   extensions" view toggle is on.
@@ -407,6 +414,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   surface (`.fup*` classes in `globals.css`).
 - `UploadManager.tsx` — **unified, queue-first** upload UI on `/upload`; now **consumes `UploadProvider`**
   via `useUpload()` for the queue + runner (the local queue state/runner moved out of this component).
+  Live job progress arrives by **SSE, not polling**: it opens `/api/events` and `router.refresh()`es
+  (debounced) on each `upload` event (Postgres `upload_changed` NOTIFY on `upload_jobs`), with a tab-focus
+  refresh as the fallback — the old 3 s/6 s `setInterval` poll is gone.
   Selecting files (multiple, or a whole **folder** via `webkitdirectory`) adds them to ONE queue as
   editable **ready** items (NOT uploading yet); you set Title/Tags per item, then **Start** runs the
   full pipeline in that same list: browser→VPS (client progress) → the watcher job (VPS→Telegram)

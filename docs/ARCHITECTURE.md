@@ -38,10 +38,12 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 > `bot/run-all.cmd` starts bot + watcher + streamer (minimized) on the laptop.
 >
 > **Live updates stay in-band too.** The dashboard is kept fresh by Postgres `LISTEN/NOTIFY`,
-> not by any process calling another: statement-level triggers (`notify_drive_change` in
-> `schema.sql`) raise `NOTIFY drive_changed` on writes; the web's `/api/events` SSE endpoint
-> holds one shared `LISTEN` connection and pushes a signal to every open browser, which then
-> refreshes. So a file the bot indexes appears in the dashboard live, still purely through PG.
+> not by any process calling another: statement-level triggers raise `NOTIFY drive_changed`
+> (`notify_drive_change`, on items/folders/tags) and `NOTIFY upload_changed` (`notify_upload_change`,
+> on `upload_jobs`) in `schema.sql`; the web's `/api/events` SSE endpoint holds one shared `LISTEN`
+> connection (both channels) and pushes a signal to every open browser — `drive` → the grid
+> refreshes, `upload` → the /upload page refreshes. So a file the bot indexes (or an upload's
+> progress) appears in the dashboard live, still purely through PG — no polling.
 
 ---
 
@@ -110,13 +112,16 @@ Regex ([`bot/bot.py`](../bot/bot.py) `CAPTION_RE`):
 | Kind | Example | Storage shape | Thumbnail | Slug strategy |
 |---|---|---|---|---|
 | `archive` | Ren'Py archive | `.7z` split into ~1.5 GB parts → many messages, one item | none | `slugify(title)` — stable, groups parts |
-| `media` | single video/image | one whole file (Telegram makes a thumbnail) | yes (harvested per-part) | single: `slug-<msgid>`; album: `album-<media_group_id>` |
+| `media` | single video/image | one whole file (Telegram makes a thumbnail) | yes (harvested per-part) | per message: `slug-<msgid>` (single) / `m<media_group_id>-<msgid>` (album member) |
 
 `detect_kind()` decides: photo/video/animation or `image/*`/`video/*` document → `media`;
 any other document (`.7z`, `.zip`, split parts) → `archive`.
 
-**Albums** (Telegram media groups) collapse into ONE multi-part `media` item keyed by
-`media_group_id`; each photo/video becomes a part with its own thumbnail (the web gallery).
+**Albums** (Telegram media groups) are **NOT grouped** — each photo/video becomes its **own
+single-part `media` item** (slug `m<media_group_id>-<msgid>`, so siblings stay discoverable).
+Tags are kept identical across the split members (`sync_album_tags`); the web filmstrip still
+shows them side-by-side via the parent view's nav list. So multi-part `media` items no longer
+exist — only `archive` items are multi-part (real split files).
 
 ---
 

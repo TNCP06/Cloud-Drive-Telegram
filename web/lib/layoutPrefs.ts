@@ -3,6 +3,8 @@
 // Pure module: callers read/save; React state (in DriveApp) is the single source of truth
 // at runtime, and is hydrated from here after mount to avoid SSR mismatch.
 
+import type { GroupKey } from "./driveView";
+
 export type LayoutMode =
   | "xl" // Extra large icons
   | "large" // Large icons
@@ -12,6 +14,8 @@ export type LayoutMode =
   | "details" // Details (sortable table)
   | "tiles" // Tiles (horizontal icon + name + type/size)
   | "content"; // Content (wide rows with metadata)
+
+export type SortOrder = "asc" | "desc";
 
 export interface LayoutPrefs {
   layout: LayoutMode;
@@ -27,6 +31,14 @@ export interface LayoutPrefs {
   showDetailItems: boolean;
   /** Show the persistent right-hand details pane. */
   detailsPane: boolean;
+  /** Active sort comparator key (one of `SORTS` in driveView). */
+  sort: string;
+  /** Sort direction for the active comparator. */
+  sortOrder: SortOrder;
+  /** Windows-Explorer-style section grouping. */
+  groupBy: GroupKey;
+  /** Collapse same-family archive versions into one representative card. */
+  groupVersions: boolean;
 }
 
 export const DEFAULT_PREFS: LayoutPrefs = {
@@ -37,7 +49,14 @@ export const DEFAULT_PREFS: LayoutPrefs = {
   showExtensions: false,
   showDetailItems: true,
   detailsPane: false,
+  sort: "modified",
+  sortOrder: "desc",
+  groupBy: "none",
+  groupVersions: true,
 };
+
+const VALID_GROUPS: GroupKey[] = ["none", "name", "type", "tag", "modified", "size"];
+const VALID_SORTS = ["modified", "added", "name", "size", "kind"];
 
 const KEY = "tcd_layout";
 
@@ -54,6 +73,9 @@ export function loadPrefs(): LayoutPrefs {
     const parsed = JSON.parse(raw) as Partial<LayoutPrefs>;
     const merged = { ...DEFAULT_PREFS, ...parsed };
     if (!VALID_LAYOUTS.includes(merged.layout)) merged.layout = DEFAULT_PREFS.layout;
+    if (!VALID_GROUPS.includes(merged.groupBy)) merged.groupBy = DEFAULT_PREFS.groupBy;
+    if (!VALID_SORTS.includes(merged.sort)) merged.sort = DEFAULT_PREFS.sort;
+    if (merged.sortOrder !== "asc" && merged.sortOrder !== "desc") merged.sortOrder = DEFAULT_PREFS.sortOrder;
     return merged;
   } catch {
     return DEFAULT_PREFS;

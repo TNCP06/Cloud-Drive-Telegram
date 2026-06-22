@@ -87,7 +87,9 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
    fabricates a title (caption line → filename → date). Media is never rejected.
 3. Bot harvests Telegram's built-in thumbnail (`harvest_thumbnail()` → `get_file` → `encode_thumbnail`
    re-encodes to **WebP** → base64 → `thumbnails`). If a local Telegram Bot API server is configured, the bot reads the local file directly from the shared volume (`telegram-bot-api-data`) instead of downloading it over HTTP.
-4. Albums (multiple files sent together) merge into one multi-part item via `media_group_id`.
+4. Albums (multiple files sent together) are **split** — each member becomes its **own**
+   single-part item (slug `m<media_group_id>-<msgid>`), with tags kept identical across the
+   members via `sync_album_tags`. They are no longer merged into one multi-part item.
 
 ---
 
@@ -104,8 +106,10 @@ Triggered by any new `channel_post` in `STORAGE_CHANNEL_ID` ([`bot/bot.py`](../b
 3. Compute `slug` + `part_number` (see kind table in ARCHITECTURE §5).
 4. `upsert_item` (resolves folders recursively and extracts the final title segment if the title has a `/` path, e.g., "Movies/Sci-Fi/Inception" creates "Movies" -> "Sci-Fi" folders and saves the item with title "Inception" under the "Sci-Fi" folder ID) → `upsert_part` (keyed on `channel_msg_id`, which deletes the old item if it becomes an orphan after part reassignment) → `recompute_totals` →
    `sync_tags` → (media) `harvest_thumbnail`. All idempotent.
-5. `set_title=has_caption` guards album ordering: a captionless album member won't overwrite
-   the title set by a captioned member (album update order isn't guaranteed).
+5. `set_title=has_caption` guards title overwrites: a captionless media member won't overwrite
+   a title set by a captioned one. Album members (`media_group_id`) are indexed as individual
+   single-part items and then `sync_album_tags` re-applies the union of the album's tags to every
+   sibling (slug prefix `m<media_group_id>-`), order-independently.
 
 ---
 
@@ -127,11 +131,18 @@ small API call. Alternatively, the user can complete the upload entirely within 
 3. **Finishing via Telegram**:
    - The user replies to the bot's message with a custom Title, or clicks/types `/skip` to use the auto-caption Title (derived from filename or media date).
    - The bot then asks for Tags. The user replies with comma-separated tags, or clicks/types `/skip` to skip/use auto-tags.
-   - The bot compiles the caption `Title | 1/total | tags` and executes `copyMessage` (or `copyMessages` for albums) to copy the file(s) into the storage channel. For albums, the first message's caption in the channel is edited afterwards to set the caption contract.
+   - Once the metadata is in, the bot **tidies the chat**: it deletes the questionnaire trail
+     (its Title/Tags prompts, the user's typed replies, and any queue notices — tracked in each
+     flow's `flow_msg_ids`), leaving the original file(s) and the final "Success!" summary. Cancel
+     paths clean up the same way.
+   - The bot compiles the caption `Title | 1/1 | tags` and copies the file(s) into the storage
+     channel. A **multi-file album is split**: each member is copied **individually** (its own
+     contract caption) and indexed as its **own** single-part `media` item sharing the one Title/
+     Tags — they are no longer grouped into a single multi-part item.
 4. **Indexing — inline, NOT via Flow C.** Telegram does **not** send a `channel_post` update for
    a message the **bot itself** posted, so `on_channel_post` never fires for Bot-Drop copies. The
    bot therefore indexes each copied post **inline** right after the copy via `index_bot_copy`
-   (single file or multi-part album), and the web finisher does the same via `processBotDrop`'s
+   (one call per file — albums are split into individual items), and the web finisher does the same via `processBotDrop`'s
    `indexBotDrop`. Both harvest the thumbnail and are idempotent (keyed on `channel_msg_id`), so
    a later `index_history.py` pass simply skips already-indexed messages. This is the fix for
    "bot-sent files never appearing on the dashboard."

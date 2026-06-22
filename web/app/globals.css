@@ -783,9 +783,26 @@ button { font-family: inherit; }
   background: #0b0b0c;
 }
 .viewer-strip {
-  display: flex; gap: 0; justify-content: center; flex-wrap: nowrap;
-  overflow-x: auto; padding: 0;
+  display: flex; gap: 0; justify-content: safe center; flex-wrap: nowrap;
+  overflow-x: auto; overflow-y: hidden; padding: 0; scroll-behavior: smooth;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent;
 }
+.viewer-strip::-webkit-scrollbar { height: 6px; }
+.viewer-strip::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); border-radius: 99px; }
+.viewer-strip::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.36); }
+.viewer-strip::-webkit-scrollbar-track { background: transparent; }
+/* Subtle, thin left/right filmstrip scroll buttons (only shown when it overflows). */
+.viewer-strip-scroll {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+  width: 26px; height: 44px; border: 0; cursor: pointer;
+  display: grid; place-items: center; color: rgba(255,255,255,.78);
+  background: color-mix(in oklab, #000 40%, transparent);
+  transition: background .14s ease, color .14s ease;
+}
+.viewer-strip-scroll:hover { background: color-mix(in oklab, #000 60%, transparent); color: #fff; }
+.viewer-strip-scroll.left { left: 0; border-radius: 0 8px 8px 0; }
+.viewer-strip-scroll.right { right: 0; border-radius: 8px 0 0 8px; }
 .viewer-thumb {
   position: relative; flex: none; width: 85px; height: 85px; padding: 0; border: 2px solid transparent;
   border-radius: 0; overflow: hidden; cursor: pointer; opacity: .55;
@@ -794,6 +811,11 @@ button { font-family: inherit; }
 .viewer-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .viewer-thumb:hover { opacity: .85; }
 .viewer-thumb.on { opacity: 1; border-color: #fff; }
+/* Play affordance over video thumbs in the filmstrip. */
+.viewer-thumb-play {
+  position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
+  color: rgba(255,255,255,.95); filter: drop-shadow(0 1px 3px rgba(0,0,0,.65));
+}
 /* panel detail tampil di atas lightbox */
 .viewer ~ .drawer-scrim { z-index: 170; }
 .viewer ~ .drawer { z-index: 180; }

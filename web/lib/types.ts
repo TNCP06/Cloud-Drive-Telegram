@@ -6,6 +6,8 @@ export interface GalleryPart {
   partId: number;
   fileName: string | null;
   thumb: string | null;
+  /** Part's own file size in bytes (for the filmstrip hover tooltip). */
+  size: number;
 }
 
 export interface Tag {

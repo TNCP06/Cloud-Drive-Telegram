@@ -10,7 +10,7 @@ import { refresh } from "./_shared";
 // when the drawer opens → the main grid stays light (only one cover per item).
 export async function getGallery(itemId: number): Promise<GalleryPart[]> {
   const rs = await db.execute({
-    sql: `SELECT p.id AS part_id, p.file_name, t.mime, t.data
+    sql: `SELECT p.id AS part_id, p.file_name, p.file_size, t.mime, t.data
           FROM parts p
           LEFT JOIN thumbnails t ON p.id = t.part_id
           WHERE p.item_id = ?
@@ -22,6 +22,7 @@ export async function getGallery(itemId: number): Promise<GalleryPart[]> {
     partId: Number(r.part_id),
     fileName: r.file_name ? String(r.file_name) : null,
     thumb: r.data ? `data:${String(r.mime)};base64,${String(r.data)}` : null,
+    size: Number(r.file_size ?? 0),
   }));
 }
 

@@ -438,9 +438,13 @@ export function FileRow({
         )}
         <div
           className="ico-wrap"
-          style={{ background: `color-mix(in oklab, ${ft.tint} 12%, var(--card-2))` }}
+          style={item.thumb ? { position: "relative", overflow: "hidden" } : { background: `color-mix(in oklab, ${ft.tint} 12%, var(--card-2))` }}
         >
-          <Icon name={ft.icon} size={19} stroke={1.5} style={{ color: ft.tint }} />
+          {item.thumb ? (
+            <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+          ) : (
+            <Icon name={ft.icon} size={19} stroke={1.5} style={{ color: ft.tint }} />
+          )}
         </div>
         <div className="txt">
           <div className="t" title={item.name}>
@@ -672,7 +676,13 @@ export function FileListItem({
   return (
     <div className={`litem ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
       <SelectCheck item={item} selected={selected} onSelectToggle={onSelectToggle} cls="litem-check" />
-      <Icon name={ft.icon} size={18} stroke={1.5} className="litem-ico" style={{ color: ft.tint }} />
+      {item.thumb ? (
+        <span className="litem-ico" style={{ position: "relative", width: 20, height: 20, borderRadius: 4, overflow: "hidden", display: "inline-block", flex: "none" }}>
+          <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+        </span>
+      ) : (
+        <Icon name={ft.icon} size={18} stroke={1.5} className="litem-ico" style={{ color: ft.tint }} />
+      )}
       <span className="litem-name" title={item.name}>
         {displayName(item, showExtensions)}
       </span>

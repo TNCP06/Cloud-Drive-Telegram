@@ -63,6 +63,8 @@ from db_ops import (  # noqa: F401  (re-exported)
     upsert_part,
     recompute_totals,
     sync_tags,
+    sync_album_tags,
+    split_media_albums,
     upsert_thumbnail,
 )
 from indexing import (  # noqa: F401  (re-exported)
@@ -226,6 +228,40 @@ async def post_init(app: Application):
         log.info("Migration: ensured drive_changed NOTIFY triggers")
     except Exception as e:
         log.warning("Migration failed for notify triggers: %s", e)
+
+    # Auto-migration: upload-queue progress NOTIFY on a separate 'upload_changed' channel so the
+    # web /upload page refreshes live (SSE) instead of polling. Idempotent; self-applies on restart.
+    try:
+        await db.execute(
+            "CREATE OR REPLACE FUNCTION notify_upload_change() RETURNS trigger "
+            "LANGUAGE plpgsql AS $func$ BEGIN "
+            "PERFORM pg_notify('upload_changed', TG_TABLE_NAME); RETURN NULL; END $func$"
+        )
+        await db.execute("DROP TRIGGER IF EXISTS trg_notify_upload_jobs ON upload_jobs")
+        await db.execute(
+            "CREATE TRIGGER trg_notify_upload_jobs AFTER INSERT OR UPDATE OR DELETE ON upload_jobs "
+            "FOR EACH STATEMENT EXECUTE FUNCTION notify_upload_change()"
+        )
+        log.info("Migration: ensured upload_changed NOTIFY trigger")
+    except Exception as e:
+        log.warning("Migration failed for upload notify trigger: %s", e)
+
+    # Auto-migration (one-shot, marker-guarded): split existing multi-part MEDIA albums into
+    # individual single-part items so the web UI lists each photo/video on its own (tags are
+    # shared across the split). Archives are untouched. Runs once; the marker stops re-runs.
+    try:
+        await db.execute("CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)")
+        marker = await db.execute("SELECT 1 FROM bot_settings WHERE key = 'media_albums_split_v1'")
+        if not marker.rows:
+            n = await split_media_albums(db)
+            await db.execute(
+                "INSERT INTO bot_settings (key, value) VALUES ('media_albums_split_v1', ?) "
+                "ON CONFLICT (key) DO NOTHING",
+                [str(n)],
+            )
+            log.info("Migration: split %s existing media album(s) into individual items", n)
+    except Exception as e:
+        log.warning("Migration failed for media album split: %s", e)
 
     # Auto-migration: create authorized_users table
     try:
@@ -561,12 +597,33 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if "upload_file" in context.user_data or "upload_state" in context.user_data or "upload_queue" in context.user_data:
+        # Clean up the questionnaire messages of the active flow + every queued item.
+        flow_ids = list((context.user_data.get("upload_file") or {}).get("flow_msg_ids", []))
+        for it in context.user_data.get("upload_queue", []):
+            flow_ids += it.get("flow_msg_ids", [])
         context.user_data.pop("upload_file", None)
         context.user_data.pop("upload_state", None)
         context.user_data.pop("upload_queue", None)
+        await _delete_messages(context, message.chat_id, flow_ids)
         await message.reply_text("❌ Upload flow and queue cancelled.")
     else:
         await message.reply_text("There is no active upload flow to cancel.")
+
+
+# ---------------------------------------------------------------------------
+# Helper to keep the private chat tidy: delete the questionnaire's back-and-forth
+# (the bot's Title/Tags prompts + the user's typed Title/Tags replies + queue notices)
+# once the user has supplied the metadata, leaving only the final "Success!" summary.
+# Best-effort: a message that's already gone / too old to delete is silently skipped.
+# ---------------------------------------------------------------------------
+async def _delete_messages(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_ids, keep_id=None):
+    for mid in msg_ids or []:
+        if keep_id is not None and mid == keep_id:
+            continue
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=mid)
+        except Exception:  # noqa: BLE001 — chat cleanup must never break the flow
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -610,7 +667,7 @@ async def process_next_in_queue(update: Update, context: ContextTypes.DEFAULT_TY
         files_info = f"• Total Files: <code>{num_files}</code>\n" if num_files > 1 else f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
 
         # Send to chat
-        await context.bot.send_message(
+        prompt = await context.bot.send_message(
             chat_id=chat_id,
             text=f"📥 <b>Next File in Queue!</b>\n"
                  f"{files_info}"
@@ -622,6 +679,7 @@ async def process_next_in_queue(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="HTML",
             disable_web_page_preview=True
         )
+        next_file.setdefault("flow_msg_ids", []).append(prompt.message_id)
     except Exception as e:
         log.exception("Failed to start next upload flow questionnaire from queue")
         # If this next item failed to display, clean up and try the next one recursively
@@ -749,13 +807,14 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["upload_queue"].append(queue_item)
         pos = len(context.user_data["upload_queue"])
 
-        await message.reply_text(
+        qreply = await message.reply_text(
             f"📥 <b>Added to Queue (Position #{pos})</b>\n"
             f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
             f"• File Size: <code>{file_size / 1024 / 1024:.2f} MB</code>\n\n"
             f"This file will be processed once the active upload flow completes.",
             parse_mode="HTML"
         )
+        queue_item.setdefault("flow_msg_ids", []).append(qreply.message_id)
         return
 
     msg_id = message.message_id
@@ -796,7 +855,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_forward = bool(getattr(message, "forward_origin", None) or getattr(message, "forward_date", None))
         source_label = "Forwarded/Copied Album" if message.media_group_id else ("Forwarded/Copied File" if is_forward else "File")
 
-        await message.reply_text(
+        prompt = await message.reply_text(
             f"📥 <b>{source_label} Received!</b>\n"
             f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
             f"• File Size: <code>{file_size / 1024 / 1024:.2f} MB</code>\n\n"
@@ -807,6 +866,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             disable_web_page_preview=True
         )
+        context.user_data["upload_file"].setdefault("flow_msg_ids", []).append(prompt.message_id)
     except Exception as e:
         log.exception("Failed to start upload flow questionnaire")
         await message.reply_text(
@@ -834,13 +894,16 @@ async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         message = update.message or update.callback_query.message
-        await context.bot.send_message(
+        prompt = await context.bot.send_message(
             chat_id=message.chat_id,
             text="🏷️ <b>Title set!</b>\n\nWhat are the <b>Tags</b> for this file? (Separate with commas, e.g. <code>holiday, video</code>)\n"
                  "Or click the button below to use the Auto Tags.",
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
+        uf = context.user_data.get("upload_file")
+        if uf is not None:
+            uf.setdefault("flow_msg_ids", []).append(prompt.message_id)
     except Exception as e:
         log.exception("Failed to prompt for tags")
         message = update.message or update.callback_query.message
@@ -895,35 +958,33 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:  # noqa: BLE001
                 log.exception("Inline index failed for single bot upload")
         else:
-            # Copy all messages as a media group to preserve their grouping in the channel
-            copied_messages = await context.bot.copy_messages(
-                chat_id=STORAGE_CHANNEL_ID,
-                from_chat_id=chat_id,
-                message_ids=message_ids
-            )
-            # Edit the caption of the first copied message to set the contract caption
-            first_copied_msg_id = copied_messages[0].message_id
-            caption = f"{title} | 1/{total_parts} | {tags_str}"
-            await context.bot.edit_message_caption(
-                chat_id=STORAGE_CHANNEL_ID,
-                message_id=first_copied_msg_id,
-                caption=caption
-            )
-            # Index inline as ONE multi-part media album (no channel_post for bot posts).
-            # part_number = channel msg id (album ordering convention); slug is stable
-            # off the first part so all members group into a single item.
-            try:
-                album_slug = f"album-bot-{first_copied_msg_id}"
-                for idx, cm in enumerate(copied_messages):
-                    cid = cm.message_id
-                    src = src_messages[idx] if idx < len(src_messages) else None
+            # Albums are NOT grouped into one item anymore — copy & index each file as its OWN
+            # single-part (1/1) media item, all sharing the one Title/Tags the user supplied for
+            # the batch. Each is copied individually (with its own contract caption) so it stays
+            # ungrouped in the channel too, exactly matching how it's indexed.
+            for idx, mid in enumerate(message_ids):
+                src = src_messages[idx] if idx < len(src_messages) else None
+                per_caption = f"{title} | 1/1 | {tags_str}"
+                try:
+                    copied_msg = await context.bot.copy_message(
+                        chat_id=STORAGE_CHANNEL_ID,
+                        from_chat_id=chat_id,
+                        message_id=mid,
+                        caption=per_caption,
+                    )
+                except Exception:  # noqa: BLE001 — one bad member shouldn't sink the rest
+                    log.exception("Failed to copy album member msg %s to channel", mid)
+                    continue
+                try:
+                    cid = copied_msg.message_id
+                    slug = f"{slugify(title)}-{cid}"
                     await index_bot_copy(
                         context, db, cid, title=title, tags=tags,
-                        part_number=cid, total=total_parts, kind="media",
-                        slug=album_slug, set_title=(idx == 0), source_message=src,
+                        part_number=1, total=1, kind="media", slug=slug,
+                        set_title=True, source_message=src,
                     )
-            except Exception:  # noqa: BLE001
-                log.exception("Inline index failed for album bot upload")
+                except Exception:  # noqa: BLE001
+                    log.exception("Inline index failed for album member msg %s", copied_msg.message_id)
 
         await status_msg.edit_text(
             f"🎉 <b>Success!</b>\n\n"
@@ -941,6 +1002,9 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
     finally:
+        # Tidy the chat: drop the Title/Tags questionnaire messages (prompts + the user's typed
+        # replies), keeping the original file(s) and the final status summary above.
+        await _delete_messages(context, chat_id, upload_file.get("flow_msg_ids"))
         # Check queue
         await process_next_in_queue(update, context)
 
@@ -970,11 +1034,14 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "WAITING_TITLE":
         context.user_data["upload_file"]["title"] = text
+        # The user's typed Title reply is questionnaire noise — clean it up on finish.
+        context.user_data["upload_file"].setdefault("flow_msg_ids", []).append(message.message_id)
         await prompt_for_tags(update, context)
 
     elif state == "WAITING_TAGS":
         tags = [t.strip() for t in text.split(",") if t.strip()]
         context.user_data["upload_file"]["tags"] = tags
+        context.user_data["upload_file"].setdefault("flow_msg_ids", []).append(message.message_id)
         await finish_upload(update, context)
 
 
@@ -999,9 +1066,14 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "upload:cancel":
+        # Clean the questionnaire trail; keep THIS message (we edit it into the cancelled notice).
+        flow_ids = list((context.user_data.get("upload_file") or {}).get("flow_msg_ids", []))
+        for it in context.user_data.get("upload_queue", []):
+            flow_ids += it.get("flow_msg_ids", [])
         context.user_data.pop("upload_file", None)
         context.user_data.pop("upload_state", None)
         context.user_data.pop("upload_queue", None)
+        await _delete_messages(context, query.message.chat_id, flow_ids, keep_id=query.message.message_id)
         await query.message.edit_text("❌ Upload flow and queue cancelled.")
 
     elif data == "upload:skip_title":

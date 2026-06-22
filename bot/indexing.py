@@ -24,6 +24,7 @@ from db_ops import (
     upsert_part,
     recompute_totals,
     sync_tags,
+    sync_album_tags,
     upsert_thumbnail,
 )
 
@@ -70,11 +71,11 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mgid = message.media_group_id
 
     if kind == "media" and mgid:
-        # ALBUM (media group): all photos/videos in the group → ONE multi-part item.
-        # Slug derived from media_group_id for stability even if the captioned message arrives last.
-        # part_number = msg_id → unique per item, ordered per album, race-safe across updates.
-        slug = f"album-{mgid}"
-        part_number = msg_id
+        # Album members are NOT grouped anymore — each photo/video is its OWN item. The slug is
+        # keyed off the album's media_group_id so siblings stay discoverable (for tag-syncing),
+        # but each member is unique via its own msg_id. Each is single-part (1/1).
+        slug = f"m{mgid}-{msg_id}"
+        part_number = 1
     elif kind == "media":
         # Single media: each post = its own item (titles may repeat).
         slug = f"{slugify(title)}-{msg_id}"
@@ -84,15 +85,21 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         slug = slugify(title)
         part_number = parsed["part"]
 
+    # Split album members are single-part items; everything else keeps its caption's total.
+    total = 1 if (kind == "media" and mgid) else parsed["total"]
+
     file_name, file_size = get_file_meta(message)
     file_id = get_file_id(message)
 
     try:
-        item_id = await upsert_item(db, slug, title, kind, parsed["total"], set_title=has_caption)
+        item_id = await upsert_item(db, slug, title, kind, total, set_title=has_caption)
         part_id = await upsert_part(db, item_id, part_number, msg_id, file_name, file_size, file_id)
 
         await recompute_totals(db, item_id)
         await sync_tags(db, item_id, parsed["tags"])
+        # Keep tags consistent across all individual items split from the same album.
+        if kind == "media" and mgid:
+            await sync_album_tags(db, mgid, parsed["tags"])
 
         # Harvest thumbnail per-part (media only; each photo/video has its own thumbnail).
         if kind == "media":

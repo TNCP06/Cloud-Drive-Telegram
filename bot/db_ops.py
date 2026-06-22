@@ -5,6 +5,7 @@ import os
 import re
 
 from bot_config import OWNER_USER_ID
+from tg_helpers import slugify
 
 
 async def is_user_authorized(db, user_id: int) -> bool:
@@ -180,6 +181,92 @@ async def sync_tags(db, item_id, tags):
             "INSERT INTO item_tags (item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
             [item_id, tag_id],
         )
+
+
+async def sync_album_tags(db, mgid, parsed_tags):
+    """Keep tags identical across the individual items split from ONE media album.
+
+    Albums are no longer grouped into a single multi-part item — each member is its own
+    item — but the user expects them to share tags. Members of album <mgid> share the slug
+    prefix ``m{mgid}-`` (see indexing.py / index_history.py), so we union this member's
+    caption tags with whatever tags already landed on its siblings and re-apply that set to
+    every sibling. Order-independent (the captioned member may arrive first OR last) and
+    idempotent. Albums are tiny (≤10), so the N×N re-sync is cheap.
+    """
+    prefix = f"m{mgid}-"
+    rs = await db.execute("SELECT id FROM items WHERE slug LIKE ?", [prefix + "%"])
+    ids = [r[0] for r in rs.rows]
+    if not ids:
+        return
+    album_tags = [t for t in (parsed_tags or []) if t and t.strip()]
+    existing = await db.execute(
+        "SELECT DISTINCT t.name FROM item_tags it "
+        "JOIN tags t ON t.id = it.tag_id "
+        "JOIN items i ON i.id = it.item_id "
+        "WHERE i.slug LIKE ?",
+        [prefix + "%"],
+    )
+    for r in existing.rows:
+        if r[0] not in album_tags:
+            album_tags.append(r[0])
+    if not album_tags:
+        return
+    for iid in ids:
+        await sync_tags(db, iid, album_tags)
+
+
+async def split_media_albums(db):
+    """One-shot migration: convert every multi-part MEDIA item into N single-part items
+    (one per part), preserving tags (shared across the split), folder, privacy, favorite, and
+    the per-part thumbnails (these key off part_id, so they follow the part automatically).
+
+    Archives are left untouched — a multi-part archive is a real split file, not an album.
+    Driven off the actual part COUNT (not the possibly-stale items.total_parts), and naturally
+    idempotent: after it runs no media item has >1 part, so a re-run selects nothing.
+    """
+    rs = await db.execute(
+        "SELECT i.id FROM items i JOIN parts p ON p.item_id = i.id "
+        "WHERE i.kind = 'media' GROUP BY i.id HAVING COUNT(p.id) > 1"
+    )
+    album_ids = [r[0] for r in rs.rows]
+    for old_id in album_ids:
+        meta = await db.execute(
+            "SELECT title, folder_id, is_private, is_favorite, date_added, updated_at "
+            "FROM items WHERE id = ?",
+            [old_id],
+        )
+        if not meta.rows:
+            continue
+        title, folder_id, is_private, is_favorite, date_added, updated_at = meta.rows[0]
+        tag_rs = await db.execute(
+            "SELECT t.name FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE it.item_id = ?",
+            [old_id],
+        )
+        tag_names = [r[0] for r in tag_rs.rows]
+        parts_rs = await db.execute(
+            "SELECT id, channel_msg_id, file_name FROM parts WHERE item_id = ? ORDER BY channel_msg_id",
+            [old_id],
+        )
+        for part_id, channel_msg_id, file_name in parts_rs.rows:
+            base = os.path.splitext(os.path.basename(file_name))[0] if file_name else None
+            new_title = (base or title or "Media").strip() or "Media"
+            new_slug = f"{slugify(new_title)}-{channel_msg_id}"
+            await db.execute(
+                "INSERT INTO items (slug, title, kind, total_parts, total_size, is_favorite, "
+                "is_private, date_added, updated_at, folder_id) "
+                "VALUES (?, ?, 'media', 1, 0, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO NOTHING",
+                [new_slug, new_title, is_favorite, is_private, date_added, updated_at, folder_id],
+            )
+            new_rs = await db.execute("SELECT id FROM items WHERE slug = ?", [new_slug])
+            new_id = new_rs.rows[0][0]
+            # Move the part to its own item (channel_msg_id unchanged → its thumbnail follows).
+            await db.execute("UPDATE parts SET item_id = ?, part_number = 1 WHERE id = ?", [new_id, part_id])
+            await recompute_totals(db, new_id)
+            if tag_names:
+                await sync_tags(db, new_id, tag_names)
+        # The old album item now has 0 parts → remove it (cascade clears its item_tags).
+        await db.execute("DELETE FROM items WHERE id = ?", [old_id])
+    return len(album_ids)
 
 
 async def upsert_thumbnail(db, part_id, mime, data_b64):

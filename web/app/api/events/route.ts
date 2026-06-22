@@ -1,11 +1,12 @@
 import type { NextRequest } from "next/server";
-import { subscribeDrive } from "@/lib/driveEvents";
+import { subscribeChanges } from "@/lib/driveEvents";
 
-// Server-Sent Events stream: pushes a tiny "drive changed" signal to the browser whenever the
-// drive's data changes (a Postgres NOTIFY raised by the DB triggers — see schema.sql). The
-// client (DriveApp) refreshes on each signal, so bot/watcher/other-session writes appear live
-// without polling. Auth is enforced upstream by middleware (this path isn't excluded). All tabs
-// share ONE Postgres LISTEN connection via lib/driveEvents.
+// Server-Sent Events stream: pushes tiny "something changed" signals to the browser whenever the
+// drive's data or an upload job changes (Postgres NOTIFYs raised by DB triggers — see schema.sql).
+// `drive_changed` → `event: drive` (DriveApp refreshes the grid); `upload_changed` → `event: upload`
+// (the /upload page refreshes the job list). The clients refresh on each signal, so bot/watcher/
+// other-session writes appear live without polling. Auth is enforced upstream by middleware (this
+// path isn't excluded). All tabs share ONE Postgres LISTEN connection via lib/driveEvents.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -41,9 +42,11 @@ export async function GET(req: NextRequest) {
       if (req.signal.aborted) return cleanup();
       req.signal.addEventListener("abort", cleanup);
 
-      // Forward each DB notification as an SSE `drive` event (payload = source table name).
-      unsubscribe = await subscribeDrive((payload) => {
-        enqueue(`event: drive\ndata: ${payload}\n\n`);
+      // Forward each DB notification as an SSE event named after the channel: `drive_changed`
+      // → `drive`, `upload_changed` → `upload` (data = source table name).
+      unsubscribe = await subscribeChanges((channel, payload) => {
+        const name = channel === "upload_changed" ? "upload" : "drive";
+        enqueue(`event: ${name}\ndata: ${payload}\n\n`);
       });
       if (req.signal.aborted) return cleanup();
 
