@@ -418,6 +418,7 @@ export function FileRow({
   selected = false,
   onSelectToggle,
   showExtensions = false,
+  showDetails = true,
 }: ItemProps) {
   const ft = fileTypeFor(item);
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
@@ -463,7 +464,7 @@ export function FileRow({
               </button>
             )}
           </div>
-          {itemTags.length > 0 && (
+          {showDetails && itemTags.length > 0 && (
             <div className="tags">
               {itemTags.slice(0, 3).map((t) => (
                 <Chip key={t.id} tag={t} />

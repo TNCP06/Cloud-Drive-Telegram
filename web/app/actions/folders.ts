@@ -57,7 +57,7 @@ async function getFolderItemsAndSubfolders(
 }
 
 export async function deleteFolder(id: number) {
-  const { itemIds } = await getFolderItemsAndSubfolders(id);
+  const { itemIds, folderIds } = await getFolderItemsAndSubfolders(id);
 
   if (itemIds.length > 0) {
     // Soft delete items inside recursively.
@@ -69,14 +69,60 @@ export async function deleteFolder(id: number) {
     }
   }
 
-  // Hard delete the folder. parent_id references folders(id) ON DELETE CASCADE, so
-  // deleting the top folder automatically cascade-deletes all child folders.
+  if (folderIds.length > 0) {
+    // Soft delete the folder and its subfolders recursively.
+    for (const fId of folderIds) {
+      await db.execute({
+        sql: "UPDATE folders SET deleted_at = now_text() WHERE id = ? AND deleted_at IS NULL",
+        args: [fId],
+      });
+    }
+  }
+
+  refresh();
+}
+
+export async function restoreFolder(id: number) {
+  const { itemIds, folderIds } = await getFolderItemsAndSubfolders(id);
+
+  if (itemIds.length > 0) {
+    for (const itemId of itemIds) {
+      await db.execute({
+        sql: "UPDATE items SET deleted_at = NULL WHERE id = ?",
+        args: [itemId],
+      });
+    }
+  }
+
+  if (folderIds.length > 0) {
+    for (const fId of folderIds) {
+      await db.execute({
+        sql: "UPDATE folders SET deleted_at = NULL WHERE id = ?",
+        args: [fId],
+      });
+    }
+  }
+
+  refresh();
+}
+
+import { bulkPurgeNow } from "./items";
+
+export async function purgeFolderNow(id: number): Promise<{ ok: boolean; error?: string }> {
+  const { itemIds } = await getFolderItemsAndSubfolders(id);
+
+  if (itemIds.length > 0) {
+    const res = await bulkPurgeNow(itemIds);
+    if (!res.ok) return res;
+  }
+
   await db.execute({
     sql: "DELETE FROM folders WHERE id = ?",
     args: [id],
   });
 
   refresh();
+  return { ok: true };
 }
 
 export async function moveItemsToFolder(itemIds: number[], folderId: number | null) {

@@ -39,6 +39,8 @@ export interface LayoutPrefs {
   groupBy: GroupKey;
   /** Collapse same-family archive versions into one representative card. */
   groupVersions: boolean;
+  /** Per-folder layout preferences. Key is the folder ID (or 'root'), value is the layout mode. */
+  folderLayouts: Record<string, LayoutMode>;
 }
 
 export const DEFAULT_PREFS: LayoutPrefs = {
@@ -53,6 +55,7 @@ export const DEFAULT_PREFS: LayoutPrefs = {
   sortOrder: "desc",
   groupBy: "none",
   groupVersions: true,
+  folderLayouts: {},
 };
 
 const VALID_GROUPS: GroupKey[] = ["none", "name", "type", "tag", "modified", "size"];
@@ -71,7 +74,7 @@ export function loadPrefs(): LayoutPrefs {
     const raw = localStorage.getItem(KEY);
     if (!raw) return DEFAULT_PREFS;
     const parsed = JSON.parse(raw) as Partial<LayoutPrefs>;
-    const merged = { ...DEFAULT_PREFS, ...parsed };
+    const merged = { ...DEFAULT_PREFS, ...parsed, folderLayouts: parsed.folderLayouts || {} };
     if (!VALID_LAYOUTS.includes(merged.layout)) merged.layout = DEFAULT_PREFS.layout;
     if (!VALID_GROUPS.includes(merged.groupBy)) merged.groupBy = DEFAULT_PREFS.groupBy;
     if (!VALID_SORTS.includes(merged.sort)) merged.sort = DEFAULT_PREFS.sort;

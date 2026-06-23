@@ -23,6 +23,8 @@ export interface Folder {
   parentId: number | null;
   createdAt: number;
   updatedAt: number;
+  trashed: boolean;
+  deletedAt: number | null;
 }
 
 export interface DriveFile {

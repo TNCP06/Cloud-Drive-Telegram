@@ -25,10 +25,11 @@ async def resolve_folders(db, folder_path: str) -> int | None:
         return None
     parent_id = None
     for part in parts:
-        rs = await db.execute(
-            "SELECT id FROM folders WHERE name = ? AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))",
-            [part, parent_id, parent_id]
-        )
+        if parent_id is None:
+            rs = await db.execute("SELECT id FROM folders WHERE name = ? AND parent_id IS NULL", [part])
+        else:
+            rs = await db.execute("SELECT id FROM folders WHERE name = ? AND parent_id = ?", [part, parent_id])
+        
         if rs.rows:
             parent_id = rs.rows[0][0]
         else:
@@ -36,10 +37,10 @@ async def resolve_folders(db, folder_path: str) -> int | None:
                 "INSERT INTO folders (name, parent_id) VALUES (?, ?)",
                 [part, parent_id]
             )
-            rs = await db.execute(
-                "SELECT id FROM folders WHERE name = ? AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))",
-                [part, parent_id, parent_id]
-            )
+            if parent_id is None:
+                rs = await db.execute("SELECT id FROM folders WHERE name = ? AND parent_id IS NULL", [part])
+            else:
+                rs = await db.execute("SELECT id FROM folders WHERE name = ? AND parent_id = ?", [part, parent_id])
             parent_id = rs.rows[0][0]
     return parent_id
 

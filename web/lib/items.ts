@@ -66,7 +66,7 @@ async function fetchDriveData(
        )
        SELECT item_id, part_id, file_name FROM first_part WHERE rn = 1`
     ),
-    db.execute(`SELECT id, name, parent_id, created_at, updated_at FROM folders WHERE is_private = ${priv} ORDER BY lower(name)`),
+    db.execute(`SELECT id, name, parent_id, created_at, updated_at, deleted_at FROM folders WHERE is_private = ${priv} ORDER BY lower(name)`),
   ]);
 
   const tags: Tag[] = tagsRs.rows.map((r) => {
@@ -134,13 +134,18 @@ async function fetchDriveData(
     };
   });
 
-  const folders: Folder[] = foldersRs.rows.map((r) => ({
-    id: Number(r.id),
-    name: String(r.name),
-    parentId: r.parent_id ? Number(r.parent_id) : null,
-    createdAt: sqliteToMs(String(r.created_at)),
-    updatedAt: sqliteToMs(String(r.updated_at)),
-  }));
+  const folders: Folder[] = foldersRs.rows.map((r) => {
+    const deletedAt = r.deleted_at ? sqliteToMs(String(r.deleted_at)) : null;
+    return {
+      id: Number(r.id),
+      name: String(r.name),
+      parentId: r.parent_id ? Number(r.parent_id) : null,
+      createdAt: sqliteToMs(String(r.created_at)),
+      updatedAt: sqliteToMs(String(r.updated_at)),
+      trashed: deletedAt != null,
+      deletedAt,
+    };
+  });
 
   return { files, tags, folders };
 }

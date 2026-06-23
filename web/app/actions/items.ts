@@ -67,11 +67,19 @@ export async function purgeNow(id: number): Promise<{ ok: boolean; error?: strin
   // Best-effort Telegram deletes — a message may already be gone; keep going so
   // the DB rows are still cleaned up regardless.
   for (const row of parts.rows) {
-    await fetch(`${apiBase}/deleteMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: STORAGE_CHANNEL_ID, message_id: Number(row[0]) }),
-    }).catch(() => {});
+    try {
+      const res = await fetch(`${apiBase}/deleteMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: STORAGE_CHANNEL_ID, message_id: Number(row.channel_msg_id) }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        console.error("Telegram deleteMessage failed:", data);
+      }
+    } catch (err) {
+      console.error("fetch deleteMessage threw:", err);
+    }
   }
 
   // Explicit hard delete (thumbnails FK → parts, so delete thumbnails first).
@@ -189,11 +197,19 @@ export async function bulkPurgeNow(itemIds: number[]): Promise<{ ok: boolean; er
     });
 
     for (const row of parts.rows) {
-      await fetch(`${apiBase}/deleteMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: STORAGE_CHANNEL_ID, message_id: Number(row[0]) }),
-      }).catch(() => {});
+      try {
+        const res = await fetch(`${apiBase}/deleteMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: STORAGE_CHANNEL_ID, message_id: Number(row.channel_msg_id) }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          console.error("Telegram deleteMessage failed:", data);
+        }
+      } catch (err) {
+        console.error("fetch deleteMessage threw:", err);
+      }
     }
 
     await db.execute({
@@ -205,6 +221,21 @@ export async function bulkPurgeNow(itemIds: number[]): Promise<{ ok: boolean; er
     await db.execute({ sql: "DELETE FROM items WHERE id = ?", args: [id] });
   }
 
+  refresh();
+  return { ok: true };
+}
+
+export async function emptyTrash(): Promise<{ ok: boolean; error?: string }> {
+  const itemsRs = await db.execute("SELECT id FROM items WHERE deleted_at IS NOT NULL");
+  const itemIds = itemsRs.rows.map((r) => Number(r.id));
+  
+  if (itemIds.length > 0) {
+    const res = await bulkPurgeNow(itemIds);
+    if (!res.ok) return res;
+  }
+
+  await db.execute("DELETE FROM folders WHERE deleted_at IS NOT NULL");
+  
   refresh();
   return { ok: true };
 }

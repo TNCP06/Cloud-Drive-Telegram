@@ -265,6 +265,24 @@ async def process(client, db, channel, job):
         #      = ("stream", staged_file, as_document) → raw-split on the fly
         if origin == "upload":
             staged = resolve_staged_file(path)
+            
+            # Convert webp to jpg automatically if uploaded
+            if staged.lower().endswith(".webp"):
+                try:
+                    from PIL import Image
+                    with Image.open(staged) as img:
+                        if img.mode not in ("RGB", "L"):
+                            img = img.convert("RGB")
+                        new_path = staged[:-5] + ".jpg"
+                        img.save(new_path, format="JPEG", quality=90)
+                    os.remove(staged)
+                    staged = new_path
+                    if title.lower().endswith(".webp"):
+                        title = title[:-5] + ".jpg"
+                        await db.execute("UPDATE upload_jobs SET title = ? WHERE id = ?", [title, jid])
+                except Exception as e:
+                    print(f"  [warn] Failed to convert webp to jpg: {e}")
+
             if cleanup_source:
                 source_dir_to_delete = path if os.path.isdir(path) else None
             if kind == "media":
@@ -289,6 +307,10 @@ async def process(client, db, channel, job):
 
         as_document = plan[2]
         first_file = plan[1] if plan[0] == "stream" else plan[1][0]
+        
+        # Telegram treats .webp/.tgs as stickers when force_document=False, which breaks captions.
+        if first_file.lower().endswith((".webp", ".tgs", ".webm")):
+            as_document = True
 
         # ---- total parts --------------------------------------------------
         if plan[0] == "stream":

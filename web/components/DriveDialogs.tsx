@@ -141,6 +141,116 @@ export function ConfirmBulkDelete({
   );
 }
 
+export function ConfirmRestore({
+  itemCount,
+  folderCount = 0,
+  itemName,
+  onCancel,
+  onConfirm,
+}: {
+  itemCount: number;
+  folderCount?: number;
+  itemName?: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  let what = "";
+  if (itemName) {
+    what = `"${itemName}"`;
+  } else {
+    const parts: string[] = [];
+    if (folderCount) parts.push(`${folderCount} folder${folderCount > 1 ? "s" : ""}`);
+    if (itemCount) parts.push(`${itemCount} item${itemCount > 1 ? "s" : ""}`);
+    what = parts.join(" and ") || "items";
+  }
+
+  return (
+    <div
+      className="overlay"
+      style={{ zIndex: 320 }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className="dialog" style={{ maxWidth: 420 }}>
+        <div className="dhead">
+          <h2>Restore from Trash</h2>
+        </div>
+        <div className="dbody">
+          <p className="sub" style={{ fontSize: 14, lineHeight: 1.5 }}>
+            Are you sure you want to restore <strong>{what}</strong> from the Trash?
+            {folderCount > 0 && " Folders and all the files inside them will be restored."}
+          </p>
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={onConfirm}>
+            <Icon name="restore" size={16} />
+            Restore
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function ConfirmEmptyTrash({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      className="overlay"
+      style={{ zIndex: 320 }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className="dialog" style={{ maxWidth: 420 }}>
+        <div className="dhead">
+          <h2>Empty Trash</h2>
+        </div>
+        <div className="dbody">
+          <p className="sub" style={{ fontSize: 14, lineHeight: 1.5 }}>
+            Are you sure you want to <strong>permanently delete all items and folders</strong> in the Trash?
+            This cannot be undone.
+          </p>
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn danger" onClick={onConfirm}>
+            <Icon name="trash" size={16} />
+            Empty Trash
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CreateFolderModal({
   onClose,
   onCreate,
@@ -255,7 +365,7 @@ export function MoveToFolderModal({
       { id: null, name: space === "private" ? "Private (Root)" : "All files (Root)", depth: 0 },
     ];
     const addChildren = (parentId: number | null, depth: number) => {
-      const children = folders.filter((f) => f.parentId === parentId);
+      const children = folders.filter((f) => f.parentId === parentId && !f.trashed);
       for (const child of children) {
         if (excluded.has(child.id)) continue;
         folderList.push({ id: child.id, name: child.name, depth });

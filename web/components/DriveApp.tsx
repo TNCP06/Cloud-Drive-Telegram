@@ -47,16 +47,20 @@ import {
   MoveToFolderModal,
   FolderDetailsModal,
   EmptyState,
+  ConfirmEmptyTrash,
+  ConfirmRestore,
 } from "./DriveDialogs";
 import {
   toggleFavorite,
   softDelete,
-  restore,
   purgeNow,
   updateMetadata,
   createFolder,
   renameFolder,
   deleteFolder,
+  restoreFolder,
+  purgeFolderNow,
+  emptyTrash,
   moveItemsToFolder,
   moveFolderToFolder,
   moveItemsPrivacy,
@@ -135,7 +139,7 @@ export function DriveApp({
       savePrefs(next);
       return next;
     });
-  const layout = prefs.layout;
+
   // Sort / grouping prefs are persisted alongside the layout (loaded post-mount above).
   const sort = prefs.sort;
   const sortOrder = prefs.sortOrder;
@@ -154,6 +158,9 @@ export function DriveApp({
   // Folder states. `folderHistory` is the back-stack of visited folders (drives the
   // Backspace "go back" shortcut); navigation always goes through `goToFolder`.
   const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
+
+  const currentLayoutKey = view === "all" ? (currentFolderId?.toString() || "root") : view;
+  const layout = prefs.folderLayouts?.[currentLayoutKey] || prefs.layout;
   const [folderHistory, setFolderHistory] = useState<(number | null)[]>([]);
   const [showCreateFolder, setShowCreateFolder] = useState(false);
 
@@ -213,6 +220,12 @@ export function DriveApp({
     folderIds: number[];
     mode: "trash" | "purge";
   } | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState<{
+    itemIds: number[];
+    folderIds: number[];
+    itemName?: string;
+  } | null>(null);
+  const [confirmEmptyTrash, setConfirmEmptyTrash] = useState(false);
 
   // Preview options
   const [initialShowDetails, setInitialShowDetails] = useState(false);
@@ -382,11 +395,6 @@ export function DriveApp({
       optimizeFiles({ type: "trash", ids: [item.id] });
       await softDelete(item.id);
     });
-  const doRestore = (item: DriveFile) =>
-    startTransition(async () => {
-      optimizeFiles({ type: "restore", ids: [item.id] });
-      await restore(item.id);
-    });
   const doPurge = (item: DriveFile) =>
     startTransition(async () => {
       optimizeFiles({ type: "remove", ids: [item.id] });
@@ -480,8 +488,11 @@ export function DriveApp({
     let list = files.filter((f) => !f.trashed);
     const q = query.trim().toLowerCase();
 
-    if (view === "trash") list = files.filter((f) => f.trashed);
-    else if (view === "starred") list = list.filter((f) => f.starred);
+    if (view === "trash") {
+      list = files.filter(
+        (f) => f.trashed && (!f.folderId || !folders.find((fd) => fd.id === f.folderId)?.trashed)
+      );
+    } else if (view === "starred") list = list.filter((f) => f.starred);
     else if (view === "recent")
       list = list.filter((f) => (Date.now() - f.modified) / 86400000 < 14);
     else if (view === "tag") list = list.filter((f) => f.tags.includes(activeTag!));
@@ -495,12 +506,18 @@ export function DriveApp({
 
     const fn = SORTS[sort].fn;
     return [...list].sort((a, b) => fn(a, b, sortOrder));
-  }, [files, view, activeTag, query, sort, sortOrder, currentFolderId]);
+  }, [files, folders, view, activeTag, query, sort, sortOrder, currentFolderId]);
 
   /* ---- folders at the current level ---- */
   const currentFolders = useMemo(() => {
-    if (view !== "all" || query) return [];
-    return folders.filter((f) => f.parentId === currentFolderId);
+    if (query) return [];
+    if (view === "trash") {
+      return folders.filter(
+        (f) => f.trashed && (!f.parentId || !folders.find((fd) => fd.id === f.parentId)?.trashed)
+      );
+    }
+    if (view !== "all") return [];
+    return folders.filter((f) => f.parentId === currentFolderId && !f.trashed);
   }, [folders, view, currentFolderId, query]);
 
   /* ---- recursive content counts per folder (total items + sub-folders) ----
@@ -1226,6 +1243,18 @@ export function DriveApp({
             </button>
           )}
 
+          {view === "trash" && items.length + currentFolders.length > 0 && (
+            <button
+              className="sortbtn danger-btn"
+              style={{ color: "var(--red)", borderColor: "var(--red-dim)", background: "transparent" }}
+              onClick={() => setConfirmEmptyTrash(true)}
+              title="Empty Trash"
+            >
+              <Icon name="trash" size={15} />
+              Empty Trash
+            </button>
+          )}
+
           <div className="spacer"></div>
         </div>
 
@@ -1265,8 +1294,14 @@ export function DriveApp({
       {viewMenu && (
         <ViewMenu
           anchor={viewMenu}
-          prefs={prefs}
-          onChange={updatePrefs}
+          prefs={{ ...prefs, layout }}
+          onChange={(patch) => {
+            if (patch.layout) {
+              updatePrefs({ folderLayouts: { ...(prefs.folderLayouts || {}), [currentLayoutKey]: patch.layout } });
+            } else {
+              updatePrefs(patch);
+            }
+          }}
           onClose={closeViewMenu}
         />
       )}
@@ -1386,7 +1421,11 @@ export function DriveApp({
                   icon="restore"
                   label="Restore"
                   onClick={() => {
-                    doRestore(menu.item);
+                    setConfirmRestore({
+                      itemIds: [menu.item.id],
+                      folderIds: [],
+                      itemName: menu.item.version ? menu.item.family : menu.item.name,
+                    });
                     closeMenu();
                   }}
                 />
@@ -1471,40 +1510,69 @@ export function DriveApp({
         <>
           <div className="menu-scrim" onClick={closeFolderMenu} />
           <Menu anchor={folderMenu.anchor} onClose={closeFolderMenu} width={180}>
-            <MenuItem
-              icon="info"
-              label="Detail"
-              onClick={() => {
-                setFolderDetail(folderMenu.folder);
-                closeFolderMenu();
-              }}
-            />
-            <MenuItem
-              icon="edit"
-              label="Rename"
-              onClick={() => {
-                setShowRenameFolder(folderMenu.folder);
-                closeFolderMenu();
-              }}
-            />
-            <MenuItem
-              icon="folder"
-              label="Move to..."
-              onClick={() => {
-                setMoveTarget({ itemIds: [], folderIds: [folderMenu.folder.id] });
-                closeFolderMenu();
-              }}
-            />
-            <div className="menu-sep"></div>
-            <MenuItem
-              icon="trash"
-              label="Delete"
-              danger
-              onClick={() => {
-                setConfirmBulk({ itemIds: [], folderIds: [folderMenu.folder.id], mode: "trash" });
-                closeFolderMenu();
-              }}
-            />
+            {folderMenu.folder.trashed ? (
+              <>
+                <MenuItem
+                  icon="restore"
+                  label="Restore"
+                  onClick={() => {
+                    setConfirmRestore({
+                      itemIds: [],
+                      folderIds: [folderMenu.folder.id],
+                      itemName: folderMenu.folder.name,
+                    });
+                    closeFolderMenu();
+                  }}
+                />
+                <div className="menu-sep"></div>
+                <MenuItem
+                  icon="trash"
+                  label="Delete permanently"
+                  danger
+                  onClick={() => {
+                    setConfirmBulk({ itemIds: [], folderIds: [folderMenu.folder.id], mode: "purge" });
+                    closeFolderMenu();
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <MenuItem
+                  icon="info"
+                  label="Detail"
+                  onClick={() => {
+                    setFolderDetail(folderMenu.folder);
+                    closeFolderMenu();
+                  }}
+                />
+                <MenuItem
+                  icon="edit"
+                  label="Rename"
+                  onClick={() => {
+                    setShowRenameFolder(folderMenu.folder);
+                    closeFolderMenu();
+                  }}
+                />
+                <MenuItem
+                  icon="folder"
+                  label="Move to..."
+                  onClick={() => {
+                    setMoveTarget({ itemIds: [], folderIds: [folderMenu.folder.id] });
+                    closeFolderMenu();
+                  }}
+                />
+                <div className="menu-sep"></div>
+                <MenuItem
+                  icon="trash"
+                  label="Delete"
+                  danger
+                  onClick={() => {
+                    setConfirmBulk({ itemIds: [], folderIds: [folderMenu.folder.id], mode: "trash" });
+                    closeFolderMenu();
+                  }}
+                />
+              </>
+            )}
           </Menu>
         </>
       )}
@@ -1561,21 +1629,63 @@ export function DriveApp({
             const { itemIds, folderIds, mode } = confirmBulk;
             if (mode === "purge") {
               startTransition(async () => {
-                optimizeFiles({ type: "remove", ids: itemIds });
-                const r = await bulkPurgeNow(itemIds);
-                if (!r.ok) setToast(r.error ?? "Failed to delete permanently.");
+                if (itemIds.length) optimizeFiles({ type: "remove", ids: itemIds });
+                if (folderIds.length) optimizeFolders({ type: "remove", ids: folderIds });
+                if (itemIds.length) {
+                  const r = await bulkPurgeNow(itemIds);
+                  if (!r.ok) setToast(r.error ?? "Failed to delete permanently.");
+                }
+                for (const fid of folderIds) await purgeFolderNow(fid);
                 clearSelection();
               });
             } else {
               startTransition(async () => {
                 if (itemIds.length) optimizeFiles({ type: "trash", ids: itemIds });
-                if (folderIds.length) optimizeFolders({ type: "delete", ids: folderIds });
+                if (folderIds.length) optimizeFolders({ type: "trash", ids: folderIds });
                 if (itemIds.length) await bulkSoftDelete(itemIds);
                 for (const fid of folderIds) await deleteFolder(fid);
                 clearSelection();
               });
             }
             setConfirmBulk(null);
+          }}
+        />
+      )}
+
+      {confirmRestore && (
+        <ConfirmRestore
+          itemCount={confirmRestore.itemIds.length}
+          folderCount={confirmRestore.folderIds.length}
+          itemName={confirmRestore.itemName}
+          onCancel={() => setConfirmRestore(null)}
+          onConfirm={() => {
+            const { itemIds, folderIds } = confirmRestore;
+            startTransition(async () => {
+              if (itemIds.length) {
+                optimizeFiles({ type: "restore", ids: itemIds });
+                await bulkRestore(itemIds);
+              }
+              if (folderIds.length) {
+                optimizeFolders({ type: "restore", ids: folderIds });
+                for (const fid of folderIds) await restoreFolder(fid);
+              }
+              clearSelection();
+            });
+            setConfirmRestore(null);
+          }}
+        />
+      )}
+
+      {confirmEmptyTrash && (
+        <ConfirmEmptyTrash
+          onCancel={() => setConfirmEmptyTrash(false)}
+          onConfirm={() => {
+            setConfirmEmptyTrash(false);
+            startTransition(async () => {
+              const r = await emptyTrash();
+              if (!r.ok) setToast(r.error ?? "Failed to empty trash.");
+              clearSelection();
+            });
           }}
         />
       )}
@@ -1629,10 +1739,9 @@ export function DriveApp({
                 <button
                   className="action-btn"
                   onClick={() => {
-                    startTransition(async () => {
-                      optimizeFiles({ type: "restore", ids: selectedItemIds });
-                      await bulkRestore(selectedItemIds);
-                      clearSelection();
+                    setConfirmRestore({
+                      itemIds: selectedItemIds,
+                      folderIds: selectedFolderIds,
                     });
                   }}
                   title="Restore items"
@@ -1642,7 +1751,7 @@ export function DriveApp({
                 </button>
                 <button
                   className="action-btn danger-btn"
-                  onClick={() => setConfirmBulk({ itemIds: selectedItemIds, folderIds: [], mode: "purge" })}
+                  onClick={() => setConfirmBulk({ itemIds: selectedItemIds, folderIds: selectedFolderIds, mode: "purge" })}
                   title="Delete permanently"
                   aria-label="Delete permanently"
                 >
@@ -1694,7 +1803,7 @@ export function DriveApp({
               const now = Date.now();
               optimizeFolders({
                 type: "create",
-                folder: { id: -now, name, parentId: currentFolderId, createdAt: now, updatedAt: now },
+                folder: { id: -now, name, parentId: currentFolderId, createdAt: now, updatedAt: now, trashed: false, deletedAt: null },
               });
               await createFolder(name, currentFolderId);
             });
@@ -1750,7 +1859,7 @@ export function DriveApp({
             startTransition(async () => {
               // Moving across the Main ⇄ Private boundary removes the rows from this space.
               if (itemIds.length) optimizeFiles({ type: "remove", ids: itemIds });
-              if (folderIds.length) optimizeFolders({ type: "delete", ids: folderIds });
+              if (folderIds.length) optimizeFolders({ type: "remove", ids: folderIds });
               if (itemIds.length) await moveItemsPrivacy(itemIds, space === "main");
               for (const fid of folderIds) await moveFolderPrivacy(fid, space === "main");
               clearSelection();

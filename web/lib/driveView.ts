@@ -76,7 +76,7 @@ export function buildGroups(
   // Alphabetical, with the catch-all bucket ("#" / "Untagged") pinned last.
   const catchAll = key === "tag" ? "Untagged" : "#";
   const labels = [...groups.keys()].sort((a, b) =>
-    a === catchAll ? 1 : b === catchAll ? -1 : a.localeCompare(b, "en")
+    a === catchAll ? 1 : b === catchAll ? -1 : a.localeCompare(b, "en", { numeric: true })
   );
   return labels.map((l) => ({ label: l, items: groups.get(l)! }));
 }
@@ -92,7 +92,7 @@ export const SORTS: Record<string, { label: string; fn: (a: DriveFile, b: DriveF
   },
   name: {
     label: "Name",
-    fn: (a, b, order) => (order === "asc" ? a.name.localeCompare(b.name, "en") : b.name.localeCompare(a.name, "en")),
+    fn: (a, b, order) => (order === "asc" ? a.name.localeCompare(b.name, "en", { numeric: true }) : b.name.localeCompare(a.name, "en", { numeric: true })),
   },
   size: {
     label: "Size",
@@ -141,7 +141,9 @@ export function fileReducer(state: DriveFile[], a: FileAction): DriveFile[] {
 export type FolderAction =
   | { type: "create"; folder: Folder }
   | { type: "rename"; id: number; name: string }
-  | { type: "delete"; ids: number[] }
+  | { type: "remove"; ids: number[] }
+  | { type: "trash"; ids: number[] }
+  | { type: "restore"; ids: number[] }
   | { type: "move"; id: number; parentId: number | null };
 
 export function folderReducer(state: Folder[], a: FolderAction): Folder[] {
@@ -150,8 +152,12 @@ export function folderReducer(state: Folder[], a: FolderAction): Folder[] {
       return [...state, a.folder];
     case "rename":
       return state.map((f) => (f.id === a.id ? { ...f, name: a.name } : f));
-    case "delete":
+    case "remove":
       return state.filter((f) => !a.ids.includes(f.id));
+    case "trash":
+      return state.map((f) => (a.ids.includes(f.id) ? { ...f, trashed: true, deletedAt: Date.now() } : f));
+    case "restore":
+      return state.map((f) => (a.ids.includes(f.id) ? { ...f, trashed: false, deletedAt: null } : f));
     case "move":
       return state.map((f) => (f.id === a.id ? { ...f, parentId: a.parentId } : f));
     default:

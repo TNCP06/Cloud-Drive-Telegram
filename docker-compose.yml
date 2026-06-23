@@ -28,6 +28,7 @@ services:
       UPLOAD_STAGING_DIR: /staging
       STREAMER_URL: http://streamer:8080
       STREAMER_SECRET: ${STREAMER_SECRET:-}   # forwarded as X-Streamer-Secret (matches the streamer)
+      TELEGRAM_API_URL: http://telegram-bot-api:8081
     ports:
       - "3000:3000"
     volumes:

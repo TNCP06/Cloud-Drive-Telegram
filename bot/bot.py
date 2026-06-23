@@ -562,11 +562,12 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
         [
             InlineKeyboardButton("📥 How to Upload", callback_data="menu:upload_guide"),
             InlineKeyboardButton("👤 My Auth Info", callback_data="menu:auth_info")
-        ],
-        [
-            InlineKeyboardButton("🌐 Open Web Dashboard", url=web_url)
         ]
     ]
+
+    # Telegram API rejects 'localhost' or '127.0.0.1' in inline keyboard URLs, which causes a BadRequest crash.
+    if "localhost" not in web_url and "127.0.0.1" not in web_url:
+        keyboard.append([InlineKeyboardButton("🌐 Open Web Dashboard", url=web_url)])
 
     if is_owner:
         keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data="menu:admin_menu")])
