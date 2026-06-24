@@ -1305,6 +1305,8 @@ async def stream(part_id: int, request: Request):
 
         if use_compressed:
             _touch_meta(part_id)
+            if mime.startswith("video/") and not has_preview(part_id):
+                _schedule_seekpreview(part_id, str(comp_path))
             return _serve_local_file_range(str(comp_path), "video/mp4", request, range_header)
 
         # Serve the ORIGINAL (and trigger a background transcode for future views).
