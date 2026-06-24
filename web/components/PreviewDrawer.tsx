@@ -486,7 +486,7 @@ export function PreviewDrawer({
         <>
           {/* Backdrop is purely visual now — clicking it must NOT close the viewer. */}
           <div className="viewer-scrim"></div>
-          <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "") + (chromeHidden ? " chrome-hidden" : "")}>
+          <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "") + (chromeHidden ? " chrome-hidden" : "") + (isVideoStage ? " has-video-stage" : "")}>
             <div className="viewer-stage">
               {isVideoStage ? (
                 <VideoPlayer
@@ -537,6 +537,15 @@ export function PreviewDrawer({
                 >
                   <Icon name="kebab" size={17} />
                 </button>
+                {(isImageStage || isVideoStage || isDocStage) && (
+                  <button
+                    className="viewer-iconbtn"
+                    onClick={toggleFullscreen}
+                    title="Fullscreen (F)"
+                  >
+                    <Icon name="expand" size={17} />
+                  </button>
+                )}
                 <span className="viewer-sep" />
                 <button className="viewer-iconbtn" onClick={onClose} title="Close (Esc)">
                   <Icon name="close" size={17} />
@@ -568,7 +577,7 @@ export function PreviewDrawer({
             {/* Floating controls over the media (like the title bar), just above the bottom box:
                 part counter + collapse chevron (center) and rotate/fullscreen (right). The collapse
                 chevron / "E" hides the box so the media grows to fill the freed space. */}
-            <div className="viewer-floatbar" style={{ bottom: collapsed ? 14 : 91 }}>
+            <div className="viewer-floatbar" style={{ bottom: isVideoStage ? (collapsed ? 48 : 91) : (collapsed ? 14 : 91) }}>
               <div />
               <div className="viewer-floatcenter">
                 {stripThumbs.length > 1 && (
@@ -590,15 +599,6 @@ export function PreviewDrawer({
                     title="Rotate"
                   >
                     <Icon name="rotate" size={16} />
-                  </button>
-                )}
-                {(isImageStage || isVideoStage || isDocStage) && (
-                  <button
-                    className="viewer-iconbtn"
-                    onClick={toggleFullscreen}
-                    title="Fullscreen (F)"
-                  >
-                    <Icon name="expand" size={16} />
                   </button>
                 )}
               </div>

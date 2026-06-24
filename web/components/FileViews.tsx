@@ -332,11 +332,18 @@ export function FileCard({
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
     <div className={`card ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
-      <div className="thumb">
-        {item.thumb ? (
-          <Image src={item.thumb!} alt="" fill unoptimized style={{ objectFit: "cover" }} />
-        ) : (
-          <TypeTile item={item} size={40} />
+      <div style={{ position: "relative" }}>
+        <div className="thumb">
+          {item.thumb ? (
+            <Image src={item.thumb!} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+          ) : (
+            <TypeTile item={item} size={40} />
+          )}
+        </div>
+        {item.thumb && fileTypeFor(item).preview === "video" && (
+          <span className="video-thumb-play-overlay">
+            <Icon name="playSimple" />
+          </span>
         )}
       </div>
 
@@ -437,14 +444,21 @@ export function FileRow({
             <Icon name={selected ? "check" : "circle"} size={16} fill={selected} stroke={1.5} />
           </button>
         )}
-        <div
-          className="ico-wrap"
-          style={item.thumb ? { position: "relative", overflow: "hidden" } : { background: `color-mix(in oklab, ${ft.tint} 12%, var(--card-2))` }}
-        >
-          {item.thumb ? (
-            <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
-          ) : (
-            <Icon name={ft.icon} size={19} stroke={1.5} style={{ color: ft.tint }} />
+        <div style={{ position: "relative", flex: "none" }}>
+          <div
+            className="ico-wrap"
+            style={item.thumb ? { position: "relative", overflow: "hidden" } : { background: `color-mix(in oklab, ${ft.tint} 12%, var(--card-2))` }}
+          >
+            {item.thumb ? (
+              <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+            ) : (
+              <Icon name={ft.icon} size={19} stroke={1.5} style={{ color: ft.tint }} />
+            )}
+          </div>
+          {item.thumb && ft.preview === "video" && (
+            <span className="video-thumb-play-overlay">
+              <Icon name="playSimple" />
+            </span>
           )}
         </div>
         <div className="txt">
@@ -563,11 +577,18 @@ export function FileTile({
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
     <div className={`tile ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
-      <div className="tile-thumb" style={{ background: `color-mix(in oklab, ${ft.tint} 10%, var(--card-2))` }}>
-        {item.thumb ? (
-          <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
-        ) : (
-          <Icon name={ft.icon} size={26} stroke={1.5} style={{ color: ft.tint }} />
+      <div style={{ position: "relative", flex: "none" }}>
+        <div className="tile-thumb" style={{ background: `color-mix(in oklab, ${ft.tint} 10%, var(--card-2))` }}>
+          {item.thumb ? (
+            <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+          ) : (
+            <Icon name={ft.icon} size={26} stroke={1.5} style={{ color: ft.tint }} />
+          )}
+        </div>
+        {item.thumb && ft.preview === "video" && (
+          <span className="video-thumb-play-overlay">
+            <Icon name="playSimple" />
+          </span>
         )}
       </div>
       <div className="tile-info">
@@ -616,13 +637,20 @@ export function FileContent({
   return (
     <div className={`crow ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
       <SelectCheck item={item} selected={selected} onSelectToggle={onSelectToggle} cls="crow-check" />
-      <div className="crow-thumb">
-        {item.thumb ? (
-          <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
-        ) : (
-          <div className="crow-ico" style={{ background: `color-mix(in oklab, ${ft.tint} 12%, var(--card-2))` }}>
-            <Icon name={ft.icon} size={26} stroke={1.5} style={{ color: ft.tint }} />
-          </div>
+      <div style={{ position: "relative", flex: "none" }}>
+        <div className="crow-thumb">
+          {item.thumb ? (
+            <Image src={item.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+          ) : (
+            <div className="crow-ico" style={{ background: `color-mix(in oklab, ${ft.tint} 12%, var(--card-2))` }}>
+              <Icon name={ft.icon} size={26} stroke={1.5} style={{ color: ft.tint }} />
+            </div>
+          )}
+        </div>
+        {item.thumb && ft.preview === "video" && (
+          <span className="video-thumb-play-overlay">
+            <Icon name="playSimple" />
+          </span>
         )}
       </div>
       <div className="crow-main">

@@ -56,6 +56,7 @@ const PATHS: Record<string, string> = {
   share: '<path d="M12 15V4M8.5 7.5L12 4l3.5 3.5"/><path d="M6 12v6.5c0 .55.45 1 1 1h10c.55 0 1-.45 1-1V12"/>',
   rotate: '<path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 4.5V9h-4.5"/>',
   play: '<circle cx="12" cy="12" r="9"/><path d="M10 8.4l6 3.6-6 3.6z" fill="currentColor" stroke="none"/>',
+  playSimple: '<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>',
   expand: '<path d="M8 4H5a1 1 0 0 0-1 1v3M16 4h3a1 1 0 0 1 1 1v3M8 20H5a1 1 0 0 1-1-1v-3M16 20h3a1 1 0 0 0 1-1v-3"/>',
   // --- layout / view-menu icons ---
   iconsXl: '<rect x="5" y="5" width="14" height="14" rx="2.5"/>',
