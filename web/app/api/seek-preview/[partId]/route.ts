@@ -38,8 +38,11 @@ export async function GET(
     const resp = await fetch(upstream, { headers, signal: req.signal });
     if (!resp.ok) {
       if (resp.status === 404) {
-        // Return an empty VTT to prevent Plyr from crashing and losing the time tooltip.
-        return new Response("WEBVTT\n\n", {
+        // Return a completely empty body instead of "WEBVTT\n\n". 
+        // Plyr's buggy VTT parser incorrectly treats the "WEBVTT" header as a valid cue text if there are no cues,
+        // which later crashes during thumbnail preload when it goes out of bounds.
+        // An empty string successfully parses as 0 frames.
+        return new Response("", {
           status: 200,
           headers: {
             "Content-Type": "text/vtt",
