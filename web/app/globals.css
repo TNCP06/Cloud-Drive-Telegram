@@ -763,10 +763,12 @@ button { font-family: inherit; }
 .viewer-video .plyr__progress:hover .plyr__tooltip {
   opacity: 1 !important;
   visibility: visible !important;
+  display: block !important;
 }
 .viewer-video .plyr__progress:has(.plyr__preview-thumb--is-shown):hover .plyr__tooltip {
   opacity: 0 !important;
   visibility: hidden !important;
+  display: none !important;
 }
 
 /* When collapsed and playing video, viewer-floatcenter opacity matches .plyr__controls */
