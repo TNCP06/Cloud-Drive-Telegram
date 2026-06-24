@@ -41,7 +41,7 @@ from pg_db import create_client, PgClient
 import uvicorn
 import telethon.errors
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from telethon import TelegramClient
 from telethon.utils import pack_bot_file_id

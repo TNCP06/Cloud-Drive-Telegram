@@ -742,19 +742,31 @@ button { font-family: inherit; }
 
 /* Seek-preview thumbnail popup (Plyr's previewThumbnails) — polished look */
 .viewer-video .plyr__preview-thumb {
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,.55);
-  border: 2px solid rgba(255,255,255,.18);
-  overflow: hidden;
-  background: #111;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
 }
 .viewer-video .plyr__preview-thumb__image-container {
   border-radius: 4px;
   overflow: hidden;
+  border: 1px solid rgba(255,255,255,.15);
 }
 .viewer-video .plyr__preview-thumb__time-container {
-  background: rgba(0,0,0,.7);
-  border-radius: 0 0 4px 4px;
+  background: transparent !important;
+  padding-top: 6px !important;
+  font-weight: 500;
+  text-shadow: 0 1px 3px rgba(0,0,0, 0.9);
+}
+
+/* Fallback: show the default time tooltip while preview thumbnail is not ready / loading */
+.viewer-video .plyr__progress:hover .plyr__tooltip {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+.viewer-video .plyr__progress:has(.plyr__preview-thumb--is-shown):hover .plyr__tooltip {
+  opacity: 0 !important;
+  visibility: hidden !important;
 }
 
 /* When collapsed and playing video, viewer-floatcenter opacity matches .plyr__controls */

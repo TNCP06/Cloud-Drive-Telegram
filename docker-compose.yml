@@ -152,6 +152,8 @@ services:
       SUBTITLE_BACKFILL_START_DELAY_S: "20"   # short settle window after startup before the first backfill
       # --- seek-preview sprite sheets (ffmpeg thumbnails for progress-bar hover) ---
       SEEKPREVIEW_DIR: /seekpreviews
+      SEEKPREVIEW_COLS: "20"
+      SEEKPREVIEW_ROWS: "20"
     volumes:
       - cache:/cache                     # expendable — can be pruned anytime
       - compressed:/compressed           # PERSISTENT — compressed videos live here
