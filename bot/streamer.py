@@ -1148,13 +1148,15 @@ async def get_subtitle(part_id: int, lang: str):
 _seekpreview_tasks: dict[int, asyncio.Task] = {}
 
 
-def _schedule_seekpreview(part_id: int, src_path: str) -> None:
-    """Fire-and-forget: generate seek-preview sprites if not already done."""
+def _schedule_seekpreview(part_id: int, src_path: str) -> asyncio.Task | None:
+    """Fire-and-forget: generate seek-preview sprites if not already done.
+    Returns the running Task, or None if it's already done.
+    """
     if has_preview(part_id):
-        return
+        return None
     existing = _seekpreview_tasks.get(part_id)
     if existing and not existing.done():
-        return  # already running
+        return existing
 
     async def _run():
         try:
@@ -1164,14 +1166,35 @@ def _schedule_seekpreview(part_id: int, src_path: str) -> None:
         finally:
             _seekpreview_tasks.pop(part_id, None)
 
-    _seekpreview_tasks[part_id] = asyncio.create_task(_run())
+    task = asyncio.create_task(_run())
+    _seekpreview_tasks[part_id] = task
+    return task
 
 
 @app.get("/seek-preview/{part_id}")
-async def get_seek_preview_vtt(part_id: int):
-    """Serve the WebVTT file for Plyr's previewThumbnails."""
+async def serve_seekpreview_vtt(part_id: int, wait: bool = False):
+    """Serve the generated WebVTT file for Plyr previewThumbnails.
+    If wait=True, blocks up to 60s for the background generation to finish.
+    """
+    if wait and not has_preview(part_id):
+        # Wait up to 60 seconds
+        for _ in range(60):
+            if has_preview(part_id):
+                break
+            task = _seekpreview_tasks.get(part_id)
+            if task and not task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    break
+            else:
+                await asyncio.sleep(1)
+
     if not has_preview(part_id):
-        return Response("Not found", status_code=404)
+        raise HTTPException(status_code=404, detail="Seek preview not ready")
+
     p = seekpreview_vtt_path(part_id)
     if not p.exists():
         return Response("Not found", status_code=404)
@@ -1322,13 +1345,22 @@ async def stream(part_id: int, request: Request):
                         log.error("Failed to download even after dynamic re-resolution: %s", retry_err)
                         return Response(f"Failed to download file: {retry_err}", status_code=500)
 
-        # Kick off background compression so subsequent views serve a smaller copy.
-        # When it succeeds, reclaim the now-redundant original from the Bot-API cache.
+        # First generate seek-preview sprites, THEN kick off background compression.
+        # This gives the user immediate UI feedback and prevents two ffmpegs
+        # from fighting for CPU at the exact same time.
         # Videos only — documents/images must never be fed to ffmpeg.
         if mime.startswith("video/"):
-            _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
-            # Also generate seek-preview sprites in the background (fire-and-forget).
-            _schedule_seekpreview(part_id, file_path)
+            sp_task = _schedule_seekpreview(part_id, file_path)
+
+            async def _wait_and_transcode() -> None:
+                if sp_task:
+                    try:
+                        await sp_task
+                    except Exception:
+                        pass
+                _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
+
+            asyncio.create_task(_wait_and_transcode())
 
         # NOTE: subtitle generation is intentionally NOT triggered here on first view.
         # It is driven purely by subtitle ABSENCE via the background backfill loop

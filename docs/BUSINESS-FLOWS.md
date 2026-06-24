@@ -218,8 +218,11 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
 8. **Background seek-preview generation:** on first view (local Bot API mode), the streamer also fires
    a background seek-preview sprite-sheet job (`stream_seekpreview.py`). ffmpeg extracts thumbnails at
    regular intervals and assembles them into a sprite sheet JPEG + a VTT mapping file in the persistent
-   `seekpreviews` volume. The web player (`VideoPlayer.tsx`) probes for availability and once ready,
-   Plyr shows hover thumbnails on the progress bar. The feature is fire-and-forget and deduplicated.
+   `seekpreviews` volume. The web player (`VideoPlayer.tsx`) unconditionally initializes Plyr with the 
+   VTT endpoint passing `?wait=true`. The streamer blocks this request for up to 60s while generating, 
+   so the thumbnails dynamically pop into the progress bar mid-watch without requiring a page refresh.
+   Once seek-preview finishes, it kicks off the heavy background compression task so they don't fight
+   for CPU concurrently.
 9. **Limitations:**
    * Local Bot API Mode: Supports single-part and multi-part media, cold start buffer delay of ~5-15s to download the file from Telegram to the VPS (at full network speed, e.g. 50MB/s), subsequent seeks and repeat views are instant.
    * Fallback Mode: Strictly throttled to ~3Mbps by Telegram's remote MTProto interface.

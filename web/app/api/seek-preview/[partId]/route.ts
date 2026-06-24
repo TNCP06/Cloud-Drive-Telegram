@@ -26,7 +26,9 @@ export async function GET(
   }
 
   const { partId } = await params;
-  const upstream = `${STREAMER_URL}/seek-preview/${partId}`;
+  const reqUrl = new URL(req.url);
+  const wait = reqUrl.searchParams.get("wait") === "true";
+  const upstream = `${STREAMER_URL}/seek-preview/${partId}${wait ? "?wait=true" : ""}`;
 
   const headers: Record<string, string> = {};
   if (process.env.STREAMER_SECRET)
