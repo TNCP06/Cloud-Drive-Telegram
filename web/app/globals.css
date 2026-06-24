@@ -740,6 +740,23 @@ button { font-family: inherit; }
   opacity: 1 !important;
 }
 
+/* Seek-preview thumbnail popup (Plyr's previewThumbnails) — polished look */
+.viewer-video .plyr__preview-thumb {
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.55);
+  border: 2px solid rgba(255,255,255,.18);
+  overflow: hidden;
+  background: #111;
+}
+.viewer-video .plyr__preview-thumb__image-container {
+  border-radius: 4px;
+  overflow: hidden;
+}
+.viewer-video .plyr__preview-thumb__time-container {
+  background: rgba(0,0,0,.7);
+  border-radius: 0 0 4px 4px;
+}
+
 /* When collapsed and playing video, viewer-floatcenter opacity matches .plyr__controls */
 .viewer:not(.has-bottom).has-video-stage .viewer-floatcenter {
   opacity: 0;

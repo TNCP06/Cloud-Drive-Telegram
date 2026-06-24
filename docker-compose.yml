@@ -150,10 +150,13 @@ services:
       SUBTITLE_BACKFILL_INTERVAL_S: "0"     # extra pace between videos; 0 = back-to-back (3 keys handle Groq)
       SUBTITLE_BACKFILL_IDLE_S: "3600"      # re-scan interval when nothing is left to do
       SUBTITLE_BACKFILL_START_DELAY_S: "20"   # short settle window after startup before the first backfill
+      # --- seek-preview sprite sheets (ffmpeg thumbnails for progress-bar hover) ---
+      SEEKPREVIEW_DIR: /seekpreviews
     volumes:
       - cache:/cache                     # expendable — can be pruned anytime
       - compressed:/compressed           # PERSISTENT — compressed videos live here
       - subtitles:/subtitles             # PERSISTENT — generated subtitle tracks live here
+      - seekpreviews:/seekpreviews       # PERSISTENT — seek-preview sprite sheets live here
       - ./bot/streamer.session:/app/streamer.session
       - telegram-bot-api-data:/var/lib/telegram-bot-api
     depends_on:
@@ -179,5 +182,6 @@ volumes:
   cache:         # video streaming cache — expendable, data lives in Telegram
   compressed:    # compressed video copies — persistent (CPU-expensive to rebuild)
   subtitles:     # generated subtitle tracks — persistent (kept while video is indexed)
+  seekpreviews:  # seek-preview sprite sheets — persistent (lightweight, fast to rebuild)
   telegram-bot-api-data:
 

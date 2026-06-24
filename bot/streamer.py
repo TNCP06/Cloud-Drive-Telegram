@@ -78,6 +78,16 @@ from stream_subtitles import (
     stt_available,
 )
 
+# Seek-preview sprite-sheet generation (ffmpeg thumbnails for Plyr progress-bar hover).
+from stream_seekpreview import (
+    SEEKPREVIEW_DIR,
+    init_seekpreview_semaphore,
+    has_preview,
+    vtt_path as seekpreview_vtt_path,
+    sprite_path as seekpreview_sprite_path,
+    generate_seek_preview,
+)
+
 # ---------------------------------------------------------------------------
 # In-memory log buffer for debugging
 # ---------------------------------------------------------------------------
@@ -1007,6 +1017,7 @@ async def lifespan(_app: FastAPI):
 
     init_semaphore()  # create the transcode concurrency semaphore in the running loop
     init_subtitle_semaphore()  # create the subtitle concurrency semaphore in the running loop
+    init_seekpreview_semaphore()  # create the seek-preview concurrency semaphore
 
     log.info("Starting streamer — connecting to Telegram and Turso…")
     tg_client = TelegramClient(SESSION, API_ID, API_HASH)
@@ -1038,6 +1049,11 @@ async def lifespan(_app: FastAPI):
                 log.warning("SUBTITLE_GEN on but GROQ_API_KEYS is empty — no subtitles will be made")
         except Exception as e:  # noqa: BLE001
             log.warning("Could not create subtitles dir %s: %s", SUBTITLES_DIR, e)
+    try:
+        SEEKPREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        log.info("Seek preview dir ready → %s", SEEKPREVIEW_DIR)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Could not create seek-preview dir %s: %s", SEEKPREVIEW_DIR, e)
 
     # Kick off the slow retroactive subtitle backfill (one already-indexed video at a time).
     if SUBTITLE_BACKFILL and SUBTITLE_GEN and GROQ_API_KEYS:
@@ -1125,6 +1141,57 @@ async def get_subtitle(part_id: int, lang: str):
         p.read_text(encoding="utf-8"),
         media_type="text/vtt",
         headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+# Active seek-preview generation tasks (fire-and-forget, dedup'd by part_id)
+_seekpreview_tasks: dict[int, asyncio.Task] = {}
+
+
+def _schedule_seekpreview(part_id: int, src_path: str) -> None:
+    """Fire-and-forget: generate seek-preview sprites if not already done."""
+    if has_preview(part_id):
+        return
+    existing = _seekpreview_tasks.get(part_id)
+    if existing and not existing.done():
+        return  # already running
+
+    async def _run():
+        try:
+            await generate_seek_preview(part_id, src_path)
+        except Exception:  # noqa: BLE001
+            log.exception("Seek preview generation failed for part %d", part_id)
+        finally:
+            _seekpreview_tasks.pop(part_id, None)
+
+    _seekpreview_tasks[part_id] = asyncio.create_task(_run())
+
+
+@app.get("/seek-preview/{part_id}")
+async def get_seek_preview_vtt(part_id: int):
+    """Serve the WebVTT file for Plyr's previewThumbnails."""
+    if not has_preview(part_id):
+        return Response("Not found", status_code=404)
+    p = seekpreview_vtt_path(part_id)
+    if not p.exists():
+        return Response("Not found", status_code=404)
+    return Response(
+        p.read_text(encoding="utf-8"),
+        media_type="text/vtt",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.get("/seek-preview/{part_id}/sprite")
+async def get_seek_preview_sprite(part_id: int):
+    """Serve the sprite-sheet JPEG for seek-preview thumbnails."""
+    sp = seekpreview_sprite_path(part_id)
+    if not sp.exists():
+        return Response("Not found", status_code=404)
+    return Response(
+        sp.read_bytes(),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
@@ -1260,6 +1327,8 @@ async def stream(part_id: int, request: Request):
         # Videos only — documents/images must never be fed to ffmpeg.
         if mime.startswith("video/"):
             _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
+            # Also generate seek-preview sprites in the background (fire-and-forget).
+            _schedule_seekpreview(part_id, file_path)
 
         # NOTE: subtitle generation is intentionally NOT triggered here on first view.
         # It is driven purely by subtitle ABSENCE via the background backfill loop

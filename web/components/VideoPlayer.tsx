@@ -157,6 +157,21 @@ export function VideoPlayer({
       // Decide which caption language to auto-activate from the saved global preference.
       const chosenLang = pickCaptionLang(captionLangs, readSubPref());
 
+      // Probe for seek-preview thumbnails (generated on first view by the streamer).
+      // If the VTT is ready, Plyr shows frame previews on progress-bar hover.
+      let seekPreviewSrc: string | undefined;
+      if (partId) {
+        try {
+          const spRes = await fetch(`/api/seek-preview/${partId}`, { method: "HEAD" });
+          if (!destroyed && spRes.ok) {
+            seekPreviewSrc = `/api/seek-preview/${partId}`;
+          }
+        } catch {
+          // No preview yet — fine, it'll be ready on next view.
+        }
+      }
+      if (destroyed || !videoRef.current) return;
+
       player = new PlyrCtor(videoRef.current, {
         seekTime: 5, // ←/→ seek by 5 seconds
         clickToPlay: false, // we split frame-click (play) vs letterbox-click (close)
@@ -180,6 +195,9 @@ export function VideoPlayer({
           // swallowed by the viewer's capture-phase key handler before Plyr can act on it.
         ],
         tooltips: { controls: true, seek: true },
+        ...(seekPreviewSrc
+          ? { previewThumbnails: { enabled: true, src: seekPreviewSrc } }
+          : {}),
       });
 
       player.on("ready", () => {

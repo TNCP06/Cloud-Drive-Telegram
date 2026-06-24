@@ -215,7 +215,12 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
    * **Device cache caveat:** on HTTPS (e.g. Vercel) the Service Worker caches chunks per device. It
      re-validates the file size once per SW lifetime and namespaces chunk keys by size, so the
      original→compressed size change can't corrupt playback by mixing variants.
-8. **Limitations:**
+8. **Background seek-preview generation:** on first view (local Bot API mode), the streamer also fires
+   a background seek-preview sprite-sheet job (`stream_seekpreview.py`). ffmpeg extracts thumbnails at
+   regular intervals and assembles them into a sprite sheet JPEG + a VTT mapping file in the persistent
+   `seekpreviews` volume. The web player (`VideoPlayer.tsx`) probes for availability and once ready,
+   Plyr shows hover thumbnails on the progress bar. The feature is fire-and-forget and deduplicated.
+9. **Limitations:**
    * Local Bot API Mode: Supports single-part and multi-part media, cold start buffer delay of ~5-15s to download the file from Telegram to the VPS (at full network speed, e.g. 50MB/s), subsequent seeks and repeat views are instant.
    * Fallback Mode: Strictly throttled to ~3Mbps by Telegram's remote MTProto interface.
 

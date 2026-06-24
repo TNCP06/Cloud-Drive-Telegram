@@ -22,5 +22,5 @@ export async function middleware(req: NextRequest) {
 export const config = {
   // `sw.js` MUST be excluded: a Service Worker script served behind a 3xx redirect (the
   // /login bounce) is rejected by the browser ("script resource is behind a redirect").
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|sw.js|api/upload|api/stream).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|sw.js|api/upload|api/stream|api/seek-preview).*)"],
 };

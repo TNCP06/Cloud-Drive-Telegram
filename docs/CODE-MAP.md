@@ -14,7 +14,7 @@ approximate and will drift — treat function names as the stable anchor.
 > (channel indexing + thumbnail harvest + `index_bot_copy`), `db_backup.py` (daily DB backup
 > → Telegram). `bot.py` keeps the interactive handlers + `main()` and **re-exports** the names
 > `index_history.py` imports (`from bot import …`). The streamer's background compression lives in
-> `stream_compress.py`.
+> `stream_compress.py` and seek-preview sprite generation in `stream_seekpreview.py`.
 
 ### `bot.py` (+ `bot_config` / `tg_helpers` / `db_ops` / `indexing`) — indexer + download server + purge
 Pure helpers (`tg_helpers.py`, no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
@@ -95,6 +95,10 @@ cap, preset default `veryfast`, so it never starves streaming/STT on the small V
 `_schedule_transcode` (fire-and-forget, dedup'd),
 `_serve_local_file_range`/`_parse_range` (byte-range serve from any local file), `_compressed_path`,
 `_evict_compressed_if_needed` (optional LRU cap), `init_semaphore` (called from streamer's lifespan).
+**Background seek-preview generation** (ffmpeg thumbnails) lives in **`stream_seekpreview.py`**: `generate_seek_preview`
+(ffmpeg → sprite sheet + VTT), `init_seekpreview_semaphore`, `vtt_path`/`sprite_path`, `has_preview`.
+Endpoints: `GET /seek-preview/{part_id}` (VTT) and `GET /seek-preview/{part_id}/sprite` (JPEG sprite sheet).
+`_schedule_seekpreview` (fire-and-forget, dedup'd by part_id).
 `stream` serves the original on the first view (instant) while transcoding in the background; later views
 serve the compressed copy. The served variant is **pinned per playback** (`_serving_variant`: a fresh load /
 `bytes=0-` re-evaluates and prefers compressed once ready; seeks reuse the pin) so file size never changes
@@ -140,6 +144,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 **Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `DATABASE_URL`, `BOT_TOKEN`, `TELEGRAM_API_URL`
 (enables local Bot API mode), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (cache limit),
 `COMPRESSED_DIR`, `VIDEO_COMPRESS` (1/0), `VIDEO_CRF`, `VIDEO_PRESET` (default `veryfast`),
+`SEEKPREVIEW_DIR`, `SEEKPREVIEW_COLS`, `SEEKPREVIEW_ROWS`, `SEEKPREVIEW_THUMB_W`, `SEEKPREVIEW_THUMB_H`,
 `VIDEO_MIN_COMPRESS_MB`, `VIDEO_TRANSCODE_CONCURRENCY`, `VIDEO_TRANSCODE_THREADS` (0 = auto),
 `COMPRESSED_MAX_SIZE_GB` (0 = keep forever), `SUBTITLE_GEN` (1/0),
 `SUBTITLES_DIR`, `GROQ_API_KEYS` (comma-separated), `GROQ_STT_MODELS`,
@@ -273,6 +278,8 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `api/subtitles/[partId]/route.ts` (lang list) + `api/subtitles/[partId]/[lang]/route.ts` (one WebVTT
   track) — cookie-auth proxies to the streamer's `/subtitles/...` endpoints; the player loads these as
   `<track>`s.
+- `api/seek-preview/[partId]/route.ts` and `api/seek-preview/[partId]/sprite/route.ts` — cookie-auth proxies to
+  the streamer's `/seek-preview/...` endpoints (VTT with rewritten sprite URLs + JPEG sprite sheet).
 - `api/thumb/[itemId]/route.ts` (`nodejs` runtime) — serves an item's **cover thumbnail** bytes
   (first part by `channel_msg_id`) with `Cache-Control: public, max-age=600, stale-while-revalidate`.
   Keeps the cover out of the main page payload so the grid stays light at any scale; auth is enforced
@@ -289,8 +296,8 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 ### `web/` — auth & config
 - `lib/auth.ts` — `AUTH_COOKIE`, `sha256Hex` (shared by edge middleware + actions).
 - `middleware.ts` — gate all routes on `SHA-256(APP_PASSWORD)` cookie; **no `APP_PASSWORD` ⇒
-  auth off**. `/api/upload` and `/api/stream` are excluded from the matcher to avoid the 10 MB
-  middleware body-size limit; both routes perform their own cookie auth check internally.
+  auth off**. `/api/upload`, `/api/stream`, and `/api/seek-preview` are excluded from the matcher to avoid the 10 MB
+  middleware body-size limit; these routes perform their own cookie auth check internally.
 
 ### `web/components/` — UI (client)
 - `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).
@@ -394,7 +401,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   fallback mode). Size-capped (5 MB text / 30 MB office); anything else (incl. archives, multi-part)
   falls back to a download button. Heavy libs are `import()`-ed so they only load when such a file is
   opened. Ambient types for the mammoth browser entry live in `web/types/vendor.d.ts`.
-- `VideoPlayer.tsx` — **Plyr** wrapper for the lightbox stage. Fills the whole `.viewer-stage` from the first frame (Plyr's wrapper/video are 100%×100%; the frame is letterboxed via `object-fit: contain`) so it never starts tiny while the stream loads. Plyr's `clickToPlay` is disabled and clicks are split by geometry: on the displayed (contain-fitted) frame → play/pause; on the letterbox → `onRequestClose` (skipped while fullscreen); on controls → Plyr. Poster dims (the data-URL thumbnail) seed the letterbox hit-test before the video reports its own size. Volume/mute are persisted to `localStorage` (`video-volume`/`video-muted`) and restored on `ready` — Plyr's own `storage` is off — so they never reset when switching videos.
+- `VideoPlayer.tsx` — **Plyr** wrapper for the lightbox stage. Fills the whole `.viewer-stage` from the first frame (Plyr's wrapper/video are 100%×100%; the frame is letterboxed via `object-fit: contain`) so it never starts tiny while the stream loads. Plyr's `clickToPlay` is disabled and clicks are split by geometry: on the displayed (contain-fitted) frame → play/pause; on the letterbox → `onRequestClose` (skipped while fullscreen); on controls → Plyr. Poster dims (the data-URL thumbnail) seed the letterbox hit-test before the video reports its own size. Volume/mute are persisted to `localStorage` (`video-volume`/`video-muted`) and restored on `ready` — Plyr's own `storage` is off — so they never reset when switching videos. Before Plyr initialization, it probes `HEAD /api/seek-preview/{partId}` and, if available, enables Plyr's `previewThumbnails` with the VTT source for progress-bar hover thumbnails.
 - `UploadProvider.tsx` — **global upload context** mounted in `app/layout.tsx` so the client-side
   upload queue + runner live above the page tree and **survive client-side navigation**. Holds the
   `LocalItem[]` queue (ref + force-render), the sequential runner (`runQueue`, was in `UploadManager`),
