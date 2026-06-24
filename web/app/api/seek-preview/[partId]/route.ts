@@ -37,6 +37,16 @@ export async function GET(
   try {
     const resp = await fetch(upstream, { headers, signal: req.signal });
     if (!resp.ok) {
+      if (resp.status === 404) {
+        // Return an empty VTT to prevent Plyr from crashing and losing the time tooltip.
+        return new Response("WEBVTT\n\n", {
+          status: 200,
+          headers: {
+            "Content-Type": "text/vtt",
+            "Cache-Control": "no-store",
+          },
+        });
+      }
       return new Response(null, { status: resp.status });
     }
 
