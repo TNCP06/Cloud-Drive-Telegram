@@ -107,7 +107,7 @@ export const LAYOUT_ICON: Record<LayoutMode, string> = {
 };
 
 export const LAYOUT_LABEL: Record<LayoutMode, string> = {
-  xl: "Extra large icons",
+  xl: "Gallery",
   large: "Large icons",
   medium: "Medium icons",
   small: "Small icons",

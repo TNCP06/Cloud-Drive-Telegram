@@ -1529,6 +1529,95 @@ button { font-family: inherit; }
   .grid[data-layout="small"] .card .thumb svg { width: 30px; height: 30px; }
 }
 
+/* Gallery / Extra Large (xl) card styling for both mobile & desktop */
+.grid[data-layout="xl"] .card:not(.folder) {
+  padding: 0;
+  overflow: visible;
+  content-visibility: visible;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.grid[data-layout="xl"] .card:not(.folder) .thumb {
+  height: 150px; /* default/mobile height */
+  margin-bottom: 0;
+  border-radius: var(--r-lg);
+  width: 100%;
+}
+
+@media (min-width: 861px) {
+  .grid[data-layout="xl"] .card:not(.folder) .thumb {
+    height: 196px; /* desktop height override */
+  }
+}
+
+.grid[data-layout="xl"] .card:not(.folder) .fname {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 24px 10px 10px 10px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.4) 60%, transparent 100%);
+  color: #ffffff;
+  font-size: 13.5px;
+  font-weight: 500;
+  z-index: 10;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.grid[data-layout="xl"] .card:not(.folder):hover .fname {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.grid[data-layout="xl"] .card:not(.folder) .meta,
+.grid[data-layout="xl"] .card:not(.folder) .tagline,
+.grid[data-layout="xl"] .card:not(.folder) .verwrap {
+  display: none !important;
+}
+
+/* Video Play Overlay inside Gallery (xl) - Bottom right corner breaking through the border */
+.grid[data-layout="xl"] .card:not(.folder) .video-thumb-play-overlay {
+  top: auto;
+  left: auto;
+  bottom: -8px;
+  right: 8px;
+  transform: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  opacity: 0.9;
+  background: var(--accent);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+  z-index: 15; /* sits above the overlay title (z-index: 10) */
+  transition: transform 0.2s ease, opacity 0.2s ease, background-color 0.2s ease;
+}
+
+.grid[data-layout="xl"] .card:not(.folder):hover .video-thumb-play-overlay {
+  transform: scale(1.1);
+  opacity: 1;
+  background: var(--accent);
+}
+
+.grid[data-layout="xl"] .card:not(.folder) .video-thumb-play-overlay svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Image zoom animation in Gallery (xl) */
+.grid[data-layout="xl"] .card:not(.folder) .thumb img {
+  transition: transform 0.3s ease-out;
+}
+.grid[data-layout="xl"] .card:not(.folder):hover .thumb img {
+  transform: scale(1.06);
+}
+
 /* shared star/kebab cluster for tile & content rows */
 .ract { display: flex; align-items: center; gap: 2px; flex: none; }
 .ract .rstar {

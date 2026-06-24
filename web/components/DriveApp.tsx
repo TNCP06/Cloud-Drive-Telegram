@@ -23,10 +23,12 @@ import {
   FileListItem,
   FolderCard,
   FolderRow,
+  FileFolderCard,
   Menu,
   MenuItem,
   SubMenuItem,
 } from "./FileViews";
+import { fileTypeFor } from "@/lib/fileType";
 import { PreviewDrawer } from "./PreviewDrawer";
 import { TagManager } from "./TagManager";
 import { ThemeToggle } from "./ThemeToggle";
@@ -655,19 +657,45 @@ export function DriveApp({
      the entire list and rebuild the key index, the main source of interaction lag. */
   const collapsedItems = useMemo(() => collapseVersions(items), [collapseVersions, items]);
   const groupedCollapsed = useMemo(
-    () =>
-      grouped
-        ? grouped.map((g) => ({ label: g.label, ...collapseVersions(g.items) }))
-        : null,
-    [grouped, collapseVersions]
+    () => {
+      if (!grouped) return null;
+      const mapped = grouped.map((g) => ({ label: g.label, ...collapseVersions(g.items) }));
+      if (layout === "xl") {
+        return mapped
+          .map((g) => {
+            const filteredList = g.list.filter((item) => {
+              const ft = fileTypeFor(item);
+              return ft.id === "image" || ft.id === "video";
+            });
+            return { ...g, list: filteredList };
+          })
+          .filter((g) => g.list.length > 0);
+      }
+      return mapped;
+    },
+    [grouped, collapseVersions, layout]
   );
 
   // Flat ordered list of items as they appear on screen (respects grouping + version
   // collapsing). Used for prev/next navigation inside the preview drawer.
-  const navList = useMemo(
-    () => (groupedCollapsed ? groupedCollapsed.flatMap((g) => g.list) : collapsedItems.list),
-    [groupedCollapsed, collapsedItems]
-  );
+  const navList = useMemo(() => {
+    const rawList = groupedCollapsed ? groupedCollapsed.flatMap((g) => g.list) : collapsedItems.list;
+    if (layout === "xl") {
+      return rawList.filter((item) => {
+        const ft = fileTypeFor(item);
+        return ft.id === "image" || ft.id === "video";
+      });
+    }
+    return rawList;
+  }, [groupedCollapsed, collapsedItems, layout]);
+
+  const nonMediaFiles = useMemo(() => {
+    if (layout !== "xl") return [];
+    return collapsedItems.list.filter((item) => {
+      const ft = fileTypeFor(item);
+      return !(ft.id === "image" || ft.id === "video");
+    });
+  }, [collapsedItems.list, layout]);
   const navIndex = previewId == null ? -1 : navList.findIndex((f) => f.id === previewId);
   const hasPrevFile = navIndex > 0;
   const hasNextFile = navIndex >= 0 && navIndex < navList.length - 1;
@@ -691,10 +719,20 @@ export function DriveApp({
   // render above the items in every layout), then items in their displayed order
   // (`navList` already reflects grouping + version collapsing). Drives Ctrl+A,
   // select-all, and Shift-range (which can therefore span folders, files, and groups).
-  const visibleKeys: SelKey[] = useMemo(
-    () => [...currentFolders.map((f) => fk(f.id)), ...navList.map((i) => ik(i.id))],
-    [currentFolders, navList]
-  );
+  const visibleKeys: SelKey[] = useMemo(() => {
+    const foldersKeys = currentFolders.map((f) => fk(f.id));
+    if (layout === "xl") {
+      const nonMediaKeys = nonMediaFiles.map((i) => ik(i.id));
+      const mediaKeys = navList
+        .filter((item) => {
+          const ft = fileTypeFor(item);
+          return ft.id === "image" || ft.id === "video";
+        })
+        .map((i) => ik(i.id));
+      return [...foldersKeys, ...nonMediaKeys, ...mediaKeys];
+    }
+    return [...foldersKeys, ...navList.map((i) => ik(i.id))];
+  }, [currentFolders, navList, nonMediaFiles, layout]);
 
   // Shared selection wiring (files + folders, every layout + grouped sections).
   const toggleKey = (key: SelKey) =>
@@ -789,15 +827,34 @@ export function DriveApp({
       subfolderCount: s.subfolders,
     };
   };
-  // Compact folder-cards grid (used above the file area; same column width as cards).
-  const foldersGrid =
-    currentFolders.length > 0 ? (
+  // Render a compact folders and non-media files grid (used above the files grid).
+  const renderFoldersGrid = (nonMediaList: DriveFile[]) => {
+    if (currentFolders.length === 0 && nonMediaList.length === 0) return null;
+    return (
       <div className="grid folders" data-layout={layout}>
         {currentFolders.map((folder) => (
           <FolderCard key={`folder-${folder.id}`} {...folderCell(folder)} />
         ))}
+        {nonMediaList.map((item) => (
+          <FileFolderCard
+            key={item.id}
+            item={item}
+            tags={tags}
+            onStar={doStar}
+            onMenu={onMenuItem}
+            onOpen={onOpenItem}
+            onSelect={onItemSelect}
+            onDetail={onDetailItem}
+            selected={selected.includes(ik(item.id))}
+            onSelectToggle={onItemToggle}
+            showExtensions={prefs.showExtensions}
+            showDetails={prefs.showDetailItems}
+          />
+        ))}
       </div>
-    ) : null;
+    );
+  };
+  const foldersGrid = renderFoldersGrid(nonMediaFiles);
 
   // Arrow-key navigation between focused entries (files AND folders). Uses live DOM
   // geometry so it works for every layout (grid columns, list rows, column-flow):
@@ -935,10 +992,18 @@ export function DriveApp({
     }
   };
 
-  // Render a list of files (one section). `includeFolders` draws the current folders too
-  // (set false for grouped sections, which render the folders once above all groups).
   function renderItems(collapsed: Collapsed, includeFolders = true) {
     const { list: shown, counts } = collapsed;
+    const isXl = layout === "xl";
+    const mediaFiles = isXl ? shown.filter(item => {
+      const ft = fileTypeFor(item);
+      return ft.id === "video" || ft.id === "image";
+    }) : shown;
+    const sectionNonMedia = isXl ? shown.filter(item => {
+      const ft = fileTypeFor(item);
+      return !(ft.id === "video" || ft.id === "image");
+    }) : [];
+
     // Shared props for every file-cell component (grid card, tile, content row, list item).
     const cell = (item: DriveFile) => ({
       item,
@@ -958,7 +1023,7 @@ export function DriveApp({
 
     // Folders render as compact cards above the items in every layout except Details,
     // where they become table rows interleaved with the file rows.
-    const folderBlock = includeFolders && layout !== "details" ? foldersGrid : null;
+    const folderBlock = includeFolders && layout !== "details" ? renderFoldersGrid(sectionNonMedia) : null;
 
     if (layout === "details") {
       const sortHead = (key: string, label: string, cls?: string, defOrder: "asc" | "desc" = "asc") => (
@@ -1051,7 +1116,7 @@ export function DriveApp({
       <>
         {folderBlock}
         <div className="grid" data-layout={layout}>
-          {shown.map((item) => (
+          {mediaFiles.map((item) => (
             <FileCard key={item.id} {...cell(item)} />
           ))}
         </div>

@@ -256,6 +256,54 @@ export function FolderCard({
   );
 }
 
+/* ============================================================ File Folder Card */
+export function FileFolderCard({
+  item,
+  onMenu,
+  onOpen,
+  onSelect,
+  onDetail,
+  selected = false,
+  showExtensions = false,
+}: ItemProps) {
+  const ft = fileTypeFor(item);
+  return (
+    <div
+      className={`card folder ${selected ? "sel" : ""}`}
+      {...activation(item, onSelect, onOpen, onDetail)}
+    >
+      <div
+        className="folder-ico"
+        style={{
+          color: ft.tint,
+          background: `color-mix(in oklab, ${ft.tint} 12%, var(--card-2))`,
+        }}
+      >
+        <Icon name={ft.icon} size={20} stroke={1.6} />
+      </div>
+      <div className="folder-info">
+        <div className="fname" title={item.name}>
+          {displayName(item, showExtensions)}
+        </div>
+        <div className="meta">
+          {fmtSize(item.size)} · <ClientText render={() => fmtDate(item.modified)} />
+        </div>
+      </div>
+      <button
+        className="folder-kebab"
+        title="Actions"
+        onClick={(e) => {
+          e.stopPropagation();
+          onMenu(item, e.currentTarget);
+        }}
+      >
+        <Icon name="kebab" size={15} />
+      </button>
+    </div>
+  );
+}
+
+
 /* ============================================================ Folder Row */
 export function FolderRow({
   folder,

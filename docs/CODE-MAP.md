@@ -218,7 +218,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   otherwise); appends the real extension from the first part's `fileName` when the "File name
   extensions" view toggle is on.
 - `layoutPrefs.ts` — **Windows-Explorer-style view preferences** persisted to `localStorage`
-  (`tcd_layout`). `LayoutMode` (`xl|large|medium|small|list|details|tiles|content`), `LayoutPrefs`
+  (`tcd_layout`). `LayoutMode` (`xl` (Gallery)|`large`|`medium`|`small`|`list`|`details`|`tiles`|`content`), `LayoutPrefs`
   (layout + `showSidebar`/`compact`/`showCheckboxes`/`showExtensions`/`showDetailItems`/`detailsPane`),
   `DEFAULT_PREFS`, `loadPrefs`/`savePrefs` (best-effort, SSR-safe), `LAYOUT_ICON`/`LAYOUT_LABEL`.
 - `format.ts` — `sqliteToMs()` (SQLite datetime→epoch ms), byte/size formatting.
@@ -307,7 +307,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   a navbar **lock/unlock** icon enters/exits the Private space (exit clears the PIN cookie via `lockPrivate`).
   A topbar **"View" button** (replaces the old grid/list segmented toggle) opens `ViewMenu`; the chosen
   `LayoutPrefs` (from `lib/layoutPrefs.ts`, hydrated post-mount to avoid SSR mismatch) drive **8 layouts**
-  via `renderItems` — icon grids `xl|large|medium|small` (one `FileCard`, sized by `.grid[data-layout]`
+  via `renderItems` — icon grids `xl` (Gallery)|`large`|`medium`|`small` (one `FileCard`, sized by `.grid[data-layout]`
   CSS), `list` (`FileListItem` column-flow), `details` (the sortable `FileRow` table), `tiles`
   (`FileTile`), `content` (`FileContent`) — plus the `.app` class flags `no-sidebar`/`with-details`/
   `compact`/`show-checks`. When `detailsPane` is on, `DetailsPane` renders the **single-selected** item.
