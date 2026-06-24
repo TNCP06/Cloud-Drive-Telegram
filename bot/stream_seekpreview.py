@@ -37,8 +37,8 @@ SPRITE_ROWS = int(os.environ.get("SEEKPREVIEW_ROWS", "10"))
 SPRITE_MAX_FRAMES = SPRITE_COLS * SPRITE_ROWS  # 100 by default
 
 # Each individual thumbnail size (width × height pixels)
-THUMB_W = int(os.environ.get("SEEKPREVIEW_THUMB_W", "160"))
-THUMB_H = int(os.environ.get("SEEKPREVIEW_THUMB_H", "90"))
+THUMB_W = int(os.environ.get("SEEKPREVIEW_THUMB_W", "128"))
+THUMB_H = int(os.environ.get("SEEKPREVIEW_THUMB_H", "72"))
 
 # Concurrency limiter (shared with the caller — initialised in the running loop)
 _sem: asyncio.Semaphore | None = None
@@ -172,7 +172,7 @@ async def generate_seek_preview(part_id: int, src_path: str) -> bool:
             cmd = [
                 "ffmpeg", "-y",
                 "-i", src_path,
-                "-vf", f"fps={fps_val:.6f},scale={THUMB_W}:{THUMB_H},tile={SPRITE_COLS}x{actual_rows}",
+                "-vf", f"fps={fps_val:.6f},scale={THUMB_W}:{THUMB_H}:force_original_aspect_ratio=decrease,pad={THUMB_W}:{THUMB_H}:(ow-iw)/2:(oh-ih)/2,tile={SPRITE_COLS}x{actual_rows}",
                 "-frames:v", "1",
                 "-q:v", "6",  # JPEG quality (2=best, 31=worst) — 6 is a good size/quality tradeoff
                 str(tmp_sprite),
