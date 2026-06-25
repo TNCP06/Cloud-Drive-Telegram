@@ -50,13 +50,20 @@ def detect_kind(message) -> str | None:
 
 
 def get_file_meta(message):
-    """Return (file_name, file_size) for this part."""
+    """Return (file_name, file_size) for this part.
+
+    Videos and animations that lack a file_name get a synthetic name so the
+    web's extension-based type detection can distinguish them from photos
+    (which legitimately have no file name).
+    """
     if message.document:
         return message.document.file_name, message.document.file_size or 0
     if message.video:
-        return message.video.file_name, message.video.file_size or 0
+        name = message.video.file_name or "video.mp4"
+        return name, message.video.file_size or 0
     if message.animation:
-        return message.animation.file_name, message.animation.file_size or 0
+        name = message.animation.file_name or "animation.mp4"
+        return name, message.animation.file_size or 0
     if message.photo:
         return None, message.photo[-1].file_size or 0
     return None, 0

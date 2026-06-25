@@ -18,7 +18,10 @@ approximate and will drift — treat function names as the stable anchor.
 
 ### `bot.py` (+ `bot_config` / `tg_helpers` / `db_ops` / `indexing`) — indexer + download server + purge
 Pure helpers (`tg_helpers.py`, no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
-(`media` vs `archive`), `get_file_meta`, `derive_media_meta` (media caption fallback),
+(`media` vs `archive`), `get_file_meta` (returns `(file_name, file_size)` — videos/animations
+that lack a `file_name` get a **synthetic name** (`video.mp4`/`animation.mp4`) so the web's
+extension-based type detection can distinguish them from photos, which legitimately have no
+file name), `derive_media_meta` (media caption fallback),
 `pick_thumb_file_id`, `encode_thumbnail` (raw image bytes → compact **WebP** base64 via
 Pillow, JPEG passthrough fallback). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
 Postgres ops (`db_ops.py`, idempotent): `upsert_item` (`set_title` guard; preserves user-modified metadata on conflict), `upsert_part` (keyed on
@@ -212,8 +215,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   tells the viewer how to render the file inline; multi-part items are forced to `preview:"none"`.
   Drives the per-type icon/colour/badge in the grid/list and the inline document preview. Media
   **without** a usable file name (Telegram photos = extension-less JPEGs) falls back to the
-  **image** icon (not video). The list & details rows show the item's **cover thumbnail** when one
-  exists (only thumbless items fall back to the type icon).
+  **image** icon; videos/animations are safe because `get_file_meta` now guarantees a synthetic
+  `.mp4` extension even when Telegram supplies no name. The list & details rows show the item's
+  **cover thumbnail** when one exists (only thumbless items fall back to the type icon).
   `displayName(item, showExtensions)` — the name shown in the grid (family for archives, title
   otherwise); appends the real extension from the first part's `fileName` when the "File name
   extensions" view toggle is on.
