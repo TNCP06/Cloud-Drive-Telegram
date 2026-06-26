@@ -17,8 +17,12 @@ import type { DriveFile, GalleryPart, Kind, Tag } from "@/lib/types";
 const THUMB_MAX_DIM = 320;
 const THUMB_QUALITY = 0.85;
 
-// Browser-playable video formats (MKV/AVI need transcoding — excluded).
-const STREAMABLE_EXTS = new Set([".mp4", ".webm", ".m4v", ".mov"]);
+// All video formats the streamer can serve. Non-browser-native containers (MKV, AVI, …)
+// are served as-is on first play and background-transcoded to MP4 for subsequent views.
+const STREAMABLE_EXTS = new Set([
+  ".mp4", ".webm", ".m4v", ".mov",
+  ".mkv", ".avi", ".flv", ".3gp", ".ts",
+]);
 
 function isPartStreamableVideo(part: GalleryPart | undefined, itemKind: Kind): boolean {
   if (!part || itemKind !== "media" || !part.partId || !part.fileName) return false;
