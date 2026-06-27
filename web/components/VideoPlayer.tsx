@@ -121,35 +121,67 @@ export function VideoPlayer({
 
     let player: Plyr | null = null;
     let destroyed = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
 
     (async () => {
       const PlyrCtor = (await import("plyr")).default;
       if (destroyed || !videoRef.current) return;
 
-      // Load generated subtitle tracks (original + EN + ID) and inject them BEFORE
-      // Plyr initialises so they show up in the captions (CC) menu.
-      let captionLangs: string[] = [];
+      // Append a <track> for any subtitle lang we don't already have. Plyr (captions.update:true)
+      // picks up tracks added AFTER init via the textTracks `addtrack` event, so this same helper
+      // also loads subtitles that finish generating WHILE the video is open (see the poll below).
+      // `captionLangs` is append-ordered to match Plyr's numeric currentTrack indices.
+      const captionLangs: string[] = [];
+      const addTracks = (langs: string[]): boolean => {
+        const vid = videoRef.current;
+        if (!vid) return false;
+        let added = false;
+        for (const lang of langs) {
+          if (captionLangs.includes(lang) || vid.querySelector(`track[srclang="${lang}"]`)) continue;
+          const track = document.createElement("track");
+          track.kind = "captions";
+          track.label = langLabel(lang);
+          track.srclang = lang;
+          track.src = `/api/subtitles/${partId}/${lang}`;
+          vid.appendChild(track);
+          captionLangs.push(lang);
+          added = true;
+        }
+        return added;
+      };
+
+      // Initial load (before Plyr init so the first set shows in the CC menu immediately).
+      let subtitlesDone = false;
       if (partId) {
         try {
           const res = await fetch(`/api/subtitles/${partId}`);
           if (!destroyed && res.ok) {
             const data = await res.json();
-            captionLangs = Array.isArray(data?.langs) ? data.langs : [];
-            const vid = videoRef.current;
-            if (vid) {
-              for (const lang of captionLangs) {
-                if (vid.querySelector(`track[srclang="${lang}"]`)) continue;
-                const track = document.createElement("track");
-                track.kind = "captions";
-                track.label = langLabel(lang);
-                track.srclang = lang;
-                track.src = `/api/subtitles/${partId}/${lang}`;
-                vid.appendChild(track);
-              }
-            }
+            subtitlesDone = data?.done === true;
+            addTracks(Array.isArray(data?.langs) ? data.langs : []);
           }
         } catch {
           // No captions is fine — never block playback on subtitle loading.
+        }
+      }
+      if (destroyed || !videoRef.current) return;
+
+      // Only enable Plyr's previewThumbnails when a VALID seek-preview VTT already exists. Plyr's
+      // thumbnail parser reads `frames[0].text` unconditionally, so a VTT with zero cues — exactly
+      // what the API serves for a video with no preview (too short, or not generated yet) — throws
+      // "Cannot read properties of undefined (reading 'text')" and breaks the player. Gating here
+      // keeps that crash off the player. Previews self-heal: a brand-new video gets them on a later
+      // open, once the background sprite job (kicked off by playback) has finished.
+      let previewReady = false;
+      if (partId) {
+        try {
+          const res = await fetch(`/api/seek-preview/${partId}`);
+          if (!destroyed && res.ok) {
+            const vtt = await res.text();
+            previewReady = vtt.includes("-->") && vtt.includes("#xywh=");
+          }
+        } catch {
+          // No preview is fine — the player just won't show hover thumbnails.
         }
       }
       if (destroyed || !videoRef.current) return;
@@ -180,7 +212,8 @@ export function VideoPlayer({
           // swallowed by the viewer's capture-phase key handler before Plyr can act on it.
         ],
         tooltips: { controls: true, seek: true },
-        previewThumbnails: partId ? { enabled: true, src: `/api/seek-preview/${partId}?wait=true` } : {},
+        previewThumbnails:
+          previewReady && partId ? { enabled: true, src: `/api/seek-preview/${partId}` } : { enabled: false },
       });
 
       player.on("ready", () => {
@@ -212,10 +245,51 @@ export function VideoPlayer({
       player.on("languagechange", persistCaptionLang);
       player.on("captionsenabled", persistCaptionLang);
       player.on("captionsdisabled", persistCaptionLang);
+
+      // Live subtitle loading: a just-opened/just-uploaded video is subtitled on demand by the
+      // streamer (it jumps the backfill queue — see _enqueue_priority_subtitle). Poll until the
+      // part is finalised (`done`) or a safety cap, injecting new tracks live as they land — so
+      // the user doesn't have to reopen the video for subtitles to appear.
+      if (partId && !subtitlesDone) {
+        let polls = 0;
+        const MAX_POLLS = 75; // ~10 min at 8s — generation of a prioritised video is far quicker
+        pollTimer = setInterval(async () => {
+          if (destroyed || !player) return;
+          polls += 1;
+          let stop = polls >= MAX_POLLS;
+          try {
+            const res = await fetch(`/api/subtitles/${partId}`);
+            if (!destroyed && res.ok) {
+              const data = await res.json();
+              if (data?.done === true) stop = true;
+              const hadNone = captionLangs.length === 0;
+              const added = addTracks(Array.isArray(data?.langs) ? data.langs : []);
+              // First time captions become available, auto-activate the saved/preferred language
+              // so they actually show without the user opening the CC menu (unless pref is "off").
+              if (added && hadNone) {
+                const chosen = pickCaptionLang(captionLangs, readSubPref());
+                const idx = chosen ? captionLangs.indexOf(chosen) : -1;
+                if (idx >= 0) {
+                  try {
+                    player.currentTrack = idx;
+                  } catch {}
+                }
+              }
+            }
+          } catch {
+            // Transient — try again next tick.
+          }
+          if (stop && pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+        }, 8000);
+      }
     })();
 
     return () => {
       destroyed = true;
+      if (pollTimer) clearInterval(pollTimer);
       try {
         player?.destroy();
       } catch {}

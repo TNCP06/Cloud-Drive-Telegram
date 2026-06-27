@@ -122,7 +122,9 @@ track and **only a chunk with confident speech sets the source language**), `_tr
 (deep-translator → EN/ID, timestamps preserved; uses the **known source language** mapped to a valid code
 via `_make_translator` — `zh`→`zh-CN` — because Google's auto-detect silently echoes some content untranslated
 (e.g. Traditional Chinese → English); **never emits the original
-text as a translation** — a failed segment is dropped, an all-failed/all-unchanged track returns None;
+text as a translation** — a failed segment is dropped, an all-failed/all-unchanged track returns None, and a
+segment whose translation still contains **CJK script** (`_has_cjk`: Chinese/Japanese/Korean — source text that
+leaked through untranslated) is dropped so an EN/ID track can't silently carry the original language;
 `_translate_track` wraps it with retry/back-off so a transient Google no-op throttle doesn't drop a language),
 `_build_vtt`/`_parse_vtt`/`_parse_ts` (VTT ↔ segments), `_subtitle_worker`/`run_subtitle_job` (single-job,
 dedup'd via a `.done` marker), writes WebVTT to the **persistent** `SUBTITLES_DIR` + a `subtitles` Postgres row per
@@ -131,13 +133,15 @@ lang. **`repair_translations_on_disk`** (run at backfill start + each idle resca
 failed under the old logic — re-translating straight from the on-disk original VTT (`_repair_one_translation`),
 so it needs **no video re-download**, only a few translate calls; it retries a part still missing a language up to
 `SUBTITLE_TL_REPAIR_MAX` passes, and also recovers the case where the original text had leaked into the EN/ID files.
-Subtitle generation is **absence-driven, NOT view-driven**: the streamer does *not* schedule subtitles when
-a video is played — it is produced solely by the background backfill loop, which subtitles any indexed video
-that has no subtitles yet (keeps playback off the shared STT semaphore). `streamer.py` exposes
-`GET /subtitles/{part_id}` (langs) and `GET /subtitles/{part_id}/{lang}` (VTT), and runs the
+Subtitle generation is **absence-driven**: the streamer never runs STT on the streaming path (playback stays
+off the shared STT semaphore), but watching a video **`_enqueue_priority_subtitle(part_id)`** bumps it to the
+FRONT of the backfill queue and **wakes the idle loop** (`_subtitle_wake` event) so a just-opened/just-uploaded
+video is subtitled next — still by the single serialized worker, never a parallel job. `streamer.py` exposes
+`GET /subtitles/{part_id}` (returns `{langs, done}` — `done` lets the web player poll and load tracks **live**
+until finalised) and `GET /subtitles/{part_id}/{lang}` (VTT), and runs the
 **backfill** (`_subtitle_backfill_loop`/`_next_backfill_part`/`_fetch_part_row`/`_backfill_one`): one
-already-indexed video at a time (back-to-back by default; `SUBTITLE_BACKFILL_INTERVAL_S` adds optional pace),
-downloads → subtitles → deletes the download; **both** download **and** transcription failures are recorded
+already-indexed video at a time (priority/viewed first → `.partial` repairs → oldest un-subtitled; back-to-back
+by default, `SUBTITLE_BACKFILL_INTERVAL_S` adds optional pace), downloads → subtitles → deletes the download; **both** download **and** transcription failures are recorded
 (`_backfill_failed`) and skipped for the session — so one un-transcribable video can't wedge the loop and
 starve the rest. **Per-chunk repair:** a long video whose audio splits into several chunks transcribes each
 independently; failed chunks don't abort the rest — the successes are cached (`part_{id}.chunks.json`),
@@ -201,9 +205,13 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   **`/api/events`** SSE route forwards it as an `drive` event and `DriveApp` `router.refresh()`es (debounced;
   a focus refresh is the fallback). A second trigger (`notify_upload_change` on `upload_jobs`) raises
   `NOTIFY upload_changed`, forwarded as an `upload` event so the **/upload page** (`UploadManager`) refreshes
-  on job progress without polling. One shared `LISTEN` connection (both channels) fans out to all tabs via
-  **`lib/driveEvents.ts`** (`subscribeChanges(fn)` → `(channel, payload)`), so N browsers cost 1 Postgres
-  connection. So files indexed outside the tab (Bot Drop, history index) appear live within the cache window.
+  on job progress without polling. Both clients subscribe via the shared **`lib/useLiveRefresh.ts`** hook,
+  which is hardened for flaky/mobile networks: it holds the `EventSource` only while the tab is visible AND
+  online, reconnects with exponential backoff (not the browser's tight retry), and catch-up-refreshes on
+  focus/online — eliminating the `/api/events` QUIC idle-timeout/RTO/`NAME_NOT_RESOLVED` console spam.
+  One shared `LISTEN` connection (both channels) fans out to all tabs via **`lib/driveEvents.ts`**
+  (`subscribeChanges(fn)` → `(channel, payload)`), so N browsers cost 1 Postgres connection. So files indexed
+  outside the tab (Bot Drop, history index) appear live within the cache window.
 - `version.ts` — `parseTitle()`: split an archive title into `family` + `version` (e.g.
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Archives only.
 - `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and coarse kind metadata
@@ -368,10 +376,16 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   moment the 6th digit is entered (no Enter / check tap needed). `Sidebar.tsx` — nav/filters (the **brand is clickable
   to exit** in the Private space); regular tags sorted by usage count (desc); a collapsible **Type Tags**
   group (Image/Video/**Archive**); the storage meter is a button that opens a `StorageDetail` breakdown popup.
-  `VideoPlayer.tsx` (Plyr) loads generated subtitle `<track>`s (original + EN + ID) from `/api/subtitles`.
+  `VideoPlayer.tsx` (Plyr) loads generated subtitle `<track>`s (original + EN + ID) from `/api/subtitles`, and
+  keeps **polling** for them while the video is open (until `done`) — appending new `<track>`s live (Plyr
+  `captions.update:true` picks them up via `addtrack`) and auto-activating the preferred language the first
+  time captions appear, so subtitles for a freshly-uploaded video show up **without reopening**.
   Volume/mute **and** the chosen caption language persist globally in `localStorage` (`subtitle-lang`, or
   `"off"`): each new video auto-activates the saved language via `pickCaptionLang` with the fallback chain
-  **preferred → Indonesian → original**.
+  **preferred → Indonesian → original**. Plyr's `previewThumbnails` is enabled **only after probing
+  `/api/seek-preview` and confirming a valid (non-empty) VTT** — Plyr's parser crashes on a zero-cue track
+  (`reading frames[0].text`), which is exactly what a video with no preview returns; previews self-heal on a
+  later open once the background sprite job finishes.
 - `FileViews.tsx` — per-layout rendering of `DriveFile`s and folders: `FileCard` (icon grids),
   `FileRow` (Details table), `FileTile` (horizontal tile), `FileContent` (wide metadata row),
   `FileListItem` (compact column-flow). All take `showExtensions` (extension on the name via
@@ -425,9 +439,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   surface (`.fup*` classes in `globals.css`).
 - `UploadManager.tsx` — **unified, queue-first** upload UI on `/upload`; now **consumes `UploadProvider`**
   via `useUpload()` for the queue + runner (the local queue state/runner moved out of this component).
-  Live job progress arrives by **SSE, not polling**: it opens `/api/events` and `router.refresh()`es
-  (debounced) on each `upload` event (Postgres `upload_changed` NOTIFY on `upload_jobs`), with a tab-focus
-  refresh as the fallback — the old 3 s/6 s `setInterval` poll is gone.
+  Live job progress arrives by **SSE, not polling** via the shared `useLiveRefresh("upload")` hook: it
+  `router.refresh()`es (debounced) on each `upload` event (Postgres `upload_changed` NOTIFY on `upload_jobs`),
+  with a tab-focus refresh as the fallback — the old 3 s/6 s `setInterval` poll is gone.
   Selecting files (multiple, or a whole **folder** via `webkitdirectory`) adds them to ONE queue as
   editable **ready** items (NOT uploading yet); you set Title/Tags per item, then **Start** runs the
   full pipeline in that same list: browser→VPS (client progress) → the watcher job (VPS→Telegram)

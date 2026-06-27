@@ -6,7 +6,10 @@ job that extracts the audio, transcribes it via Groq's free Whisper API (with au
 key + model failover on rate-limit), and translates the result into English + Indonesian.
 The three WebVTT tracks (original, en, id) are written to the PERSISTENT /subtitles volume
 and recorded in the `subtitles` Turso table so the web player can offer them as <track>s.
-(Playing a video does NOT trigger subtitle generation — it stays off the streaming path.)
+Playing a video does not run STT on the streaming path, but it DOES bump that video to the front
+of the backfill queue (streamer's `_enqueue_priority_subtitle` + wake) so a just-opened/just-
+uploaded video is subtitled next — still by this single serialized worker, never a parallel job —
+and the web player loads the tracks live as they land.
 
 Design mirrors stream_compress.py: single-job concurrency, a `.done` marker so finished
 parts aren't retried, and a never-evict persistent store (subtitles are cheap to keep,
@@ -620,6 +623,7 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
     """
     if not segments:
         return None
+    import time
     try:
         translator = _make_translator(target, source)
     except Exception as e:  # noqa: BLE001
@@ -634,21 +638,50 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
         if not texts:
             return []
         joined = SEP.join(texts)
-        try:
-            res = translator.translate(joined)
-            if res:
-                parts = res.split(SEP)
-                if len(parts) == len(texts):
-                    return parts
-        except Exception as e:  # noqa: BLE001
-            log.warning("Batch translate to %s failed (%s) — per-item fallback", target, e)
+        for attempt in range(5):
+            try:
+                res = translator.translate(joined)
+                if res:
+                    parts = [p.strip() for p in res.split(SEP)]
+                    if len(parts) == len(texts):
+                        return parts
+                    log.warning("Batch translate to %s size mismatch (expected %d, got %d) - attempt %d/5",
+                                target, len(texts), len(parts), attempt + 1)
+                    time.sleep(2)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Batch translate to %s failed (%s) - attempt %d/5", target, e, attempt + 1)
+                time.sleep(2)
+
+        # Fallback to per-item with rate limit prevention
+        log.warning("Batch translate to %s failed all attempts — falling back to per-item", target)
         out: list[str | None] = []
         for t in texts:
-            try:
-                out.append(translator.translate(t) or None)
-            except Exception:  # noqa: BLE001
+            if not t or t in (".", "Oh", "M"):
+                out.append(t)
+                continue
+            for _ in range(3):
+                try:
+                    out.append(translator.translate(t) or None)
+                    break
+                except Exception:  # noqa: BLE001
+                    time.sleep(1)
+            else:
                 out.append(None)
+            time.sleep(0.5)
         return out
+
+    def _has_cjk(text: str) -> bool:
+        """True if text contains CJK script (Chinese hanzi, Japanese kana, or Korean Hangul).
+        Used to detect source-language text leaking through untranslated into an EN/ID track."""
+        return any(
+            "\u4e00" <= c <= "\u9fff"      # CJK Unified Ideographs (Chinese/Kanji)
+            or "\u3040" <= c <= "\u309f"    # Hiragana
+            or "\u30a0" <= c <= "\u30ff"    # Katakana
+            or "\uac00" <= c <= "\ud7a3"    # Hangul Syllables (Korean)
+            or "\u1100" <= c <= "\u11ff"    # Hangul Jamo
+            or "\u3130" <= c <= "\u318f"    # Hangul Compatibility Jamo
+            for c in text
+        )
 
     translated: list[dict] = []
     ok = 0          # segments that produced a real translation
@@ -661,6 +694,9 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
         for b, nt in zip(group, translate_batch([g["text"] for g in group])):
             if not nt or not nt.strip():
                 continue  # drop a failed segment — do NOT emit original-language text
+            # Drop individual segments where CJK leaked through translation
+            if _has_cjk(b["text"]) and _has_cjk(nt):
+                continue
             ok += 1
             if nt.strip() == b["text"].strip():
                 unchanged += 1
@@ -679,10 +715,11 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
 
     if ok == 0:
         return None  # nothing translated → caller leaves the track absent
-    if ok > 1 and unchanged >= ok:
-        # Every segment echoed back unchanged → the language pair was a no-op/unsupported, i.e.
-        # this would just be the original text relabelled. Treat as a failed translation.
-        log.warning("Translate to %s left all %d segments unchanged — treating as failed", target, ok)
+
+    leaks = sum(1 for b in translated if _has_cjk(b["text"]))
+    if ok > 1 and (unchanged >= ok or leaks > ok * 0.1):
+        log.warning("Translate to %s failed validation (unchanged=%d, leaks=%d out of %d) — treating as failed",
+                    target, unchanged, leaks, ok)
         return None
     return translated
 

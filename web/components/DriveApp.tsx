@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useOptimistic, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { Icon } from "@/lib/icons";
 import { fmtSize } from "@/lib/format";
 import { TAG_COLORS } from "@/lib/kinds";
@@ -260,38 +261,10 @@ export function DriveApp({
      the server data while preserving all client state (view/folder/selection) and rebases the
      optimistic overlay. The refresh is debounced (a bulk index emits many NOTIFYs) and skipped
      while a mutation transition is mid-flight (so it can't clobber an in-progress optimistic
-     update). EventSource auto-reconnects; a refresh on tab focus is the fallback if the stream
-     was ever dropped (e.g. a proxy that buffers SSE). */
+     update). The connection itself is network-resilient — see lib/useLiveRefresh. */
   const pendingRef = useRef(isPending);
   pendingRef.current = isPending;
-  useEffect(() => {
-    let debounce: ReturnType<typeof setTimeout> | null = null;
-    const refreshSoon = () => {
-      if (debounce) return;
-      debounce = setTimeout(() => {
-        debounce = null;
-        if (document.visibilityState === "visible" && !pendingRef.current) router.refresh();
-      }, 400);
-    };
-    let es: EventSource | null = null;
-    try {
-      es = new EventSource("/api/events");
-      es.addEventListener("drive", refreshSoon);
-    } catch {
-      /* SSE unsupported — focus refresh below still covers it */
-    }
-    const onVisible = () => {
-      if (document.visibilityState === "visible") router.refresh();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", onVisible);
-    return () => {
-      es?.close();
-      if (debounce) clearTimeout(debounce);
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", onVisible);
-    };
-  }, [router]);
+  useLiveRefresh("drive", { debounceMs: 400, canRefresh: () => !pendingRef.current });
 
   const menuClosedTimeRef = useRef<number>(0);
   const previewClosedTimeRef = useRef<number>(0);

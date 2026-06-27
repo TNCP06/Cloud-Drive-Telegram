@@ -229,8 +229,12 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
 
 ## E4. Automatic subtitle generation (background, Groq Whisper)
 
-After a video lands on disk (local Bot API mode, first view), the streamer fires a background job
-(`stream_subtitles.py`, separate from compression) **if subtitles don't already exist**:
+Subtitles are produced by **one** background worker (`stream_subtitles.py`, separate from compression),
+**if subtitles don't already exist**. Watching a video does **not** run STT on the streaming path; instead
+it **bumps that video to the front of the backfill queue** (`_enqueue_priority_subtitle` + a wake event)
+so a just-opened/just-uploaded video is subtitled next — still by the single serialized worker, never a
+parallel job — and the **web player polls `/api/subtitles/{partId}` and loads the tracks live** as they
+land (no reopen needed). The job:
 
 1. `ffmpeg` extracts the audio as time-sliced 16 kHz mono FLAC chunks (`SUBTITLE_CHUNK_SECONDS`,
    default 600s) to stay under Groq's per-file cap.
@@ -248,8 +252,10 @@ Disabled with `SUBTITLE_GEN=0` or an empty `GROQ_API_KEYS`.
 
 **Retroactive backfill (slow):** a background loop (`_subtitle_backfill_loop`) also subtitles
 **already-indexed** videos that predate this feature. It processes **one video at a time** (serialized by
-the same subtitle semaphore): picks an un-subtitled video part, downloads it via the local Bot API,
-generates subtitles, then **deletes the download** to reclaim disk (peak footprint = one video). By default
+the same subtitle semaphore): picks the next part — **recently-viewed videos jump the queue first**
+(view-priority above), then incomplete `.partial` repairs, then oldest un-subtitled — downloads it via the
+local Bot API, generates subtitles, then **deletes the download** to reclaim disk (peak footprint = one
+video). The idle loop is **woken early** when a viewed video is enqueued, so it doesn't nap through it. By default
 it runs **back-to-back** (`SUBTITLE_BACKFILL_INTERVAL_S=0`) — the 3 rotating `GROQ_API_KEYS` absorb Groq
 rate limits and each video's own processing time provides natural spacing; set the interval >0 to add an
 extra pace if needed. A failed part is skipped for the rest of the session (retried after a restart) so one

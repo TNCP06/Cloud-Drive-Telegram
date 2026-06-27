@@ -38,10 +38,10 @@ export async function GET(
     const resp = await fetch(upstream, { headers, signal: req.signal });
     if (!resp.ok) {
       if (resp.status === 404) {
-        // Return a completely empty body instead of "WEBVTT\n\n". 
-        // Plyr's buggy VTT parser incorrectly treats the "WEBVTT" header as a valid cue text if there are no cues,
-        // which later crashes during thumbnail preload when it goes out of bounds.
-        // An empty string successfully parses as 0 frames.
+        // No preview for this part. Return an empty body (parses to 0 cues) rather than
+        // "WEBVTT\n\n" (which Plyr mis-parses as a bogus cue). The client never feeds this to
+        // Plyr anyway — VideoPlayer probes here first and only enables previewThumbnails when a
+        // valid VTT exists, since Plyr's parser crashes on a zero-cue track (reading frames[0].text).
         return new Response("", {
           status: 200,
           headers: {

@@ -872,10 +872,38 @@ async def _fetch_part_row(part_id: int) -> dict | None:
     return None
 
 
+# --- View-triggered priority (so a just-opened/just-uploaded video is subtitled while watched) ---
+# Viewing a video pushes its part_id here and wakes the backfill loop, so it jumps ahead of the
+# slow oldest-first scan instead of waiting its turn. This only REORDERS the single backfill worker
+# — it never starts a second STT/ffmpeg in parallel, so playback never competes for CPU beyond the
+# (negligible) enqueue itself. The web player polls /subtitles and shows tracks live as they land.
+_subtitle_priority: list[int] = []
+_subtitle_wake: "asyncio.Event | None" = None
+
+
+def _enqueue_priority_subtitle(part_id: int) -> None:
+    """Mark a viewed video to be subtitled next (no-op if subtitles are off, or already done)."""
+    if not (SUBTITLE_GEN and stt_available()):
+        return
+    if is_subtitled_done(part_id) or part_id in _subtitle_priority:
+        return
+    _subtitle_priority.append(part_id)
+    if _subtitle_wake is not None:
+        _subtitle_wake.set()
+
+
 async def _next_backfill_part() -> dict | None:
-    """Pick the next part to subtitle. Repairs incomplete (`.partial`) videos first — re-running
-    only their missing chunks — then falls back to videos with no subtitles at all. Both skip
-    this-session failures (retried next restart)."""
+    """Pick the next part to subtitle. A recently-VIEWED video jumps the queue first; then repairs
+    incomplete (`.partial`) videos (re-running only their missing chunks); then falls back to videos
+    with no subtitles at all. All skip this-session failures (retried next restart)."""
+    # 0. Priority: a just-viewed video so it gets subtitled while the user is still watching.
+    while _subtitle_priority:
+        part_id = _subtitle_priority.pop(0)
+        if part_id in _backfill_failed or is_subtitled_done(part_id):
+            continue
+        part = await _fetch_part_row(part_id)
+        if part:
+            return part
     # 1. Repair pass: resume any video left incomplete by an earlier partial-chunk failure.
     for part_id in partial_part_ids():
         if part_id in _backfill_failed or is_subtitled_done(part_id):
@@ -995,7 +1023,16 @@ async def _subtitle_backfill_loop() -> None:
                     await repair_translations_on_disk(db)
                 except Exception:  # noqa: BLE001
                     log.exception("Translation repair (idle) failed")
-                await asyncio.sleep(SUBTITLE_BACKFILL_IDLE_S)
+                # Idle nap, but wake EARLY if a viewed video is enqueued for priority subtitling
+                # so a just-opened video doesn't sit unsubtitled for up to a whole idle interval.
+                if _subtitle_wake is not None:
+                    try:
+                        await asyncio.wait_for(_subtitle_wake.wait(), timeout=SUBTITLE_BACKFILL_IDLE_S)
+                    except asyncio.TimeoutError:
+                        pass
+                    _subtitle_wake.clear()
+                else:
+                    await asyncio.sleep(SUBTITLE_BACKFILL_IDLE_S)
                 continue
             log.info("Subtitle backfill: processing part %d (%s)", part["part_id"], part["file_name"])
             await _backfill_one(part)
@@ -1013,11 +1050,12 @@ async def _subtitle_backfill_loop() -> None:
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global tg_client, db, channel, _backfill_task
+    global tg_client, db, channel, _backfill_task, _subtitle_wake
 
     init_semaphore()  # create the transcode concurrency semaphore in the running loop
     init_subtitle_semaphore()  # create the subtitle concurrency semaphore in the running loop
     init_seekpreview_semaphore()  # create the seek-preview concurrency semaphore
+    _subtitle_wake = asyncio.Event()  # lets a viewed video wake the idle backfill loop
 
     log.info("Starting streamer — connecting to Telegram and Turso…")
     tg_client = TelegramClient(SESSION, API_ID, API_HASH)
@@ -1125,8 +1163,10 @@ async def get_tasks():
 
 @app.get("/subtitles/{part_id}")
 async def list_subtitles(part_id: int):
-    """List the subtitle languages available on disk for a part."""
-    return {"part_id": part_id, "langs": available_langs(part_id)}
+    """List the subtitle languages available on disk for a part. `done` is True once the part is
+    finalised (complete / no-speech / no-audio / budget-exhausted) so a polling client (the web
+    player loading new subtitles live) knows it can stop waiting for more tracks."""
+    return {"part_id": part_id, "langs": available_langs(part_id), "done": is_subtitled_done(part_id)}
 
 
 @app.get("/subtitles/{part_id}/{lang}")
@@ -1305,8 +1345,10 @@ async def stream(part_id: int, request: Request):
 
         if use_compressed:
             _touch_meta(part_id)
-            if mime.startswith("video/") and not has_preview(part_id):
-                _schedule_seekpreview(part_id, str(comp_path))
+            if mime.startswith("video/"):
+                if not has_preview(part_id):
+                    _schedule_seekpreview(part_id, str(comp_path))
+                _enqueue_priority_subtitle(part_id)  # subtitle this video next (live in the player)
             return _serve_local_file_range(str(comp_path), "video/mp4", request, range_header)
 
         # Serve the ORIGINAL (and trigger a background transcode for future views).
@@ -1364,11 +1406,12 @@ async def stream(part_id: int, request: Request):
 
             asyncio.create_task(_wait_and_transcode())
 
-        # NOTE: subtitle generation is intentionally NOT triggered here on first view.
-        # It is driven purely by subtitle ABSENCE via the background backfill loop
-        # (_subtitle_backfill_loop), which subtitles any indexed video that has no
-        # subtitles yet — independent of whether it's ever watched. Keeping it off the
-        # streaming path means playback never competes with STT for the shared semaphore.
+            # Bump this video to the FRONT of the subtitle backfill queue so a just-opened
+            # (or just-uploaded) video gets subtitled while it's being watched, and the web
+            # player loads the tracks live. This only reorders/wakes the single backfill worker
+            # — no second STT/ffmpeg runs in parallel, so playback never competes for the
+            # shared semaphore (the original reason this was kept off the streaming path).
+            _enqueue_priority_subtitle(part_id)
 
         return _serve_local_file_range(file_path, mime, request, range_header)
 

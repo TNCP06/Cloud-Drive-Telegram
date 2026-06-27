@@ -50,9 +50,11 @@ export async function GET(req: NextRequest) {
       });
       if (req.signal.aborted) return cleanup();
 
-      // Initial hello + periodic heartbeat comment so proxies don't drop the idle connection.
+      // Initial hello + periodic heartbeat comment so neither proxies nor the browser's QUIC/HTTP3
+      // transport drop the connection as idle. Kept well under typical ~30s idle timeouts (the
+      // source of the `ERR_QUIC_PROTOCOL_ERROR.QUIC_NETWORK_IDLE_TIMEOUT` console errors).
       enqueue(`event: ready\ndata: ok\n\n`);
-      heartbeat = setInterval(() => enqueue(`: ping\n\n`), 25000);
+      heartbeat = setInterval(() => enqueue(`: ping\n\n`), 15000);
     },
   });
 
