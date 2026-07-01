@@ -31,6 +31,35 @@ function readLoopPref(): boolean {
   }
 }
 
+// Resume playback where the user left off: the last position is remembered PER PART (across
+// reopens and browser sessions), so closing a video and opening it again continues from there.
+// We ignore the first few seconds (nothing to resume) and the tail (a video watched to the end
+// should restart, not jump to the credits).
+const PROGRESS_KEY = (id: number) => `video-progress:${id}`;
+const RESUME_MIN_S = 5;
+const RESUME_TAIL_S = 15;
+function readProgress(id?: number): number | null {
+  if (id == null) return null;
+  try {
+    const v = localStorage.getItem(PROGRESS_KEY(id));
+    return v !== null ? Number(v) : null;
+  } catch {
+    return null;
+  }
+}
+function writeProgress(id: number, t: number, duration: number) {
+  // Don't persist trivially-early or basically-finished positions.
+  if (!(t > RESUME_MIN_S) || (duration && t >= duration - RESUME_TAIL_S)) return;
+  try {
+    localStorage.setItem(PROGRESS_KEY(id), String(Math.floor(t)));
+  } catch {}
+}
+function clearProgress(id: number) {
+  try {
+    localStorage.removeItem(PROGRESS_KEY(id));
+  } catch {}
+}
+
 // Subtitle language is remembered globally (like volume) so the next video auto-enables the
 // same language. Stored value is a lang code, or "off" if the user turned captions off.
 const SUB_LANG_KEY = "subtitle-lang";
@@ -246,6 +275,34 @@ export function VideoPlayer({
       player.on("captionsenabled", persistCaptionLang);
       player.on("captionsdisabled", persistCaptionLang);
 
+      // Resume from the last watched position and keep it up to date while playing. Seek once the
+      // duration is known (loadedmetadata); autoplay then continues from there instead of the start.
+      if (partId != null) {
+        const resume = () => {
+          const saved = readProgress(partId);
+          const dur = videoRef.current?.duration ?? 0;
+          if (saved != null && saved > RESUME_MIN_S && (!dur || saved < dur - RESUME_TAIL_S)) {
+            try {
+              if (player) player.currentTime = saved;
+            } catch {}
+          }
+        };
+        player.on("loadedmetadata", resume);
+        if ((videoRef.current?.readyState ?? 0) >= 1) resume(); // metadata already loaded
+
+        let lastSave = 0;
+        player.on("timeupdate", () => {
+          const now = Date.now();
+          if (!player || now - lastSave < 5000) return; // throttle (timeupdate fires ~4×/s)
+          lastSave = now;
+          writeProgress(partId, player.currentTime, videoRef.current?.duration ?? 0);
+        });
+        player.on("pause", () => {
+          if (player) writeProgress(partId, player.currentTime, videoRef.current?.duration ?? 0);
+        });
+        player.on("ended", () => clearProgress(partId)); // watched to the end → next open restarts
+      }
+
       // Live subtitle loading: a just-opened/just-uploaded video is subtitled on demand by the
       // streamer (it jumps the backfill queue — see _enqueue_priority_subtitle). Poll until the
       // part is finalised (`done`) or a safety cap, injecting new tracks live as they land — so
@@ -290,6 +347,12 @@ export function VideoPlayer({
     return () => {
       destroyed = true;
       if (pollTimer) clearInterval(pollTimer);
+      // Save the position on close/source-switch so reopening resumes from the exact spot.
+      try {
+        if (partId != null && player) {
+          writeProgress(partId, player.currentTime, videoRef.current?.duration ?? 0);
+        }
+      } catch {}
       try {
         player?.destroy();
       } catch {}
