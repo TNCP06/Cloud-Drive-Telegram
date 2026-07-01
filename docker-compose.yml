@@ -125,12 +125,15 @@ services:
       VIDEO_MIN_COMPRESS_MB: "20"       # skip files smaller than this
       VIDEO_TRANSCODE_CONCURRENCY: "1"  # parallel ffmpeg jobs (CPU-heavy)
       VIDEO_TRANSCODE_THREADS: "0"      # 0 = ffmpeg auto (all cores); 1-2 = leave a core free. We also `nice` it.
-      COMPRESSED_MAX_SIZE_GB: "0"       # 0 = keep forever; >0 = LRU-cap the dir
+      COMPRESSED_MAX_SIZE_GB: "6"       # LRU-cap the compressed dir at 6 GB (same as CACHE_MAX_SIZE_GB)
+                                         # so persistent transcodes can't fill the 25 GB disk. 0 = keep forever.
       # --- background subtitle generation (Groq Whisper STT + translation) ---
       SUBTITLE_GEN: "1"                 # set 0 to disable subtitle generation
       SUBTITLES_DIR: /subtitles         # PERSISTENT — generated VTT tracks live here
       GROQ_API_KEYS: ${GROQ_API_KEYS:-} # comma-separated Groq keys (rotated on 429)
       GROQ_STT_MODELS: whisper-large-v3-turbo,whisper-large-v3
+      GLADIA_API_KEY: ${GLADIA_API_KEY:-}  # optional STT failover (async API); empty = Groq-only
+      GLADIA_PRIMARY: "0"                   # 0 = failover after Groq (default); 1 = try Gladia first
       # --- optional STT FAILOVER: Cloudflare Workers AI Whisper (used only when Groq fails) ---
       # Put CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .env to enable; empty = Groq-only.
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
