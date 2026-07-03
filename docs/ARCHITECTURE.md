@@ -93,7 +93,7 @@ Every file posted to the channel must carry this caption:
 Title | part/total | tag1, tag2
 ```
 
-Regex ([`bot/bot.py`](../bot/bot.py) `CAPTION_RE`):
+Regex ([`bot/tg_helpers.py`](../bot/tg_helpers.py) `CAPTION_RE`):
 
 ```
 ^(?P<title>.+?)\s*\|\s*(?P<part>\d+)\s*/\s*(?P<total>\d+)\s*\|\s*(?P<tags>.*)$

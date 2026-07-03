@@ -102,16 +102,6 @@ say "Building and starting the stack…"
 $DC up -d --build
 ok "Stack is up (PostgreSQL schema auto-applied on first init)."
 
-# --- 5. Optional: import existing data from an old Turso DB -----------------
-if [ -n "${TURSO_DATABASE_URL:-}" ] && [ -t 0 ]; then
-  read -r -p "TURSO_* found in .env — import that data into Postgres now? [y/N] " a
-  if [ "${a:-N}" = "y" ] || [ "${a:-N}" = "Y" ]; then
-    say "Migrating data from Turso → Postgres…"
-    $DC run --rm bot python migrate_turso_to_pg.py \
-      && ok "Data migrated." || warn "Migration failed — check output above."
-  fi
-fi
-
 ip="$(curl -fsS https://api.ipify.org 2>/dev/null || echo "<server-ip>")"
 echo
 ok "Done! Dashboard: http://${ip}:3000"

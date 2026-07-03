@@ -170,9 +170,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `login.py` — one-time Telethon login → creates `worker.session` (or any custom session, e.g. `streamer.session` via CLI argument).
 - `schema.sql` — full PostgreSQL schema (auto-applied by the `postgres` service on first init;
   includes `now_text()`, `tags.color`, `bot_settings`, `authorized_users`). `apply_schema.py` —
-  apply schema.sql to a non-Docker Postgres (`DATABASE_URL`). `migrate_turso_to_pg.py` — one-time
-  Turso→Postgres data import (reads Turso over its HTTP API, writes via psycopg). `status.py` —
-  quick DB status dump.
+  apply schema.sql to a non-Docker Postgres (`DATABASE_URL`).
 - `run-all.cmd` — start bot + watcher minimized (Windows). `uninstall-autostart.ps1` — Windows startup deregistration.
 - `Dockerfile` — shared image for bot + watcher (ffmpeg + p7zip). See root
   `docker-compose.yml` and [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the server/VPS deployment.

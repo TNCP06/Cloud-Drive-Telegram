@@ -36,8 +36,6 @@ jobs:
         run: npm run build
         env:
           # Dummy values to allow Next.js build to pass if it requires env vars
-          TURSO_DATABASE_URL: "libsql://dummy.turso.io"
-          TURSO_AUTH_TOKEN: "dummy_token"
           NEXT_PUBLIC_BOT_USERNAME: "dummy_bot"
           BOT_TOKEN: "dummy:token"
           STORAGE_CHANNEL_ID: "-100000000"

@@ -124,10 +124,6 @@ docker run --rm -it --env-file .env -v "$PWD/bot:/login" -w /login tcd-login pyt
 # 4) Build + start (the postgres service applies bot/schema.sql on first init)
 docker compose up -d --build
 docker compose logs -f                   # confirm postgres is healthy, bot/watcher/streamer connect, web is ready
-
-# 5) (Optional) one-time import of existing Turso data into Postgres
-#    Set TURSO_DATABASE_URL/TURSO_AUTH_TOKEN in .env first; runs on the compose network.
-docker compose run --rm bot python migrate_turso_to_pg.py
 ```
 
 Notes:

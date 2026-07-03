@@ -26,7 +26,7 @@ Start and keep running:
     python watcher.py
 
 Requires: worker.session (Telethon login, see login.py), bot MUST be admin in the channel,
-env vars TG_API_ID/HASH, STORAGE_CHANNEL_ID, TURSO_*, (optional) SEVENZIP_PATH (local
+env vars TG_API_ID/HASH, STORAGE_CHANNEL_ID, DATABASE_URL, (optional) SEVENZIP_PATH (local
 archives only), WORKER_OUT_DIR (temp split parts).
 """
 

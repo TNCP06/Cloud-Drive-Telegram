@@ -1,6 +1,6 @@
 """PostgreSQL client shim mimicking the tiny libsql_client surface the bot uses.
 
-The whole bot (bot.py / watcher.py / streamer.py / index_history.py / status.py /
+The whole bot (bot.py / watcher.py / streamer.py / index_history.py /
 db_ops.py) only ever calls `await db.execute(sql, params)` and reads `result.rows`
 (a list of tuples, index-accessed as `row[0]`), plus `await db.close()`. This wraps
 a psycopg3 async connection pool to provide exactly that, so the existing call sites —

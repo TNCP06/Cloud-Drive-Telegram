@@ -9,8 +9,7 @@
 #   1) cp .env.example .env   and fill it in (set a strong POSTGRES_PASSWORD).
 #   2) make sure bot/worker.session exists (run the Telethon login once) — it is
 #      bind-mounted into the watcher so it survives rebuilds.
-#   3) The `postgres` service auto-applies bot/schema.sql on first init. To carry over
-#      existing data from the old Turso DB, run `python bot/migrate_turso_to_pg.py` once.
+#   3) The `postgres` service auto-applies bot/schema.sql on first init.
 #
 # web & watcher share the `staging` volume: the browser uploads land in /staging,
 # the watcher reads them there and deletes them after pushing to Telegram.

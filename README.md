@@ -53,8 +53,6 @@ These can't be automated; gather the values, then the setup scripts handle the r
 
 Keep these handy for the next step. (The schema is applied automatically on first DB start.)
 
-> **Migrating from the old Turso setup?** After the stack is up, copy your existing data in once with `docker compose run --rm bot python migrate_turso_to_pg.py` (set `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` in `.env`). See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
-
 ---
 
 ## 🚀 Install
@@ -112,8 +110,6 @@ cd ..
 
 # 3a. Docker (server) — the postgres service applies bot/schema.sql on first init:
 docker compose up -d --build
-#   (optional) carry over old Turso data:
-#   docker compose run --rm bot python migrate_turso_to_pg.py
 
 # 3b. OR run processes directly:
 #   bot:      python bot/bot.py
