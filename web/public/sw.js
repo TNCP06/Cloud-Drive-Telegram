@@ -3,7 +3,9 @@
 const DB_NAME = 'video-cache-db';
 const DB_VERSION = 1;
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB chunks
-const MAX_CACHE_SIZE = 4 * 1024 * 1024 * 1024; // 4 GB in bytes
+const MAX_CACHE_SIZE = 1 * 1024 * 1024 * 1024; // 1 GB in bytes — client IndexedDB cap. Kept well
+// under ~2 GB, where the browser's IndexedDB + memory pressure starts to hang low-RAM laptops.
+// Still ~500 × 2 MB chunks: enough to buffer + seek smoothly. LRU-evicted by cleanUpCache().
 const MAX_RESPONSE_CHUNKS = 2; // Max chunks returned in a single response to keep memory low
 
 // Parts whose cached size we've reconciled with the server in THIS SW lifetime.
@@ -76,7 +78,7 @@ function mergeArrayBuffers(buffers) {
   return tmp.buffer;
 }
 
-// Evict old chunks when cache exceeds 4GB limit
+// Evict old chunks (LRU) when cache exceeds MAX_CACHE_SIZE.
 async function cleanUpCache() {
   try {
     const db = await openDB();
@@ -93,7 +95,7 @@ async function cleanUpCache() {
     let totalSize = allChunks.reduce((acc, c) => acc + c.size, 0);
     if (totalSize <= MAX_CACHE_SIZE) return;
 
-    console.log(`[SW Cache] Current cache size: ${(totalSize / (1024 * 1024)).toFixed(2)} MB. Limit: 4096 MB. Evicting...`);
+    console.log(`[SW Cache] Current cache size: ${(totalSize / (1024 * 1024)).toFixed(2)} MB. Limit: ${(MAX_CACHE_SIZE / (1024 * 1024)).toFixed(0)} MB. Evicting...`);
 
     // Get all files sorted by lastAccessed ascending
     const allFiles = await new Promise((resolve, reject) => {
