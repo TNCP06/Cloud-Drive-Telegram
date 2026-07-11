@@ -583,7 +583,11 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
 
     text = (
         "🤖 <b>Telegram Cloud Drive Bot Menu</b>\n\n"
-        "Welcome! Select an option below to interact with the cloud drive:"
+        "Welcome! Select an option below to interact with the cloud drive:\n\n"
+        "☁️ <b>PikPak remote-download</b>\n"
+        "• <code>/pikpak &lt;path&gt;</code> — fetch a PikPak file into the drive\n"
+        "• <code>/ls [folder]</code> — browse the PikPak remote\n"
+        "• <code>/jobs</code> — recent download jobs + progress"
     )
 
     keyboard = [

@@ -227,6 +227,52 @@ def write_window(src: str, offset: int, length: int, dst: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Media send with graceful photo fallback
+# ---------------------------------------------------------------------------
+async def _send_file_smart(client, channel, path, caption, as_document, thumb, cb):
+    """Send one part. If a PHOTO send fails because Telegram can't process the image
+    (e.g. AVIF/HEIC saved as .jpg → "Failure while processing image"), convert it to JPEG
+    with ffmpeg and retry as a photo so it keeps a thumbnail/preview; if that still fails,
+    fall back to a document so the upload never dies. Documents/videos are sent unchanged."""
+    try:
+        return await client.send_file(
+            channel, path, caption=caption,
+            force_document=as_document, supports_streaming=not as_document,
+            thumb=thumb, progress_callback=cb,
+        )
+    except Exception as e:  # noqa: BLE001
+        if as_document:
+            raise  # documents don't go through Telegram's image pipeline
+        low = str(e).lower()
+        if not any(k in low for k in ("image", "photo", "media")):
+            raise  # unrelated failure (network, flood, …) — let the caller handle it
+        print(f"  [smart] photo send failed ({e}); converting to JPEG and retrying…")
+        jpg = f"{path}.conv.jpg"
+        try:
+            subprocess.run(["ffmpeg", "-y", "-i", path, "-frames:v", "1", jpg],
+                           capture_output=True, timeout=60, check=True)
+            if os.path.exists(jpg) and os.path.getsize(jpg) > 0:
+                return await client.send_file(
+                    channel, jpg, caption=caption,
+                    force_document=False, supports_streaming=False,
+                    thumb=thumb, progress_callback=cb,
+                )
+        except Exception as e2:  # noqa: BLE001
+            print(f"  [smart] JPEG retry failed ({e2}); sending as document.")
+        finally:
+            if os.path.exists(jpg):
+                try:
+                    os.remove(jpg)
+                except OSError:
+                    pass
+        # Last resort: document (never lose the file).
+        return await client.send_file(
+            channel, path, caption=caption, force_document=True,
+            thumb=thumb, progress_callback=cb,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Process a single job
 # ---------------------------------------------------------------------------
 async def process(client, db, channel, job):
@@ -369,11 +415,8 @@ async def process(client, db, channel, job):
                         continue  # already pushed in a previous run
                     caption = build_caption(title, i, total, tags)
                     print(f"  [{i}/{total}] {os.path.basename(p)}")
-                    msg = await client.send_file(
-                        channel, p, caption=caption,
-                        force_document=as_document, supports_streaming=not as_document,
-                        thumb=thumb_path,
-                        progress_callback=make_cb(i),
+                    msg = await _send_file_smart(
+                        client, channel, p, caption, as_document, thumb_path, make_cb(i)
                     )
                     uploaded_msg_ids.append(msg.id)
                     await set_parts_done(db, jid, i)

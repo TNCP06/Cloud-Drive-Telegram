@@ -74,6 +74,9 @@ Handles two job origins (`upload_jobs.origin`):
 `resolve_staged_file` (the single file inside an upload's staging dir), `write_window` (raw byte
 window copy, 8 MB buffer), `make_video_thumbnail` (ffmpeg frame at 1 s → temp JPEG),
 `_store_thumbnails` (background: poll `parts` ~70 s, `INSERT OR IGNORE` thumbnail),
+`_send_file_smart` (send a part as media; if Telegram can't process the photo — e.g. AVIF saved
+as `.jpg` — **ffmpeg-convert to JPEG and retry as a photo** so it keeps a thumbnail/preview, else
+fall back to a document so the upload never dies),
 `process` (build plan `list`/`stream` → upload each part, checkpoint after each, cleanup temp
 parts + staging dir on success), `resolve_channel`, `main` (poll loop, 5 s).
 Writes `watcher.pid`. **`ffmpeg`** for media thumbnails; **7-Zip only for `local` archives**.
