@@ -17,6 +17,7 @@ Files are stored as messages in a private Telegram channel (free, no size cap fo
 - **Optimistic web dashboard** — grid/list browse, search, favorites, trash + restore, folders, tag library, **light & dark mode**. Rename / star / move / trash / create-folder update instantly (optimistic UI), reconciling with the server in the background.
 - **Daily database backups to Telegram** — every night the bot `pg_dump`s the metadata DB, gzips it, and uploads it to the channel, auto-indexed in the dashboard under **Backup → CDT DB** (dated filename, history kept).
 - **Upload from anywhere** — resumable browser upload (single file, **multiple files, or a whole folder**), Bot Drop via PM, or a host-path picker in laptop mode. Folders are recreated as nested folders in the app.
+- **PikPak remote-download** — from Telegram, `/pikpak <path>` pulls a file off a PikPak (rclone) remote onto the server and feeds it into the normal upload pipeline; live download `%` in the bot chat, `/ls` to browse, `/jobs` to track. Lands in a `pikpak/` folder mirroring the remote path. Oversized files (> 2 GB) are rejected up front — no splitting.
 - **YouTube-style video streaming** — HTTP range streaming with a disk cache; with a local Bot API server it bypasses Telegram's download throttle.
 - **Background video compression** — first view streams the original instantly while a background job transcodes a smaller, same-resolution H.264 copy; later views serve the compressed one to save bandwidth.
 - **WebP thumbnails**, **case-insensitive tags**, soft-delete with a 7-day purge, and shared-password auth.
@@ -30,7 +31,7 @@ Processes that talk **only** through PostgreSQL tables:
 | Component | Runs on | Role |
 |---|---|---|
 | **Web** (`web/`, Next.js 15) | Vercel **or** the server | Dashboard + server actions (reads/writes Postgres; proxies video) |
-| **Bot** (`bot/bot.py`) | Always-on host | Index channel posts, serve downloads, Bot Drop, daily purge, daily DB backup |
+| **Bot** (`bot/bot.py`) | Always-on host | Index channel posts, serve downloads, Bot Drop, daily purge, daily DB backup, PikPak remote-download |
 | **Watcher** (`bot/watcher.py`) | Laptop **or** server | Execute the upload queue (split + push to Telegram via MTProto) |
 | **Streamer** (`bot/streamer.py`) | Server | Range-stream video; background compression |
 | **PostgreSQL** | Docker (same host) | All metadata (self-hosted; backed up daily to Telegram) |
@@ -135,6 +136,23 @@ All settings live in **`.env`** (see [`.env.example`](.env.example) for the anno
 | `NEXT_PUBLIC_BOT_USERNAME` | Builds the download deep link (no `@`) |
 | `TELEGRAM_API_URL` | Local Bot API server → bypasses the download throttle + enables compression |
 | `VIDEO_COMPRESS`, `VIDEO_CRF`, `VIDEO_PRESET`, … | Background compression tuning (see `.env.example`) |
+| `RCLONE_CONFIG_DIR`, `PIKPAK_*` | PikPak remote-download (optional): host rclone-config dir bind-mounted into the bot + limits/remote name (see `.env.example`) |
+
+### PikPak remote-download (optional)
+
+To enable `/pikpak`, install rclone **on the server host** and configure a remote:
+
+```bash
+curl https://rclone.org/install.sh | sudo bash   # if rclone isn't installed
+rclone config                                     # create a remote named "pikpak" (type: pikpak)
+```
+
+The bot container ships its own rclone and **bind-mounts your host `rclone.conf`** so the remote +
+token are reused. If your config lives outside `/home/ec2-user/.config/rclone` (e.g. Ubuntu:
+`/home/ubuntu/.config/rclone`, or root: `/root/.config/rclone`), set `RCLONE_CONFIG_DIR` in `.env`
+to that directory, then `docker compose up -d --build`. Tune limits with the `PIKPAK_*` vars in
+[`.env.example`](.env.example). Feature is off unless the remote resolves — the bot tells you to run
+`rclone config` if it can't.
 
 ---
 
@@ -143,6 +161,7 @@ All settings live in **`.env`** (see [`.env.example`](.env.example) for the anno
 - **Upload:** dashboard → *Upload files* → pick a file, many files, or a folder (resumable). Or DM/forward a file to the bot and finish the title/tags in Telegram or on the web.
 - **Caption contract:** files posted to the channel must use `Title | part/total | tag1, tag2` (archives require it; media can omit it). Use `Folder/Sub/Name` titles to auto-create nested folders.
 - **Download:** item ⋮ → *Download* → the bot copies it straight to your Telegram chat (full speed, any device).
+- **PikPak remote-download:** in the bot chat, `/ls [folder]` to browse a PikPak remote, `/pikpak <path>` to fetch a file (progress edits live), `/jobs` to see recent jobs. Requires rclone installed + a remote configured with `rclone config` **on the server** (see below); the bot image ships rclone and mounts your host `rclone.conf`.
 - **Stream:** click a video to play it in the browser.
 - **Theme:** toggle light/dark with the sun/moon button in the top bar.
 

@@ -76,6 +76,13 @@ from indexing import (  # noqa: F401  (re-exported)
     index_bot_copy,
 )
 from db_backup import run_backup
+from pikpak import (  # noqa: F401  (PikPak remote-download feature)
+    on_pikpak,
+    on_jobs,
+    on_ls,
+    ensure_schema as ensure_pikpak_schema,
+    start_workers as start_pikpak_workers,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +284,14 @@ async def post_init(app: Application):
     except Exception as e:
         log.warning("Migration failed for authorized_users: %s", e)
 
+    # Auto-migration: PikPak remote-download queue (download_jobs table + NOTIFY trigger) and
+    # requeue of any job stranded mid-download by a previous crash. Idempotent; self-applies.
+    try:
+        await ensure_pikpak_schema(db)
+        log.info("Migration: ensured download_jobs table + pikpak worker schema")
+    except Exception as e:
+        log.warning("Migration failed for download_jobs: %s", e)
+
     # Initialize bot_settings table & web_url configuration
     try:
         await db.execute("CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)")
@@ -300,6 +315,9 @@ async def post_init(app: Application):
             BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
             BotCommand("auth", "Authorize yourself using password"),
+            BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
+            BotCommand("ls", "Browse PikPak: /ls [folder]"),
+            BotCommand("jobs", "Show recent PikPak download jobs"),
             BotCommand("cancel", "Cancel current file upload flow"),
         ]
         await app.bot.set_my_commands(default_commands, scope=BotCommandScopeDefault())
@@ -308,6 +326,9 @@ async def post_init(app: Application):
         owner_commands = [
             BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
+            BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
+            BotCommand("ls", "Browse PikPak: /ls [folder]"),
+            BotCommand("jobs", "Show recent PikPak download jobs"),
             BotCommand("cancel", "Cancel current file upload flow"),
             BotCommand("approve", "Authorize a user: /approve <user_id>"),
             BotCommand("revoke", "Revoke authorization: /revoke <user_id>"),
@@ -319,6 +340,13 @@ async def post_init(app: Application):
         log.info("Bot commands menu registered successfully for default and owner scopes")
     except Exception as e:
         log.warning("Failed to set bot commands: %s", e)
+
+    # Start the PikPak download worker(s) — polls download_jobs, rclone-copies into staging,
+    # then hands off to upload_jobs → watcher. Runs as in-process asyncio task(s).
+    try:
+        start_pikpak_workers(app)
+    except Exception as e:
+        log.warning("Failed to start PikPak workers: %s", e)
 
 
 
@@ -1223,6 +1251,9 @@ def main():
     app.add_handler(CommandHandler("set_web_url", on_set_web_url))
     app.add_handler(CommandHandler("cancel", on_cancel))
     app.add_handler(CommandHandler("menu", on_menu))
+    app.add_handler(CommandHandler("pikpak", on_pikpak))
+    app.add_handler(CommandHandler("jobs", on_jobs))
+    app.add_handler(CommandHandler("ls", on_ls))
 
     # Callback Query handler for inline buttons
     app.add_handler(CallbackQueryHandler(on_callback_query))

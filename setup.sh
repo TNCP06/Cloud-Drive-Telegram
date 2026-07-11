@@ -8,7 +8,6 @@
 #   3. Runs the one-time Telethon logins → bot/worker.session + bot/streamer.session.
 #   4. Builds and starts the whole stack: docker compose up -d --build. The self-hosted
 #      postgres service applies bot/schema.sql automatically on first init.
-#   5. (Optional) offers to import existing data from an old Turso DB.
 #
 # Usage:   bash setup.sh        (run from the repository root)
 # Re-run any time — it skips steps already done.

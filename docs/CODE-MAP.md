@@ -12,7 +12,8 @@ approximate and will drift — treat function names as the stable anchor.
 > `pg_db.py` (Postgres client shim: `?`→`%s`, autocommit pool, `.execute().rows`),
 > `tg_helpers.py` (pure helpers), `db_ops.py` (idempotent Postgres ops), `indexing.py`
 > (channel indexing + thumbnail harvest + `index_bot_copy`), `db_backup.py` (daily DB backup
-> → Telegram). `bot.py` keeps the interactive handlers + `main()` and **re-exports** the names
+> → Telegram), `pikpak.py` (PikPak remote-download: `/pikpak` `/jobs` `/ls` + in-bot rclone
+> worker). `bot.py` keeps the interactive handlers + `main()` and **re-exports** the names
 > `index_history.py` imports (`from bot import …`). The streamer's background compression lives in
 > `stream_compress.py` and seek-preview sprite generation in `stream_seekpreview.py`.
 
@@ -40,9 +41,25 @@ forward), `on_start` (download via `copy_message` for authorized users), `on_aut
 `on_revoke` / `on_list_users` / `on_set_web_url` (user authorization, management, and settings), `send_main_menu` / `on_menu` (button-driven main menu and guide),
 `on_cancel` (cancel active file upload), `on_private_file` (interactive PM upload & Bot Drop intake),
 `on_private_text` / `on_callback_query` (interactive questionnaire and menu callbacks), `purge_job` (daily trash purge).
-Lifecycle: `post_init`/`post_shutdown` (Postgres client, auto-migration for `authorized_users` table, and commands menu registration), `main` (handler registration +
+Lifecycle: `post_init`/`post_shutdown` (Postgres client, auto-migrations for `authorized_users` + `download_jobs` tables, commands menu registration, and **starts the PikPak download worker(s)**), `main` (handler registration +
 `run_daily`). **Env:** `BOT_TOKEN`, `STORAGE_CHANNEL_ID`,
 `OWNER_USER_ID`, `DATABASE_URL`, `AUTH_PASSWORD`/`APP_PASSWORD`.
+
+### `pikpak.py` — PikPak remote-download (in `bot` process, rclone)
+`/pikpak <path>` pulls a file from the pre-configured rclone remote onto the VPS and feeds it
+into the **existing** `upload_jobs` → watcher pipeline; no new process/session. Handlers
+`on_pikpak` (validate via `rclone_stat` = `rclone lsjson --stat`, **reject > `PIKPAK_MAX_BYTES`
+before downloading**, insert a `download_jobs` row + progress reply), `on_jobs` (last 10 jobs),
+`on_ls` (browse via `rclone_lsf`, ~50-entry cap) — all gated by `is_user_authorized`.
+Worker: `start_workers` (spawn `PIKPAK_MAX_CONCURRENT` `_worker_loop` asyncio tasks in `post_init`),
+`_claim_next` (atomic `UPDATE … FOR UPDATE SKIP LOCKED` claim), `_process` (`_rclone_copy` with
+retry+backoff → parse `--stats-one-line` `%` → throttled Telegram edit → hand off to `upload_jobs`
+`origin='upload', cleanup_source=1, status='pending'`; staging wiped on failure). `_drive_title`
+files items under the **`PIKPAK_DRIVE_FOLDER`** (`pikpak`) drive folder, mirroring remote subdirs.
+`ensure_schema` (idempotent table+trigger migration + requeue jobs stranded mid-download).
+Needs **rclone in the bot image** + the host `rclone.conf` bind-mounted; downloads land in the
+shared `staging` volume. **Env:** `PIKPAK_REMOTE`, `PIKPAK_MAX_BYTES`, `PIKPAK_MAX_CONCURRENT`,
+`PIKPAK_RETRIES`, `PIKPAK_STAGING_DIR`, `PIKPAK_DRIVE_FOLDER`, `RCLONE_BIN`. One-check: `test_pikpak.py`.
 
 ### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
 Handles two job origins (`upload_jobs.origin`):
@@ -182,31 +199,42 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 ### `web/lib/` — server-side data & helpers
 - `db.ts` — `pg` Pool wrapped to expose the libSQL-style `db.execute(sql | {sql,args})` → `{rows}`
   surface (rewrites `?`→`$n`; BIGINT→Number). `server-only` keeps `DATABASE_URL` out of the browser.
+- `demo.ts` — **Demo mode seeder + in-memory store**. `isDemoMode()` (`DEMO_MODE=true` env check).
+  `DEMO_TAGS`, `DEMO_FILES`, `DEMO_FOLDERS` — seeder data covering every file sub-type (multi-part
+  archive, versioned family, media: video/image/audio/PDF, course, backup, each media item with a
+  colored placeholder `thumb`), nested folders, an empty folder, a trashed folder, starred/trashed
+  items. `demoResolveTagIds(namesCsv)` — name→id resolution against `DEMO_TAGS`, creating new tags
+  as needed (in-memory twin of `actions/_shared.ts`'s `resolveTagId`). These arrays are **mutated
+  directly** by the write actions in `actions/items.ts`, `folders.ts`, `tags.ts` when `isDemoMode()`
+  (favorite/trash/restore/purge, folder CRUD + move, tag CRUD) — so demo edits visibly stick instead
+  of throwing, until the process restarts. Imported by `lib/items.ts` (read path), `lib/uploads.ts`,
+  and most of `actions/*.ts`.
 - `types.ts` — `Kind`, `Tag`, `DriveFile` (UI shape; incl. `firstPartId` + `fileName` for
   streaming), `GalleryPart` (part ID, file name, and thumbnail data URL), `UploadJob` (now incl. `origin`,
   `partsDone`, `totalBytes`), `UploadOrigin`, `UploadStatus`, `WatcherStatus`, `FsEntry`/`FsListing`/`FsShortcut`.
 - `staging.ts` — shared resumable-upload staging paths. `STAGING_ROOT`
   (`UPLOAD_STAGING_DIR`, `/staging` in Docker), `jobDir(token)`, `stagedFilePath(token,name)`
   with strict token/path-traversal guards. Used by the upload API + the watcher reads the same dir.
-- `items.ts` — `getDriveData(space = "main" | "private")`: the main read. One batched query set →
-  shapes `DriveFile[]` + `Tag[]`, **filtered by `is_private`** (Main = 0, Private = 1). The tag list
-  only includes tags still used by an item in that space, so a tag whose last file moved to Private
-  vanishes from Main. Sets each item's `thumb` to a **cover URL** `/api/thumb/{id}` when a cover
-  exists (no base64 in the payload), fetches `firstPartId`/`fileName` for **every** item (media
-  uses it for video streaming; non-media uses the first part's `file_name` so `fileTypeFor` can
-  derive the document type + drive preview), and for archives, splits title into `family`/`version`
-  via `parseTitle`. The shaped
-  result is wrapped in **`unstable_cache`** (15s window, tag `drive-<space>`) so repeat loads skip
-  the six Postgres queries; mutations bust it via `revalidateTag` (see `actions/_shared.ts` `refresh()`).
+- `items.ts` — `getDriveData(space = "main" | "private")`: the main read. **Short-circuits to demo
+  seeder data when `DEMO_MODE=true`** (private space returns empty; no Postgres query is made).
+  Otherwise: one batched query set → shapes `DriveFile[]` + `Tag[]`, **filtered by `is_private`**
+  (Main = 0, Private = 1). The tag list only includes tags still used by an item in that space, so a
+  tag whose last file moved to Private vanishes from Main. Sets each item's `thumb` to a **cover URL**
+  `/api/thumb/{id}` when a cover exists (no base64 in the payload), fetches `firstPartId`/`fileName`
+  for **every** item (media uses it for video streaming; non-media uses the first part's `file_name`
+  so `fileTypeFor` can derive the document type + drive preview), and for archives, splits title into
+  `family`/`version` via `parseTitle`. The shaped result is wrapped in **`unstable_cache`** (15s window,
+  tag `drive-<space>`) so repeat loads skip the six Postgres queries; mutations bust it via
+  `revalidateTag` (see `actions/_shared.ts` `refresh()`).
   The client stays live by **push, not polling**: Postgres triggers (`notify_drive_change`, statement-level
-  on `items`/`folders`/`item_tags`/`tags` — see `schema.sql`) raise `NOTIFY drive_changed`; the
+  on `items`/`folders`/`item_tags`/`tags` -- see `schema.sql`) raise `NOTIFY drive_changed`; the
   **`/api/events`** SSE route forwards it as an `drive` event and `DriveApp` `router.refresh()`es (debounced;
   a focus refresh is the fallback). A second trigger (`notify_upload_change` on `upload_jobs`) raises
   `NOTIFY upload_changed`, forwarded as an `upload` event so the **/upload page** (`UploadManager`) refreshes
   on job progress without polling. Both clients subscribe via the shared **`lib/useLiveRefresh.ts`** hook,
   which is hardened for flaky/mobile networks: it holds the `EventSource` only while the tab is visible AND
   online, reconnects with exponential backoff (not the browser's tight retry), and catch-up-refreshes on
-  focus/online — eliminating the `/api/events` QUIC idle-timeout/RTO/`NAME_NOT_RESOLVED` console spam.
+  focus/online -- eliminating the `/api/events` QUIC idle-timeout/RTO/`NAME_NOT_RESOLVED` console spam.
   One shared `LISTEN` connection (both channels) fans out to all tabs via **`lib/driveEvents.ts`**
   (`subscribeChanges(fn)` → `(channel, payload)`), so N browsers cost 1 Postgres connection. So files indexed
   outside the tab (Bot Drop, history index) appear live within the cache window.
@@ -305,9 +333,16 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 
 ### `web/` — auth & config
 - `lib/auth.ts` — `AUTH_COOKIE`, `sha256Hex` (shared by edge middleware + actions).
-- `middleware.ts` — gate all routes on `SHA-256(APP_PASSWORD)` cookie; **no `APP_PASSWORD` ⇒
-  auth off**. `/api/upload`, `/api/stream`, and `/api/seek-preview` are excluded from the matcher to avoid the 10 MB
-  middleware body-size limit; these routes perform their own cookie auth check internally.
+- `middleware.ts` — gate all routes on `SHA-256(APP_PASSWORD)` cookie. Behaviour:
+  - **`APP_PASSWORD` unset** -- auth off; visiting `/login` redirects to `/` (no form shown).
+  - **`APP_PASSWORD` set** -- all routes require the cookie; unauthenticated requests → `/login`.
+  - `/api/upload`, `/api/stream`, and `/api/seek-preview` are excluded from the matcher to avoid
+    the 10 MB middleware body-size limit; these routes perform their own cookie auth check internally.
+- `DEMO_MODE=true` (env) -- showcase mode; no DB or Telegram credentials needed. `getDriveData()`
+  returns seeder data; most write actions mutate `lib/demo.ts`'s arrays in place instead of
+  throwing (uploads/thumbnails/Private-space moves still no-op, silently or via `demoGuard()`);
+  `components/DemoBanner.tsx` shows a fixed-top banner; `LoginForm`/`PrivateLock` show the demo
+  password/PIN on-screen when `demo` prop is set. See ARCHITECTURE.md §7 for details.
 
 ### `web/components/` — UI (client)
 - `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).

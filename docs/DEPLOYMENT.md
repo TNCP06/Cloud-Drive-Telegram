@@ -16,13 +16,15 @@ browser. It's written for anyone deploying their own copy — not just the origi
 |---|---|---|
 | `web` | 3000 | Next.js dashboard + server actions + upload/stream API |
 | `telegram-bot-api` | 8081 (internal) | Local Telegram Bot API server in `--local` mode → bypasses the 3 Mbps download throttle; shares a data volume with bot/web/streamer |
-| `bot` | — | Indexes channel posts, serves downloads (`copy_message`), Bot Drop, daily purge |
+| `bot` | — | Indexes channel posts, serves downloads (`copy_message`), Bot Drop, daily purge, PikPak remote-download (`/pikpak` via rclone → upload queue) |
 | `watcher` | — | Runs `index_history.py` (back-fill) then `watcher.py` (executes the upload queue via MTProto) |
 | `streamer` | 8080 (internal) | Range-streams video; background H.264 compression to a persistent volume |
 
-**Volumes:** `pgdata` (**persistent** PostgreSQL data), `staging` (browser uploads, web↔watcher),
-`cache` (expendable video chunks), `compressed` (**persistent** compressed videos),
-`telegram-bot-api-data` (local Bot API files, shared by bot/web/streamer). File bytes live in
+**Volumes:** `pgdata` (**persistent** PostgreSQL data), `staging` (browser uploads + PikPak
+downloads, shared by web/watcher/**bot**), `cache` (expendable video chunks), `compressed`
+(**persistent** compressed videos), `telegram-bot-api-data` (local Bot API files, shared by
+bot/web/streamer). The `bot` also bind-mounts the host `rclone.conf` (`RCLONE_CONFIG_DIR`) for the
+optional PikPak feature. File bytes live in
 Telegram; the only user-critical disk state is `pgdata`, which the bot **backs up daily to Telegram**
 (folder Backup → CDT DB) — so the VPS stays effectively disposable.
 
@@ -91,7 +93,7 @@ bash setup.sh
 `setup.sh` installs Docker + Compose (via get.docker.com, works on Amazon Linux/Ubuntu/Debian),
 creates `.env` from `.env.example` (opens it for you to fill in), runs the one-time Telethon logins
 (→ `bot/worker.session`, `bot/streamer.session`), runs `docker compose up -d --build` (the
-`postgres` service applies `bot/schema.sql` on first init), and optionally imports old Turso data.
+`postgres` service applies `bot/schema.sql` on first init).
 Re-run it any time; it skips completed steps.
 
 Then open `http://<server-ip>:3000` (log in with `APP_PASSWORD`).
@@ -197,6 +199,7 @@ See [`.env.example`](../.env.example). Key ones for server mode:
 | `TELEGRAM_API_URL` | bot, web, streamer | local Bot API endpoint (compose sets `http://telegram-bot-api:8081`) |
 | `UPLOAD_STAGING_DIR` / `WORKER_OUT_DIR` | web, watcher | compose sets `/staging` + `/staging/_parts` |
 | `VIDEO_COMPRESS`, `VIDEO_CRF`, `VIDEO_PRESET`, `COMPRESSED_MAX_SIZE_GB` | streamer | background compression tuning |
+| `RCLONE_CONFIG_DIR`, `PIKPAK_*` | bot | PikPak remote-download (optional): host rclone-config dir bind-mounted into the bot; `PIKPAK_REMOTE`/`PIKPAK_MAX_BYTES`/`PIKPAK_MAX_CONCURRENT`/`PIKPAK_RETRIES`/`PIKPAK_DRIVE_FOLDER` |
 
 ---
 

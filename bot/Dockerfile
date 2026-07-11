@@ -9,6 +9,8 @@ WORKDIR /app
 # postgresql-client-16 → pg_dump for the daily DB backup job (bot.py → Telegram). The
 # client major must match the postgres:16 server, so pull it from the PGDG apt repo
 # (Debian's default postgresql-client is 15 and would refuse to dump a v16 server).
+# rclone → PikPak remote-download feature (bot/pikpak.py). Debian's rclone (1.60) predates
+# the pikpak backend (added 1.62), so we install the current official .deb instead of apt's.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg p7zip-full curl gnupg ca-certificates \
  && install -d /usr/share/postgresql-common/pgdg \
@@ -18,6 +20,9 @@ RUN apt-get update \
       > /etc/apt/sources.list.d/pgdg.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends 'libpq5=17.*' postgresql-client-16 \
+ && curl -fsSL "https://downloads.rclone.org/rclone-current-linux-$(dpkg --print-architecture).deb" -o /tmp/rclone.deb \
+ && apt-get install -y --no-install-recommends /tmp/rclone.deb \
+ && rm -f /tmp/rclone.deb \
  && apt-get purge -y --auto-remove curl gnupg \
  && rm -rf /var/lib/apt/lists/*
 

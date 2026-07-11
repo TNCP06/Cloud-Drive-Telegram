@@ -77,6 +77,13 @@ services:
     env_file: .env
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+      # PikPak downloads land here (bot/pikpak.py) then the watcher picks them up — same
+      # shared `staging` volume the watcher mounts, so both see the files.
+      - staging:/staging
+      # The rclone remote + token you set up with `rclone config` on the VPS host. Mounted
+      # read-write so rclone can persist refreshed PikPak OAuth tokens. Override the host path
+      # with RCLONE_CONFIG_DIR in .env if your rclone.conf lives elsewhere.
+      - ${RCLONE_CONFIG_DIR:-/home/ec2-user/.config/rclone}:/root/.config/rclone
     depends_on:
       postgres:
         condition: service_healthy

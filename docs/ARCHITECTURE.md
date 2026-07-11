@@ -24,7 +24,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 | Component | Runs on | File(s) | Responsibility |
 |---|---|---|---|
 | **Storage channel** | Telegram | — | Holds the actual file bytes (one message per part). Bot is admin. |
-| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake. |
+| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake; **PikPak remote-download** (`bot/pikpak.py`: `/pikpak` `/ls` `/jobs` + in-process rclone worker → hands off to `upload_jobs`). |
 | **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
 | **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Postgres; runs automatically on watcher container startup. |
@@ -39,8 +39,9 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 >
 > **Live updates stay in-band too.** The dashboard is kept fresh by Postgres `LISTEN/NOTIFY`,
 > not by any process calling another: statement-level triggers raise `NOTIFY drive_changed`
-> (`notify_drive_change`, on items/folders/tags) and `NOTIFY upload_changed` (`notify_upload_change`,
-> on `upload_jobs`) in `schema.sql`; the web's `/api/events` SSE endpoint holds one shared `LISTEN`
+> (`notify_drive_change`, on items/folders/tags), `NOTIFY upload_changed` (`notify_upload_change`,
+> on `upload_jobs`), and `NOTIFY pikpak_changed` (`notify_pikpak_change`, on `download_jobs` — the
+> PikPak remote-download queue) in `schema.sql`; the web's `/api/events` SSE endpoint holds one shared `LISTEN`
 > connection (both channels) and pushes a signal to every open browser — `drive` → the grid
 > refreshes, `upload` → the /upload page refreshes. So a file the bot indexes (or an upload's
 > progress) appears in the dashboard live, still purely through PG — no polling.
@@ -161,8 +162,38 @@ These are load-bearing — break them and indexing/downloads break:
 
 Single shared password (`APP_PASSWORD` env). Cookie `tcd_auth` stores `SHA-256(password)`,
 verified in [`web/middleware.ts`](../web/middleware.ts) (edge) and login server action.
-**If `APP_PASSWORD` is unset, auth is disabled (open).** Telegram-side access control is
-separate: the bot only obeys `/start` downloads and Bot Drop from `OWNER_USER_ID`.
+**If `APP_PASSWORD` is unset, auth is disabled (open) and the `/login` route redirects to `/`**
+(middleware bounces it; `login/page.tsx` also redirects server-side as defence in depth).
+Telegram-side access control is separate: the bot only obeys `/start` downloads and Bot Drop
+from `OWNER_USER_ID`.
+
+### Demo Mode
+
+Set `DEMO_MODE=true` (env) to run the dashboard without a real database or Telegram account.
+Activating demo mode:
+- **Replaces all data reads** -- `getDriveData()` returns fake seeder data from `lib/demo.ts`
+  instead of querying Postgres. No `DATABASE_URL` is needed.
+- **Writes mutate the in-memory seeder data instead of a DB** -- favorite/trash/restore/purge,
+  folder create/rename/delete/restore/move, and tag create/rename/recolor/delete all check
+  `isDemoMode()` and edit `DEMO_FILES`/`DEMO_FOLDERS`/`DEMO_TAGS` (`lib/demo.ts`) in place, then
+  `refresh()` as usual -- so the UI change actually sticks (until the server restarts) instead of
+  throwing. Actions with no meaningful demo effect (uploads needing real file bytes; thumbnail
+  fetch/upload; moving into the always-empty Private space) still no-op, either via `demoGuard()`
+  (`actions/_shared.ts`, throws -- only used by `uploads.ts`, whose callers already catch and show
+  the message) or a silent `isDemoMode()` early-return (private/thumbnail actions, whose callers
+  don't wrap them in try/catch).
+- **Shows a fixed banner** -- `components/DemoBanner.tsx` renders a purple fixed-top bar
+  labelled "Demo Mode -- data is fictional, no changes are saved" so visitors know they
+  are looking at a showcase.
+- **Recommended credentials** -- when demoing publicly, set `APP_PASSWORD=login` and `PIN=123456`
+  (auth still gates every route; demo mode does not bypass it). The login page and the Private PIN
+  screen display these values on-screen (`login/LoginForm.tsx`, `components/PrivateLock.tsx`, both
+  passed `demo={isDemoMode()}` from their server page) so visitors can sign in without asking.
+
+Seeder data (`lib/demo.ts`) covers: multi-part archives, versioned families, media (video/image/
+audio/PDF, each with a colored placeholder `thumb`), nested folders, an empty folder, a trashed
+folder, starred items, and trashed items -- enough to exercise every UI view (Main grid, Recent,
+Favorites, Trash, Folder navigation).
 
 ---
 
@@ -179,7 +210,9 @@ separate: the bot only obeys `/start` downloads and Bot Drop from `OWNER_USER_ID
   (rewrites `?`→`$n`), `bot/pg_db.py` wraps `psycopg` (rewrites `?`→`%s`). SQL is Postgres dialect
   (`now_text()` for UTC text timestamps, `ON CONFLICT`, `lower()`). Connection via `DATABASE_URL`.
 - **Server/VPS:** the whole stack ships as Docker (`docker-compose.yml` + `web/Dockerfile` +
-  `bot/Dockerfile`). web & watcher share a `staging` volume for browser uploads; the `streamer`
+  `bot/Dockerfile`). web, watcher **& bot** share the `staging` volume (bot for PikPak downloads);
+  the bot image bundles `rclone` and bind-mounts the host `rclone.conf` (`RCLONE_CONFIG_DIR`) for
+  the PikPak feature. The `streamer`
   service gets a `cache` volume for expendable video chunks and a `seekpreviews` volume for persistent seek-preview sprite sheets. An optional `telegram-bot-api` local
   server container runs in `--local` mode to bypass the 3Mbps download throttle, sharing its data
   folder (`telegram-bot-api-data`) with the `streamer`, `bot`, and `web` containers (enabling direct filesystem reading of video chunks and thumbnails instead of HTTP downloads). bot, watcher, & streamer run as
