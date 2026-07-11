@@ -44,10 +44,12 @@ _STATUS_ICON = {
     "queued": "🕒", "downloading": "⬇️", "downloaded": "📦",
     "uploading": "⬆️", "done": "✅", "failed": "❌",
 }
-# media kind → watcher uploads whole as media (streamable video / thumbnail); else document.
-_MEDIA_EXTS = {
+# Only VIDEO → 'media' (streamable, thumbnail). Everything else — images, audio, archives,
+# docs — uploads as a DOCUMENT: preserves the original bytes (Telegram recompresses photos and
+# rejects unusual image formats like AVIF-as-.jpg with "Failure while processing image"), which
+# is what a cloud drive wants.
+_VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp",
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp3", ".m4a", ".flac", ".wav", ".ogg",
 }
 
 
@@ -66,8 +68,8 @@ def human_size(n) -> str:
         n /= 1024
 
 
-def _is_media(fname: str) -> bool:
-    return os.path.splitext(fname)[1].lower() in _MEDIA_EXTS
+def _is_video(fname: str) -> bool:
+    return os.path.splitext(fname)[1].lower() in _VIDEO_EXTS
 
 
 def _drive_title(remote_path: str, fname: str) -> str:
@@ -253,7 +255,7 @@ async def _process(bot, db, job):
         # Hand off to the existing upload pipeline. origin='upload' + cleanup_source=1 means
         # the watcher uploads the staged file whole and deletes `dst` afterwards. part_size is
         # oversized-proof (4096 MB) so a ≤2 GB file is always one part (no split).
-        kind = "media" if _is_media(fname) else "archive"
+        kind = "media" if _is_video(fname) else "archive"  # video → streamable; else document
         title = _drive_title(job["remote_path"], fname)  # files it under the pikpak/ drive folder
         rs = await db.execute(
             "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, "

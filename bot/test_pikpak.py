@@ -61,11 +61,12 @@ def test_drive_title():
     assert pikpak._drive_title("/A/b.iso", "b.iso") == "pikpak/A/b"
 
 
-def test_is_media():
-    assert pikpak._is_media("clip.mkv")
-    assert pikpak._is_media("photo.JPG")       # case-insensitive
-    assert not pikpak._is_media("archive.zip")
-    assert not pikpak._is_media("noext")
+def test_is_video():
+    assert pikpak._is_video("clip.mkv")
+    assert pikpak._is_video("clip.MP4")        # case-insensitive
+    assert not pikpak._is_video("photo.jpg")   # images → document (preserve original bytes)
+    assert not pikpak._is_video("archive.zip")
+    assert not pikpak._is_video("noext")
 
 
 def test_classify_error():
