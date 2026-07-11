@@ -24,7 +24,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 | Component | Runs on | File(s) | Responsibility |
 |---|---|---|---|
 | **Storage channel** | Telegram | — | Holds the actual file bytes (one message per part). Bot is admin. |
-| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake; **PikPak remote-download** (`bot/pikpak.py`: `/pikpak` `/ls` `/jobs` + in-process rclone worker → hands off to `upload_jobs`). |
+| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake; **PikPak remote-download** (`bot/pikpak.py`: `/pikpak` `/pikpak_ls` `/pikpak_jobs` + a ☁️ PikPak inline-button browser + in-process rclone worker → hands off to `upload_jobs`). |
 | **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
 | **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Postgres; runs automatically on watcher container startup. |

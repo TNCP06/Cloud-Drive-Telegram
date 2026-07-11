@@ -86,8 +86,11 @@ normal upload pipeline push it to the drive. All in the **bot** process ([`bot/p
 rclone is baked into the bot image, your host `rclone.conf` is bind-mounted in. Commands are
 gated to authorized users. **No file splitting** — oversized files are rejected up front.
 
-1. **Discover** (optional): `/ls [folder]` → `rclone lsf pikpak:<folder>` lists up to ~50 entries
-   (root if omitted) so you can copy a path.
+0. **Interactive (no typing):** open the bot's `/menu` → **☁️ PikPak** → **📂 Browse & download** →
+   an inline-button browser lists the remote; tap 📁 to descend, 📄 to download that file. All the
+   steps below then run automatically. (The typed commands remain for power users.)
+1. **Discover** (optional, typed): `/pikpak_ls [folder]` → `rclone lsf pikpak:<folder>` lists up to
+   ~50 entries (root if omitted) so you can copy a path.
 2. **Request**: `/pikpak <remote_path>` → the bot runs `rclone lsjson --stat pikpak:<path>` to
    validate + read the size. Rejected up front (no download, no job) if: the remote/auth is broken
    (→ "run `rclone config` on the VPS"), the path is missing, it's a folder, or the size exceeds
@@ -107,7 +110,8 @@ gated to authorized users. **No file splitting** — oversized files are rejecte
    the file is now safely in Telegram (indexing reads from Telegram, not the local copy). A
    `_track_upload` task follows the `upload_jobs` row to `done` → sets `download_jobs` → `done` and
    confirms deletion. **Bot** indexes the new `channel_post` (Flow C).
-6. **Status**: `/jobs` lists the last 10 download jobs with status + live `%`.
+6. **Status**: `/pikpak_jobs` (or **☁️ PikPak → 📋 Recent jobs**) lists the last 10 download jobs
+   with status + live `%`.
 
 ---
 

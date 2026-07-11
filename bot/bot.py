@@ -24,7 +24,7 @@ from datetime import time as dtime
 
 import httpx
 from pg_db import create_client
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault, ForceReply
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -80,6 +80,11 @@ from pikpak import (  # noqa: F401  (PikPak remote-download feature)
     on_pikpak,
     on_jobs,
     on_ls,
+    start_download as pikpak_start_download,
+    do_ls as pikpak_do_ls,
+    jobs_text as pikpak_jobs_text,
+    render_browser as pikpak_render_browser,
+    browse_navigate as pikpak_browse_navigate,
     ensure_schema as ensure_pikpak_schema,
     start_workers as start_pikpak_workers,
 )
@@ -316,8 +321,8 @@ async def post_init(app: Application):
             BotCommand("start", "Trigger file download / Greet"),
             BotCommand("auth", "Authorize yourself using password"),
             BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
-            BotCommand("ls", "Browse PikPak: /ls [folder]"),
-            BotCommand("jobs", "Show recent PikPak download jobs"),
+            BotCommand("pikpak_ls", "Browse PikPak: /pikpak_ls [folder]"),
+            BotCommand("pikpak_jobs", "Recent PikPak download jobs"),
             BotCommand("cancel", "Cancel current file upload flow"),
         ]
         await app.bot.set_my_commands(default_commands, scope=BotCommandScopeDefault())
@@ -327,8 +332,8 @@ async def post_init(app: Application):
             BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
             BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
-            BotCommand("ls", "Browse PikPak: /ls [folder]"),
-            BotCommand("jobs", "Show recent PikPak download jobs"),
+            BotCommand("pikpak_ls", "Browse PikPak: /pikpak_ls [folder]"),
+            BotCommand("pikpak_jobs", "Recent PikPak download jobs"),
             BotCommand("cancel", "Cancel current file upload flow"),
             BotCommand("approve", "Authorize a user: /approve <user_id>"),
             BotCommand("revoke", "Revoke authorization: /revoke <user_id>"),
@@ -583,18 +588,15 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
 
     text = (
         "🤖 <b>Telegram Cloud Drive Bot Menu</b>\n\n"
-        "Welcome! Select an option below to interact with the cloud drive:\n\n"
-        "☁️ <b>PikPak remote-download</b>\n"
-        "• <code>/pikpak &lt;path&gt;</code> — fetch a PikPak file into the drive\n"
-        "• <code>/ls [folder]</code> — browse the PikPak remote\n"
-        "• <code>/jobs</code> — recent download jobs + progress"
+        "Welcome! Select an option below to interact with the cloud drive:"
     )
 
     keyboard = [
         [
             InlineKeyboardButton("📥 How to Upload", callback_data="menu:upload_guide"),
             InlineKeyboardButton("👤 My Auth Info", callback_data="menu:auth_info")
-        ]
+        ],
+        [InlineKeyboardButton("☁️ PikPak", callback_data="menu:pikpak_menu")],
     ]
 
     # Telegram API rejects 'localhost' or '127.0.0.1' in inline keyboard URLs, which causes a BadRequest crash.
@@ -627,6 +629,14 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db = context.bot_data["db"]
     if not await is_user_authorized(db, user.id):
+        return
+
+    if context.user_data.get("pikpak_await"):
+        prompt_id = context.user_data.pop("pikpak_prompt_id", None)
+        context.user_data.pop("pikpak_await", None)
+        if prompt_id:
+            await _delete_messages(context, message.chat_id, [prompt_id])
+        await message.reply_text("❌ PikPak prompt cancelled.")
         return
 
     if "upload_file" in context.user_data or "upload_state" in context.user_data or "upload_queue" in context.user_data:
@@ -1052,6 +1062,23 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_user_authorized(db, user.id):
         return
 
+    # PikPak guided input (from the ☁️ PikPak menu buttons) takes priority over the upload flow.
+    pikpak_mode = context.user_data.get("pikpak_await")
+    if pikpak_mode:
+        ptext = (message.text or "").strip()
+        prompt_id = context.user_data.pop("pikpak_prompt_id", None)
+        context.user_data.pop("pikpak_await", None)  # consumed (a command also cancels the prompt)
+        if ptext.startswith("/"):
+            return  # let CommandHandlers run
+        if pikpak_mode == "path":
+            await pikpak_start_download(message, db, ptext)
+        elif pikpak_mode == "ls":
+            await pikpak_do_ls(message, ptext)
+        # Tidy the noise: delete the bot's prompt + the user's typed reply, keep the result.
+        cleanup = [message.message_id] + ([prompt_id] if prompt_id else [])
+        await _delete_messages(context, message.chat_id, cleanup)
+        return
+
     state = context.user_data.get("upload_state")
     if not state:
         if message.text and not message.text.startswith("/"):
@@ -1096,6 +1123,11 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await is_user_authorized(db, user.id):
         await query.message.reply_text("⛔ Access denied.")
+        return
+
+    # PikPak interactive browser navigation (pk:up / pk:cd:N / pk:dl:N).
+    if data.startswith("pk:"):
+        await pikpak_browse_navigate(query, context, data, db)
         return
 
     if data == "upload:cancel":
@@ -1151,6 +1183,43 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+    elif data == "menu:pikpak_menu":
+        text = (
+            "☁️ <b>PikPak Remote-Download</b>\n\n"
+            "Pull a file from your PikPak into the cloud drive — all by tapping, "
+            "no need to type a command or path:"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📂 Browse & download", callback_data="pikpak:browse")],
+            [InlineKeyboardButton("📥 Download by path", callback_data="pikpak:download")],
+            [InlineKeyboardButton("📋 Recent jobs", callback_data="pikpak:jobs")],
+            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")],
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+    elif data == "pikpak:browse":
+        # Interactive browser: navigate folders + tap a file to download — no typing.
+        await pikpak_render_browser(query, context, "")
+
+    elif data == "pikpak:download":
+        # Fallback for when you already know/paste an exact path.
+        context.user_data["pikpak_await"] = "path"
+        prompt = await query.message.reply_text(
+            "📥 Send the PikPak <b>file path</b> to download.\n"
+            "Example: <code>My Pack/delyn.jpg</code>\n\n"
+            "Send /cancel to abort.",
+            parse_mode="HTML",
+            reply_markup=ForceReply(input_field_placeholder="My Pack/delyn.jpg"),
+        )
+        context.user_data["pikpak_prompt_id"] = prompt.message_id
+
+    elif data == "pikpak:jobs":
+        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="menu:pikpak_menu")]]
+        await query.edit_message_text(
+            await pikpak_jobs_text(db),
+            reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML",
+        )
 
     elif data == "menu:admin_menu":
         if user.id != OWNER_USER_ID:
@@ -1256,8 +1325,8 @@ def main():
     app.add_handler(CommandHandler("cancel", on_cancel))
     app.add_handler(CommandHandler("menu", on_menu))
     app.add_handler(CommandHandler("pikpak", on_pikpak))
-    app.add_handler(CommandHandler("jobs", on_jobs))
-    app.add_handler(CommandHandler("ls", on_ls))
+    app.add_handler(CommandHandler("pikpak_ls", on_ls))
+    app.add_handler(CommandHandler("pikpak_jobs", on_jobs))
 
     # Callback Query handler for inline buttons
     app.add_handler(CallbackQueryHandler(on_callback_query))

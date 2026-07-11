@@ -16,12 +16,15 @@ This module imports only from bot_config / db_ops (no `bot` import → no import
 """
 
 import asyncio
+import html
 import json
 import os
 import re
 import shutil
 import time
 from collections import deque
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot_config import (
     PIKPAK_REMOTE,
@@ -34,6 +37,8 @@ from bot_config import (
     log,
 )
 from db_ops import is_user_authorized
+
+BROWSE_LIMIT = 50           # max entries shown as buttons per folder (Telegram keyboard sanity)
 
 POLL_INTERVAL = 3           # seconds between queue polls (per worker)
 EDIT_THROTTLE_S = 6         # min seconds between Telegram progress-message edits (rate-limit safe)
@@ -388,31 +393,22 @@ async def _deny(message, user_id):
     )
 
 
-async def on_pikpak(update, context):
-    user = update.effective_user
-    message = update.message
-    if message is None or user is None:
+# --- Reusable cores (shared by the /commands and the PikPak menu buttons) ----
+async def start_download(message, db, remote_path):
+    """Validate a PikPak path, reject if oversized, queue a download job + progress reply."""
+    remote_path = (remote_path or "").strip().strip("/")
+    if not remote_path:
+        await message.reply_text("No path given. Example: `My Pack/delyn.jpg`.", parse_mode="Markdown")
         return
-    db = context.bot_data["db"]
-    if not await is_user_authorized(db, user.id):
-        await _deny(message, user.id)
-        return
-    if not context.args:
-        await message.reply_text("Usage: `/pikpak <remote_path>`\nBrowse paths with `/ls [folder]`.",
-                                 parse_mode="Markdown")
-        return
-
-    remote_path = " ".join(context.args).strip().strip("/")
     try:
         entry = await rclone_stat(remote_path)
     except PikpakError as e:
         await message.reply_text(str(e))
         return
-
     if entry.get("IsDir"):
         await message.reply_text(
-            f"“{remote_path}” is a folder. /pikpak takes a single file — list it with `/ls {remote_path}`.",
-            parse_mode="Markdown")
+            f"“{remote_path}” is a folder — /pikpak takes a single file. Browse it with "
+            f"`/pikpak_ls {remote_path}`.", parse_mode="Markdown")
         return
     size = int(entry.get("Size") or 0)
     fname = entry.get("Name") or os.path.basename(remote_path) or remote_path
@@ -424,7 +420,6 @@ async def on_pikpak(update, context):
             f"❌ File is {human_size(size)}, exceeds the {human_size(PIKPAK_MAX_BYTES)} Telegram limit. "
             "Not downloaded.")
         return
-
     sent = await message.reply_text(f"🗂 Queued {fname} ({human_size(size)}) for download…")
     rs = await db.execute(
         "INSERT INTO download_jobs (source, remote_path, filename, size, status, chat_id, message_id) "
@@ -435,42 +430,11 @@ async def on_pikpak(update, context):
     log.info("PikPak job #%s queued: %s (%s)", jid, remote_path, human_size(size))
 
 
-async def on_jobs(update, context):
-    user = update.effective_user
-    message = update.message
-    if message is None or user is None:
-        return
-    db = context.bot_data["db"]
-    if not await is_user_authorized(db, user.id):
-        await _deny(message, user.id)
-        return
-    rs = await db.execute(
-        "SELECT id, filename, size, status, progress, error "
-        "FROM download_jobs ORDER BY id DESC LIMIT 10"
-    )
-    if not rs.rows:
-        await message.reply_text("No download jobs yet. Start one with `/pikpak <path>`.",
-                                 parse_mode="Markdown")
-        return
-    lines = ["📋 <b>Last 10 download jobs</b>"]
-    for jid, fname, size, status, progress, error in rs.rows:
-        icon = _STATUS_ICON.get(status, "•")
-        extra = f" {progress}%" if status == "downloading" else ""
-        tail = f" — {error[:60]}" if status == "failed" and error else ""
-        lines.append(f"{icon} #{jid} {fname} ({human_size(size)}) [{status}{extra}]{tail}")
-    await message.reply_text("\n".join(lines), parse_mode="HTML")
-
-
-async def on_ls(update, context):
-    user = update.effective_user
-    message = update.message
-    if message is None or user is None:
-        return
-    db = context.bot_data["db"]
-    if not await is_user_authorized(db, user.id):
-        await _deny(message, user.id)
-        return
-    folder = " ".join(context.args).strip().strip("/") if context.args else ""
+async def do_ls(message, folder):
+    """List a PikPak folder (≤50 entries)."""
+    folder = (folder or "").strip().strip("/")
+    if folder in (".", "/"):
+        folder = ""
     try:
         names = await rclone_lsf(folder)
     except PikpakError as e:
@@ -484,3 +448,110 @@ async def on_ls(update, context):
     header = f"📁 {PIKPAK_REMOTE}:{folder or '/'}  ({len(names)} entries)\n\n"
     # Plain text (no parse_mode): filenames can contain markdown/HTML-breaking chars.
     await message.reply_text(header + "\n".join(shown) + more)
+
+
+async def jobs_text(db) -> str:
+    """HTML listing of the last 10 download jobs (shared by /pikpak_jobs + menu button)."""
+    rs = await db.execute(
+        "SELECT id, filename, size, status, progress, error "
+        "FROM download_jobs ORDER BY id DESC LIMIT 10"
+    )
+    if not rs.rows:
+        return "No download jobs yet. Start one with /pikpak &lt;path&gt;."
+    lines = ["📋 <b>Last 10 download jobs</b>"]
+    for jid, fname, size, status, progress, error in rs.rows:
+        icon = _STATUS_ICON.get(status, "•")
+        extra = f" {progress}%" if status == "downloading" else ""
+        tail = f" — {html.escape(error[:60])}" if status == "failed" and error else ""
+        lines.append(f"{icon} #{jid} {html.escape(str(fname))} ({human_size(size)}) [{status}{extra}]{tail}")
+    return "\n".join(lines)
+
+
+# --- Thin command handlers ---------------------------------------------------
+async def on_pikpak(update, context):
+    user, message = update.effective_user, update.message
+    if message is None or user is None:
+        return
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        await _deny(message, user.id)
+        return
+    if not context.args:
+        await message.reply_text("Usage: `/pikpak <remote_path>`\nBrowse paths with `/pikpak_ls [folder]`.",
+                                 parse_mode="Markdown")
+        return
+    await start_download(message, db, " ".join(context.args))
+
+
+async def on_ls(update, context):
+    user, message = update.effective_user, update.message
+    if message is None or user is None:
+        return
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        await _deny(message, user.id)
+        return
+    await do_ls(message, " ".join(context.args) if context.args else "")
+
+
+async def on_jobs(update, context):
+    user, message = update.effective_user, update.message
+    if message is None or user is None:
+        return
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        await _deny(message, user.id)
+        return
+    await message.reply_text(await jobs_text(db), parse_mode="HTML")
+
+
+# --- Interactive button browser (navigate folders / tap a file to download) --
+# The current folder + its listing are cached in user_data so callback_data can carry a tiny
+# index (pk:cd:N / pk:dl:N) instead of a full path — Telegram caps callback_data at 64 bytes.
+async def render_browser(query, context, folder):
+    """Edit the browse message to show `folder`'s entries as buttons (📁 open / 📄 download)."""
+    folder = (folder or "").strip().strip("/")
+    try:
+        names = await rclone_lsf(folder)
+    except PikpakError as e:
+        kb = [[InlineKeyboardButton("⬅️ PikPak menu", callback_data="menu:pikpak_menu")]]
+        await query.edit_message_text(str(e), reply_markup=InlineKeyboardMarkup(kb))
+        return
+    shown = names[:BROWSE_LIMIT]
+    context.user_data["pk_cwd"] = folder
+    context.user_data["pk_items"] = shown
+    rows = []
+    if folder:
+        rows.append([InlineKeyboardButton("⬆️  .. (up)", callback_data="pk:up")])
+    for idx, name in enumerate(shown):
+        is_dir = name.endswith("/")
+        label = ("📁 " if is_dir else "📄 ") + name.rstrip("/")[:38]
+        rows.append([InlineKeyboardButton(label, callback_data=f"pk:{'cd' if is_dir else 'dl'}:{idx}")])
+    rows.append([InlineKeyboardButton("⬅️ PikPak menu", callback_data="menu:pikpak_menu")])
+    more = (f"\n… and {len(names) - BROWSE_LIMIT} more — narrow with /pikpak_ls {folder}"
+            if len(names) > BROWSE_LIMIT else "")
+    loc = f"{PIKPAK_REMOTE}:/{folder}" if folder else f"{PIKPAK_REMOTE}:/"
+    header = (f"📂 <b>{html.escape(loc)}</b>\n"
+              f"Tap 📁 to open a folder, 📄 to download a file.{html.escape(more)}")
+    await query.edit_message_text(header, reply_markup=InlineKeyboardMarkup(rows), parse_mode="HTML")
+
+
+async def browse_navigate(query, context, data, db):
+    """Handle a pk:* browser callback (pk:up / pk:cd:N / pk:dl:N)."""
+    cwd = context.user_data.get("pk_cwd", "")
+    items = context.user_data.get("pk_items", [])
+    if data == "pk:up":
+        parent = cwd.rsplit("/", 1)[0] if "/" in cwd else ""
+        await render_browser(query, context, parent)
+        return
+    try:
+        _, action, idx_s = data.split(":", 2)
+        name = items[int(idx_s)]
+    except (ValueError, IndexError):
+        await render_browser(query, context, cwd)  # stale listing — re-list current folder
+        return
+    path = (f"{cwd}/{name}" if cwd else name).strip("/")
+    if action == "cd":
+        await render_browser(query, context, path)
+    elif action == "dl":
+        await start_download(query.message, db, path)
