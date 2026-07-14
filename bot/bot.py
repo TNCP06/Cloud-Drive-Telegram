@@ -76,10 +76,12 @@ from indexing import (  # noqa: F401  (re-exported)
     index_bot_copy,
 )
 from db_backup import run_backup
-from pikpak import (  # noqa: F401  (PikPak remote-download feature)
+from pikpak import (  # noqa: F401  (remote-download feature: PikPak + WebDAV drives via OpenList)
     on_pikpak,
     on_jobs,
     on_ls,
+    on_baidu,
+    on_baidu_ls,
     start_download as pikpak_start_download,
     do_ls as pikpak_do_ls,
     jobs_text as pikpak_jobs_text,
@@ -322,7 +324,9 @@ async def post_init(app: Application):
             BotCommand("auth", "Authorize yourself using password"),
             BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
             BotCommand("pikpak_ls", "Browse PikPak: /pikpak_ls [folder]"),
-            BotCommand("pikpak_jobs", "Recent PikPak download jobs"),
+            BotCommand("pikpak_jobs", "Recent download jobs"),
+            BotCommand("baidu", "Download a Baidu file: /baidu <path>"),
+            BotCommand("baidu_ls", "Browse Baidu: /baidu_ls [folder]"),
             BotCommand("cancel", "Cancel current file upload flow"),
         ]
         await app.bot.set_my_commands(default_commands, scope=BotCommandScopeDefault())
@@ -333,7 +337,9 @@ async def post_init(app: Application):
             BotCommand("start", "Trigger file download / Greet"),
             BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
             BotCommand("pikpak_ls", "Browse PikPak: /pikpak_ls [folder]"),
-            BotCommand("pikpak_jobs", "Recent PikPak download jobs"),
+            BotCommand("pikpak_jobs", "Recent download jobs"),
+            BotCommand("baidu", "Download a Baidu file: /baidu <path>"),
+            BotCommand("baidu_ls", "Browse Baidu: /baidu_ls [folder]"),
             BotCommand("cancel", "Cancel current file upload flow"),
             BotCommand("approve", "Authorize a user: /approve <user_id>"),
             BotCommand("revoke", "Revoke authorization: /revoke <user_id>"),
@@ -1327,6 +1333,8 @@ def main():
     app.add_handler(CommandHandler("pikpak", on_pikpak))
     app.add_handler(CommandHandler("pikpak_ls", on_ls))
     app.add_handler(CommandHandler("pikpak_jobs", on_jobs))
+    app.add_handler(CommandHandler("baidu", on_baidu))
+    app.add_handler(CommandHandler("baidu_ls", on_baidu_ls))
 
     # Callback Query handler for inline buttons
     app.add_handler(CallbackQueryHandler(on_callback_query))

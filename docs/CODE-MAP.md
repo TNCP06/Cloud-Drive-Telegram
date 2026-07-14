@@ -12,8 +12,8 @@ approximate and will drift — treat function names as the stable anchor.
 > `pg_db.py` (Postgres client shim: `?`→`%s`, autocommit pool, `.execute().rows`),
 > `tg_helpers.py` (pure helpers), `db_ops.py` (idempotent Postgres ops), `indexing.py`
 > (channel indexing + thumbnail harvest + `index_bot_copy`), `db_backup.py` (daily DB backup
-> → Telegram), `pikpak.py` (PikPak remote-download: `/pikpak` `/pikpak_ls` `/pikpak_jobs` + a
-> ☁️ PikPak inline-button browser + in-bot rclone worker). `bot.py` keeps the interactive handlers
+> → Telegram), `pikpak.py` (generic remote-download: `/pikpak` `/baidu` + `_ls`/`_jobs`, drive
+> registry, ☁️ PikPak inline-button browser + in-bot rclone worker). `bot.py` keeps the interactive handlers
 > + `main()` and **re-exports** the names
 > `index_history.py` imports (`from bot import …`). The streamer's background compression lives in
 > `stream_compress.py` and seek-preview sprite generation in `stream_seekpreview.py`.
@@ -46,25 +46,31 @@ Lifecycle: `post_init`/`post_shutdown` (Postgres client, auto-migrations for `au
 `run_daily`). **Env:** `BOT_TOKEN`, `STORAGE_CHANNEL_ID`,
 `OWNER_USER_ID`, `DATABASE_URL`, `AUTH_PASSWORD`/`APP_PASSWORD`.
 
-### `pikpak.py` — PikPak remote-download (in `bot` process, rclone)
-`/pikpak <path>` pulls a file from the pre-configured rclone remote onto the VPS and feeds it
-into the **existing** `upload_jobs` → watcher pipeline; no new process/session. Reusable cores
-`start_download` (validate via `rclone_stat` = `rclone lsjson --stat`, **reject > `PIKPAK_MAX_BYTES`
-before downloading**, insert a `download_jobs` row + progress reply), `do_ls` (browse via
-`rclone_lsf`, ~50-entry cap), `jobs_text` (last 10 jobs) — shared by the thin commands `on_pikpak`
-(`/pikpak`), `on_ls` (`/pikpak_ls`), `on_jobs` (`/pikpak_jobs`) **and** the ☁️ PikPak inline-button
-menu. `render_browser`/`browse_navigate` drive the interactive folder browser (folders/files as
-buttons; callback carries a tiny index into the cached listing, not the path → stays under
-Telegram's 64-byte cap; tap 📁 to descend, 📄 to download). All gated by `is_user_authorized`.
-Worker: `start_workers` (spawn `PIKPAK_MAX_CONCURRENT` `_worker_loop` asyncio tasks in `post_init`),
-`_claim_next` (atomic `UPDATE … FOR UPDATE SKIP LOCKED` claim), `_process` (`_rclone_copy` with
-retry+backoff → parse `--stats-one-line` `%` → throttled Telegram edit → hand off to `upload_jobs`
-`origin='upload', cleanup_source=1, status='pending'`; staging wiped on failure). `_drive_title`
-files items under the **`PIKPAK_DRIVE_FOLDER`** (`pikpak`) drive folder, mirroring remote subdirs.
-`ensure_schema` (idempotent table+trigger migration + requeue jobs stranded mid-download).
-Needs **rclone in the bot image** + the host `rclone.conf` bind-mounted; downloads land in the
-shared `staging` volume. **Env:** `PIKPAK_REMOTE`, `PIKPAK_MAX_BYTES`, `PIKPAK_MAX_CONCURRENT`,
-`PIKPAK_RETRIES`, `PIKPAK_STAGING_DIR`, `PIKPAK_DRIVE_FOLDER`, `RCLONE_BIN`. One-check: `test_pikpak.py`.
+### `pikpak.py` — generic remote-download (in `bot` process, rclone; PikPak + WebDAV drives)
+`/pikpak <path>` / `/baidu <path>` pull a file from a cloud drive onto the VPS and feed it into
+the **existing** `upload_jobs` → watcher pipeline; no new process/session. **Drives are data:**
+`bot_config.DRIVES` (overridable via `DRIVES_JSON`) maps a command key → `{remote, prefix, folder,
+display}`; `resolve_drive`/`drive_remote` build the `remote:prefix/path` target. PikPak is native
+(`pikpak:`); Baidu/Quark/… route through the OpenList WebDAV remote (`openlist:`, prefix = mount).
+Reusable cores `start_download(…, drive_key)` (validate via `rclone_stat`; **size policy: media
+> `PIKPAK_MAX_BYTES` rejected, non-media > 2 GB accepted for splitting**; insert a `download_jobs`
+row with `source=<drive>` + progress reply), `do_ls(…, drive_key)` (browse via `rclone_lsf`,
+~50-entry cap), `jobs_text` (last 10 jobs across all drives, drive-tagged) — shared by generic cores
+`_cmd_download`/`_cmd_ls` and the thin per-drive handlers `on_pikpak`/`on_ls`/`on_baidu`/`on_baidu_ls`,
+`on_jobs` (`/pikpak_jobs`), **and** the ☁️ PikPak inline-button menu (PikPak-only). `render_browser`/
+`browse_navigate` drive the interactive folder browser (callback carries a tiny index into the cached
+listing, not the path → under Telegram's 64-byte cap). All gated by `is_user_authorized`.
+Worker: `start_workers` (spawn `PIKPAK_MAX_CONCURRENT` `_worker_loop` tasks in `post_init`),
+`_claim_next` (atomic `UPDATE … FOR UPDATE SKIP LOCKED`, returns `source`), `_process` (resolve
+drive → `_rclone_copy` with retry+backoff + slow-transfer flags → parse `--stats-one-line` `%` →
+throttled edit → hand off to `upload_jobs`, choosing `part_size = DRIVE_SPLIT_PART_MB` for oversized
+non-media so the watcher splits it, else `4096`; staging wiped on failure). `_classify_rclone_error`
+distinguishes native (`rclone config`) from WebDAV (OpenList unreachable vs expired cookie → OpenList
+UI). `_drive_title` files items under the drive's `folder`, mirroring remote subdirs. `ensure_schema`
+(idempotent table+trigger migration + requeue jobs stranded mid-download). Needs **rclone in the bot
+image** + host `rclone.conf` bind-mounted; downloads land in the shared `staging` volume. **Env:**
+`PIKPAK_*`, `DRIVES_JSON`, `DRIVE_SPLIT_PART_MB`, `RCLONE_BIN`. OpenList infra + runbook:
+[`infra/openlist/`](../infra/openlist/README.md). One-check: `test_pikpak.py`.
 
 ### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
 Handles two job origins (`upload_jobs.origin`):

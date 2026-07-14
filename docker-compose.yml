@@ -175,6 +175,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Self-hosted OpenList (community fork of AList — image openlistteam/openlist ONLY; do NOT use
+  # any alist image/API, the original project was sold in 2025 and its packages are considered
+  # compromised). Mounts Chinese cloud drives (Baidu Netdisk, later Quark/115) and exposes them
+  # over WebDAV so rclone (which has no native Baidu backend) can pull from them. The bot's rclone
+  # reaches it IN-NETWORK at http://openlist:5244/dav (an rclone `webdav` remote named `openlist`).
+  # NOT exposed publicly: the admin UI port is published on 127.0.0.1 only — reach it via SSH
+  # tunnel or the existing Cloudflare Tunnel. Setup/runbook: infra/openlist/README.md.
+  openlist:
+    image: openlistteam/openlist:latest
+    volumes:
+      - openlist-data:/opt/openlist/data
+    ports:
+      - "127.0.0.1:5244:5244"   # localhost only — never bind 0.0.0.0
+    restart: unless-stopped
+
   # Cloudflare Tunnel — gives the internal `streamer` a public HTTPS URL with NO open inbound port,
   # so a dashboard hosted OFF the VPS (e.g. Vercel) can stream from it. The connector shares this
   # compose network, so the tunnel's Public Hostname (configured in the Cloudflare dashboard) must
@@ -195,4 +210,5 @@ volumes:
   subtitles:     # generated subtitle tracks — persistent (kept while video is indexed)
   seekpreviews:  # seek-preview sprite sheets — persistent (lightweight, fast to rebuild)
   telegram-bot-api-data:
+  openlist-data: # OpenList config + mounted-drive credentials — persistent (re-auth is manual)
 

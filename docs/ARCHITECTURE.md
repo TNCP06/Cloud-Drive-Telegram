@@ -24,7 +24,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 | Component | Runs on | File(s) | Responsibility |
 |---|---|---|---|
 | **Storage channel** | Telegram | — | Holds the actual file bytes (one message per part). Bot is admin. |
-| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake; **PikPak remote-download** (`bot/pikpak.py`: `/pikpak` `/pikpak_ls` `/pikpak_jobs` + a ☁️ PikPak inline-button browser + in-process rclone worker → hands off to `upload_jobs`). |
+| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake; **remote-download** (`bot/pikpak.py`: `/pikpak` + `/baidu` and other registry drives via OpenList/WebDAV, `_ls`/`_jobs` + a ☁️ PikPak inline-button browser + in-process rclone worker → hands off to `upload_jobs`, splitting non-media > 2 GB into parts). |
 | **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
 | **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Postgres; runs automatically on watcher container startup. |
@@ -210,9 +210,12 @@ Favorites, Trash, Folder navigation).
   (rewrites `?`→`$n`), `bot/pg_db.py` wraps `psycopg` (rewrites `?`→`%s`). SQL is Postgres dialect
   (`now_text()` for UTC text timestamps, `ON CONFLICT`, `lower()`). Connection via `DATABASE_URL`.
 - **Server/VPS:** the whole stack ships as Docker (`docker-compose.yml` + `web/Dockerfile` +
-  `bot/Dockerfile`). web, watcher **& bot** share the `staging` volume (bot for PikPak downloads);
+  `bot/Dockerfile`). web, watcher **& bot** share the `staging` volume (bot for remote-download);
   the bot image bundles `rclone` and bind-mounts the host `rclone.conf` (`RCLONE_CONFIG_DIR`) for
-  the PikPak feature. The `streamer`
+  the remote-download feature. A self-hosted **`openlist`** container (image `openlistteam/openlist`
+  — community fork, NOT AList) mounts Chinese drives (Baidu, later Quark/115) and re-exposes them
+  over WebDAV so the bot's rclone can pull from them (`openlist:` remote); its UI is bound to
+  `127.0.0.1:5244` only. See [`infra/openlist/`](../infra/openlist/README.md). The `streamer`
   service gets a `cache` volume for expendable video chunks and a `seekpreviews` volume for persistent seek-preview sprite sheets. An optional `telegram-bot-api` local
   server container runs in `--local` mode to bypass the 3Mbps download throttle, sharing its data
   folder (`telegram-bot-api-data`) with the `streamer`, `bot`, and `web` containers (enabling direct filesystem reading of video chunks and thumbnails instead of HTTP downloads). bot, watcher, & streamer run as

@@ -79,39 +79,59 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
 
 ---
 
-## A3. PikPak remote-download (Telegram command → existing upload pipeline)
+## A3. Remote-download from cloud drives (PikPak + Baidu via OpenList)
 
-Pull a file straight from a PikPak (rclone) remote onto the VPS from Telegram, then let the
-normal upload pipeline push it to the drive. All in the **bot** process ([`bot/pikpak.py`](../bot/pikpak.py));
+Pull a file straight from a cloud drive onto the VPS from Telegram, then let the normal upload
+pipeline push it to the drive. All in the **bot** process ([`bot/pikpak.py`](../bot/pikpak.py));
 rclone is baked into the bot image, your host `rclone.conf` is bind-mounted in. Commands are
-gated to authorized users. **No file splitting** — oversized files are rejected up front.
+gated to authorized users.
 
-0. **Interactive (no typing):** open the bot's `/menu` → **☁️ PikPak** → **📂 Browse & download** →
-   an inline-button browser lists the remote; tap 📁 to descend, 📄 to download that file. All the
-   steps below then run automatically. (The typed commands remain for power users.)
-1. **Discover** (optional, typed): `/pikpak_ls [folder]` → `rclone lsf pikpak:<folder>` lists up to
-   ~50 entries (root if omitted) so you can copy a path.
-2. **Request**: `/pikpak <remote_path>` → the bot runs `rclone lsjson --stat pikpak:<path>` to
-   validate + read the size. Rejected up front (no download, no job) if: the remote/auth is broken
-   (→ "run `rclone config` on the VPS"), the path is missing, it's a folder, or the size exceeds
-   **`PIKPAK_MAX_BYTES`** (default 2 GB — the MTProto user-account upload cap) → *"File is X GB,
-   exceeds the 2 GB Telegram limit"*. Otherwise it inserts a `download_jobs` row (`status='queued'`)
-   and replies a progress message.
+**Drives are data, not code.** `bot_config.DRIVES` (overridable via `DRIVES_JSON`) maps a command
+key to an rclone remote + path prefix. **PikPak** uses its native `pikpak:` remote. **Baidu**
+(and future Quark/115/…) have no native rclone backend, so they're mounted in the self-hosted
+**OpenList** container and exposed over **WebDAV** — one rclone `webdav` remote `openlist:`,
+prefix = the OpenList mount path (`baidu`). Adding a drive = one registry entry + two 1-line
+handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/README.md`](../infra/openlist/README.md).
+
+0. **Interactive (no typing, PikPak only):** open the bot's `/menu` → **☁️ PikPak** → **📂 Browse
+   & download** → an inline-button browser lists the remote; tap 📁 to descend, 📄 to download.
+   (Other drives use the typed `/<drive> <path>` commands.)
+1. **Discover** (optional, typed): `/pikpak_ls [folder]` / `/baidu_ls [folder]` → `rclone lsf` on
+   that drive lists up to ~50 entries (root if omitted) so you can copy a path.
+2. **Request**: `/pikpak <path>` or `/baidu <path>` → the bot runs `rclone lsjson --stat` on the
+   resolved `remote:prefix/path` to validate + read the size. Rejected up front (no download, no job)
+   if: the remote isn't configured / OpenList is unreachable / the drive cookie expired (→ a message
+   pointing at `rclone config` for PikPak or the **OpenList UI** for WebDAV drives), the path is
+   missing, or it's a folder. **Size policy** (all drives): a **media** file > **`PIKPAK_MAX_BYTES`**
+   (2 GB) is **rejected** — a binary-split video can't be streamed. A **non-media** file > 2 GB is
+   **accepted** and split later. Otherwise it inserts a `download_jobs` row (`status='queued'`,
+   `source=<drive>`) and replies a progress message.
 3. **Worker** (in-bot, `PIKPAK_MAX_CONCURRENT` asyncio tasks polling every 3 s, `FOR UPDATE SKIP
-   LOCKED` claim) runs `rclone copy pikpak:<path> /staging/_pikpak/<jobid> --stats=1s --stats-one-line`,
-   parses the `%`/speed/ETA and **edits the Telegram message live** (throttled 1 edit / ~6 s), also
-   writing `download_jobs.progress` (`pikpak_changed` NOTIFY). Non-zero rclone exit → retry ≤
-   `PIKPAK_RETRIES` with backoff; final failure → job `failed`, **staging wiped**.
+   LOCKED` claim) resolves the drive from `download_jobs.source` and runs `rclone copy <remote:path>
+   /staging/_pikpak/<jobid>` with `--stats-one-line` + slow-transfer flags (`--low-level-retries=10`,
+   `--timeout=300s`, `--contimeout=60s`) to tolerate Baidu throttling. It parses `%`/speed/ETA and
+   **edits the Telegram message live** (throttled 1 edit / ~6 s), writing `download_jobs.progress`
+   (`pikpak_changed` NOTIFY). Non-zero rclone exit → retry ≤ `PIKPAK_RETRIES`; final failure → job
+   `failed`, **staging wiped**.
 4. **Handoff**: on success the worker inserts an `upload_jobs` row — `origin='upload'`,
-   `cleanup_source=1`, `status='pending'`, `title='pikpak/<remote subdirs>/<name>'` (files it under
-   the **`PIKPAK_DRIVE_FOLDER`** drive folder, mirroring the remote path) — so the **watcher** picks
-   it up automatically (Flow A2 from step 4). Because the file is ≤ 2 GB it's always **one part**.
+   `cleanup_source=1`, `status='pending'`, `title='<drive folder>/<remote subdirs>/<name>'`. The
+   **`part_size`** encodes the split policy: media / non-media ≤ 2 GB → `4096` (single part,
+   unchanged); non-media > 2 GB → **`DRIVE_SPLIT_PART_MB`** (default 1900) so the **watcher**
+   raw-splits it into sequential binary parts `<name>.001`, `.002`, … (Flow A2 "stream" split) —
+   one logical `item`, N `parts` rows. Reassemble by ordered `cat`. The watcher picks it up
+   automatically (Flow A2 from step 4).
 5. **Cleanup**: the watcher deletes the staging file after a successful upload (`cleanup_source=1`);
    the file is now safely in Telegram (indexing reads from Telegram, not the local copy). A
-   `_track_upload` task follows the `upload_jobs` row to `done` → sets `download_jobs` → `done` and
-   confirms deletion. **Bot** indexes the new `channel_post` (Flow C).
+   `_track_upload` task follows the `upload_jobs` row to `done` → sets `download_jobs` → `done`,
+   surfacing the watcher's whole-file part progress (*"uploading N part(s)…"*) while it runs. **Bot**
+   indexes the new `channel_post`(s) (Flow C).
 6. **Status**: `/pikpak_jobs` (or **☁️ PikPak → 📋 Recent jobs**) lists the last 10 download jobs
-   with status + live `%`.
+   across all drives (drive name tagged) with status + live `%`.
+
+> **Orphan parts on failure (known limitation).** If a multi-part upload fails partway, the parts
+> already sent to Telegram are indexed as a partial item (e.g. showing 2/4). This is a pre-existing
+> property of the watcher's multi-part upload, shared with browser uploads; the download job is
+> marked `failed`. Cleaning up orphan parts would require touching the watcher (out of scope here).
 
 ---
 

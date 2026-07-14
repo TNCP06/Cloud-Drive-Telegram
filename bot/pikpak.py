@@ -1,16 +1,25 @@
-"""PikPak remote-download feature (in-bot worker).
+"""Generic remote-download feature (in-bot worker) — PikPak + WebDAV drives via OpenList.
 
-Command flow:
-  /pikpak <remote_path>  → validate + size-check via rclone, reject if oversized, insert a
-                           `download_jobs` row (status='queued') and reply a progress message.
-  /jobs                  → list the last 10 download jobs with status.
-  /ls [folder]           → browse the remote (`rclone lsf`), truncated to ~50 entries.
+Drives are data, not code: `bot_config.DRIVES` maps a command key (pikpak, baidu, …) to an
+rclone remote + path prefix. PikPak uses its native `pikpak:` remote; Chinese drives (Baidu,
+Quark, 115, …) have no native rclone backend, so they're mounted in a self-hosted OpenList
+container exposed over WebDAV (one rclone `webdav` remote `openlist`, prefix = the OpenList
+mount name). Adding a drive = one registry entry + two 1-line handlers in bot.py.
+
+Command flow (per drive):
+  /<drive> <remote_path>  → validate + size-check via rclone, apply the size policy, insert a
+                            `download_jobs` row (status='queued', source=<drive>) + progress msg.
+  /pikpak_jobs            → list the last 10 download jobs (all drives) with status.
+  /<drive>_ls [folder]    → browse the remote (`rclone lsf`), truncated to ~50 entries.
 
 A pool of in-process worker tasks (PIKPAK_MAX_CONCURRENT, default 1) polls `download_jobs`,
 `rclone copy`s the file into the shared staging volume while editing the progress message,
 then hands it to the existing `upload_jobs` → watcher pipeline (origin='upload',
-cleanup_source=1, status='pending') so the file is pushed to Telegram automatically. Because
-oversized files are rejected up front, every accepted file is a single part — nothing is split.
+cleanup_source=1, status='pending') so the file is pushed to Telegram automatically.
+
+Size policy: media > 2 GB is rejected (a binary-split video can't stream). Non-media > 2 GB is
+accepted with part_size=DRIVE_SPLIT_PART_MB, so the watcher raw-splits it into sequential
+binary parts (one item, N parts) — reassemble by ordered `cat`. See docs/BUSINESS-FLOWS.md.
 
 This module imports only from bot_config / db_ops (no `bot` import → no import cycle).
 """
@@ -27,13 +36,14 @@ from collections import deque
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot_config import (
-    PIKPAK_REMOTE,
     PIKPAK_MAX_BYTES,
     PIKPAK_STAGING_DIR,
     PIKPAK_MAX_CONCURRENT,
     PIKPAK_RETRIES,
-    PIKPAK_DRIVE_FOLDER,
+    DRIVE_SPLIT_PART_MB,
     RCLONE_BIN,
+    resolve_drive,
+    drive_remote,
     log,
 )
 from db_ops import is_user_authorized
@@ -77,33 +87,47 @@ def _is_media(fname: str) -> bool:
     return os.path.splitext(fname)[1].lower() in _MEDIA_EXTS
 
 
-def _drive_title(remote_path: str, fname: str) -> str:
-    """Caption title that files the item under the drive's pikpak folder, mirroring the remote
+def _drive_title(remote_path: str, fname: str, drive: dict) -> str:
+    """Caption title that files the item under the drive's folder, mirroring the remote
     subfolders. upsert_item splits the title on '/': all but the last segment become nested
-    folders, the last is the item name. e.g. remote 'Movies/Action/x.mkv' → 'pikpak/Movies/Action/x'.
+    folders, the last is the item name. e.g. remote 'Movies/Action/x.mkv' → 'baidu/Movies/Action/x'.
     """
     base = os.path.splitext(fname)[0] or fname
     remote_dir = os.path.dirname(remote_path).strip("/")
-    prefix = PIKPAK_DRIVE_FOLDER + (f"/{remote_dir}" if remote_dir else "")
+    folder = drive.get("folder") or drive["remote"]
+    prefix = folder + (f"/{remote_dir}" if remote_dir else "")
     return f"{prefix}/{base}"
 
 
-def _classify_rclone_error(stderr: str, path: str) -> str:
+def _classify_rclone_error(stderr: str, path: str, drive: dict) -> str:
     """Turn an rclone stderr dump into a clear, actionable Telegram message."""
     low = stderr.lower()
+    remote = drive["remote"]
+    name = drive.get("display", remote)
+    is_webdav = drive.get("prefix")  # WebDAV drives route through OpenList (prefix set)
     if ("didn't find section" in low or "not found in config" in low
             or "unknown remote" in low or "no such remote" in low):
-        return (f"❌ rclone remote '{PIKPAK_REMOTE}' is not configured. "
-                f"Run `rclone config` on the VPS and set up the '{PIKPAK_REMOTE}' remote.")
+        return (f"❌ rclone remote '{remote}' is not configured. "
+                f"Run `rclone config` on the VPS and set up the '{remote}' remote.")
+    # WebDAV/OpenList unreachable → distinct from an expired drive cookie, but both are
+    # fixed in the OpenList UI on the VPS, not in the bot.
+    if is_webdav and ("connection refused" in low or "connect: " in low
+                      or "no such host" in low or "502" in low or "503" in low
+                      or "dial tcp" in low or "timeout" in low):
+        return (f"❌ OpenList looks unreachable (WebDAV connection failed) for {name}. "
+                f"Check the OpenList container is up on the VPS.")
     if ("oauth" in low or "token" in low or "authorization" in low
-            or "unauthorized" in low or "401" in low or "invalid_grant" in low):
-        return (f"❌ PikPak auth failed. Re-run `rclone config` on the VPS to refresh the "
-                f"'{PIKPAK_REMOTE}' token.")
+            or "unauthorized" in low or "401" in low or "403" in low or "invalid_grant" in low):
+        if is_webdav:
+            return (f"❌ {name} auth failed. The drive cookie has likely expired — re-add / "
+                    f"re-authenticate the storage in the OpenList web UI on the VPS.")
+        return (f"❌ {name} auth failed. Re-run `rclone config` on the VPS to refresh the "
+                f"'{remote}' token.")
     if ("directory not found" in low or "not found" in low
             or "object not found" in low or "doesn't exist" in low):
-        return f"❌ Path not found on {PIKPAK_REMOTE}: {path}"
-    return (f"❌ rclone error for {PIKPAK_REMOTE}:{path}. Check the path, or run `rclone config` "
-            f"on the VPS if the remote/auth is broken.\n{stderr.strip()[:200]}")
+        return f"❌ Path not found on {name}: {path}"
+    return (f"❌ rclone error for {name} ({path}). Check the path, or fix the remote/auth "
+            f"({'OpenList UI' if is_webdav else 'rclone config'}) on the VPS.\n{stderr.strip()[:200]}")
 
 
 async def _run_rclone(args, timeout=120):
@@ -124,26 +148,26 @@ async def _run_rclone(args, timeout=120):
     return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
-async def rclone_stat(remote_path: str) -> dict:
+async def rclone_stat(remote_path: str, drive: dict) -> dict:
     """`rclone lsjson --stat` a single path → its JSON object. Raises PikpakError otherwise."""
-    rc, out, err = await _run_rclone(["lsjson", "--stat", f"{PIKPAK_REMOTE}:{remote_path}"])
+    rc, out, err = await _run_rclone(["lsjson", "--stat", drive_remote(drive, remote_path)])
     if rc != 0:
-        raise PikpakError(_classify_rclone_error(err, remote_path))
+        raise PikpakError(_classify_rclone_error(err, remote_path, drive))
     out = out.strip()
     try:
         obj = json.loads(out) if out else None
     except json.JSONDecodeError:
         raise PikpakError(f"❌ Unexpected rclone output for {remote_path}.")
     if not obj:  # rclone returns `null` for a missing path (rc can still be 0)
-        raise PikpakError(f"❌ Path not found on {PIKPAK_REMOTE}: {remote_path}")
+        raise PikpakError(f"❌ Path not found on {drive.get('display', drive['remote'])}: {remote_path}")
     return obj
 
 
-async def rclone_lsf(folder: str) -> list:
+async def rclone_lsf(folder: str, drive: dict) -> list:
     """`rclone lsf` a folder → list of names (dirs keep rclone's trailing '/')."""
-    rc, out, err = await _run_rclone(["lsf", f"{PIKPAK_REMOTE}:{folder}"])
+    rc, out, err = await _run_rclone(["lsf", drive_remote(drive, folder)])
     if rc != 0:
-        raise PikpakError(_classify_rclone_error(err, folder))
+        raise PikpakError(_classify_rclone_error(err, folder, drive))
     return [ln for ln in out.splitlines() if ln.strip()]
 
 
@@ -182,13 +206,13 @@ async def _claim_next(db):
         "UPDATE download_jobs SET status='downloading', updated_at=now_text() "
         "WHERE id = (SELECT id FROM download_jobs WHERE status='queued' "
         "            ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
-        "RETURNING id, remote_path, filename, size, chat_id, message_id"
+        "RETURNING id, remote_path, filename, size, chat_id, message_id, source"
     )
     if not rs.rows:
         return None
     r = rs.rows[0]
     return {"id": r[0], "remote_path": r[1], "filename": r[2],
-            "size": r[3], "chat_id": r[4], "message_id": r[5]}
+            "size": r[3], "chat_id": r[4], "message_id": r[5], "source": r[6]}
 
 
 # ---------------------------------------------------------------------------
@@ -210,14 +234,18 @@ async def _safe_edit(bot, job, text, state, force=False):
 # ---------------------------------------------------------------------------
 # The download itself (with retries + backoff)
 # ---------------------------------------------------------------------------
-async def _rclone_copy(bot, db, job, dst, state):
-    remote = f"{PIKPAK_REMOTE}:{job['remote_path']}"
+async def _rclone_copy(bot, db, job, dst, state, drive):
+    remote = drive_remote(drive, job["remote_path"])
     last_err = ""
     for attempt in range(1, PIKPAK_RETRIES + 1):
         try:
             proc = await asyncio.create_subprocess_exec(
                 RCLONE_BIN, "copy", remote, dst,
                 "--stats=1s", "--stats-one-line", "--transfers=1",
+                # Chinese drives (Baidu non-SVIP) throttle hard: tolerate very slow multi-GB
+                # transfers instead of failing fast. Low-level retries + generous timeouts.
+                "--low-level-retries=10", "--retries=3",
+                "--timeout=300s", "--contimeout=60s",
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError:
@@ -249,24 +277,29 @@ async def _rclone_copy(bot, db, job, dst, state):
 
 async def _process(bot, db, job):
     jid, fname, size = job["id"], job["filename"], job["size"]
+    drive = resolve_drive(job.get("source")) or resolve_drive("pikpak")
     dst = os.path.join(PIKPAK_STAGING_DIR, str(jid))
     state = {"last_edit": 0.0, "last_pct": -1}
     await _safe_edit(bot, job, f"⬇️ Downloading {fname} ({human_size(size)}) …", state, force=True)
     try:
         os.makedirs(dst, exist_ok=True)
-        await _rclone_copy(bot, db, job, dst, state)
+        await _rclone_copy(bot, db, job, dst, state, drive)
         _resolve_single(dst)  # sanity: a file actually landed
 
         # Hand off to the existing upload pipeline. origin='upload' + cleanup_source=1 means
-        # the watcher uploads the staged file whole and deletes `dst` afterwards. part_size is
-        # oversized-proof (4096 MB) so a ≤2 GB file is always one part (no split).
+        # the watcher uploads the staged file and deletes `dst` afterwards. Size policy:
+        #   media                → single part (4096 MB cap); >2 GB media was rejected up front.
+        #   non-media ≤ 2 GB     → single part (4096 MB cap), unchanged from before.
+        #   non-media > 2 GB     → part_size = DRIVE_SPLIT_PART_MB so the watcher raw-splits it
+        #                          into sequential binary parts (one item, N parts).
         kind = "media" if _is_media(fname) else "archive"  # photo/video → thumbnail+preview; else document
-        title = _drive_title(job["remote_path"], fname)  # files it under the pikpak/ drive folder
+        part_size = DRIVE_SPLIT_PART_MB if (kind == "archive" and size > PIKPAK_MAX_BYTES) else 4096
+        title = _drive_title(job["remote_path"], fname, drive)  # files it under the drive folder
         rs = await db.execute(
             "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, "
-            "cleanup_source, total_bytes, status) VALUES (?, ?, '', ?, 4096, 'upload', 1, ?, 'pending') "
+            "cleanup_source, total_bytes, status) VALUES (?, ?, '', ?, ?, 'upload', 1, ?, 'pending') "
             "RETURNING id",
-            [kind, title, dst, size],
+            [kind, title, dst, part_size, size],
         )
         upload_id = rs.rows[0][0] if rs.rows else None
         await _set(db, jid, status="downloaded", progress=100)
@@ -295,10 +328,11 @@ async def _track_upload(bot, db, job, upload_id, dst):
     for _ in range(4 * 60 * 60 // 5):  # poll ≤ ~4h (watcher is serial; a queue backlog can be long)
         await asyncio.sleep(5)
         try:
-            rs = await db.execute("SELECT status FROM upload_jobs WHERE id=?", [upload_id])
+            rs = await db.execute("SELECT status, message FROM upload_jobs WHERE id=?", [upload_id])
         except Exception:  # noqa: BLE001
             continue
         st = rs.rows[0][0] if rs.rows else None
+        detail = rs.rows[0][1] if rs.rows else None  # watcher sets "uploading N part(s)…"
         if st == "done":
             shutil.rmtree(dst, ignore_errors=True)  # backstop; watcher already removed it
             await _set(db, jid, status="done", progress=100)
@@ -309,6 +343,9 @@ async def _track_upload(bot, db, job, upload_id, dst):
             await _set(db, jid, status="failed", error=f"upload {st}")
             await _safe_edit(bot, job, f"❌ Upload {st}: {fname}", state, force=True)
             return
+        # Surface the watcher's whole-file part progress (e.g. "uploading 4 part(s)…").
+        if st == "running" and detail:
+            await _safe_edit(bot, job, f"⬆️ {fname} — {detail}", state)
         if st is None:
             return  # upload row gone — stop quietly
     log.warning("PikPak job #%s: upload #%s still not terminal after poll cap", jid, upload_id)
@@ -394,58 +431,74 @@ async def _deny(message, user_id):
 
 
 # --- Reusable cores (shared by the /commands and the PikPak menu buttons) ----
-async def start_download(message, db, remote_path):
-    """Validate a PikPak path, reject if oversized, queue a download job + progress reply."""
+async def start_download(message, db, remote_path, drive_key="pikpak"):
+    """Validate a drive path, apply the size policy, queue a download job + progress reply.
+
+    Size policy: media > 2 GB is rejected (a binary-split media file can't be streamed);
+    non-media > 2 GB is accepted and later split into parts by the watcher.
+    """
+    drive = resolve_drive(drive_key)
+    if not drive:
+        await message.reply_text(f"❌ Unknown drive '{drive_key}'.")
+        return
+    name = drive.get("display", drive_key)
     remote_path = (remote_path or "").strip().strip("/")
     if not remote_path:
         await message.reply_text("No path given. Example: `My Pack/delyn.jpg`.", parse_mode="Markdown")
         return
     try:
-        entry = await rclone_stat(remote_path)
+        entry = await rclone_stat(remote_path, drive)
     except PikpakError as e:
         await message.reply_text(str(e))
         return
     if entry.get("IsDir"):
         await message.reply_text(
-            f"“{remote_path}” is a folder — /pikpak takes a single file. Browse it with "
-            f"`/pikpak_ls {remote_path}`.", parse_mode="Markdown")
+            f"“{remote_path}” is a folder — /{drive_key} takes a single file. Browse it with "
+            f"`/{drive_key}_ls {remote_path}`.", parse_mode="Markdown")
         return
     size = int(entry.get("Size") or 0)
     fname = entry.get("Name") or os.path.basename(remote_path) or remote_path
     if size <= 0:
-        await message.reply_text("❌ Couldn't determine the file size on PikPak — aborting.")
+        await message.reply_text(f"❌ Couldn't determine the file size on {name} — aborting.")
         return
-    if size > PIKPAK_MAX_BYTES:
+    if size > PIKPAK_MAX_BYTES and _is_media(fname):
         await message.reply_text(
-            f"❌ File is {human_size(size)}, exceeds the {human_size(PIKPAK_MAX_BYTES)} Telegram limit. "
-            "Not downloaded.")
+            f"❌ {fname} is {human_size(size)}, over the {human_size(PIKPAK_MAX_BYTES)} Telegram limit. "
+            "Media files can't be split (a split video won't stream/play), so it's rejected. "
+            "Only non-media files are split and uploaded in parts.")
         return
-    sent = await message.reply_text(f"🗂 Queued {fname} ({human_size(size)}) for download…")
+    split_note = " (will be uploaded in parts)" if size > PIKPAK_MAX_BYTES else ""
+    sent = await message.reply_text(f"🗂 Queued {fname} ({human_size(size)}){split_note} for download…")
     rs = await db.execute(
         "INSERT INTO download_jobs (source, remote_path, filename, size, status, chat_id, message_id) "
-        "VALUES ('pikpak', ?, ?, ?, 'queued', ?, ?) RETURNING id",
-        [remote_path, fname, size, sent.chat_id, sent.message_id],
+        "VALUES (?, ?, ?, ?, 'queued', ?, ?) RETURNING id",
+        [drive_key, remote_path, fname, size, sent.chat_id, sent.message_id],
     )
     jid = rs.rows[0][0] if rs.rows else "?"
-    log.info("PikPak job #%s queued: %s (%s)", jid, remote_path, human_size(size))
+    log.info("%s job #%s queued: %s (%s)", name, jid, remote_path, human_size(size))
 
 
-async def do_ls(message, folder):
-    """List a PikPak folder (≤50 entries)."""
+async def do_ls(message, folder, drive_key="pikpak"):
+    """List a drive folder (≤50 entries)."""
+    drive = resolve_drive(drive_key)
+    if not drive:
+        await message.reply_text(f"❌ Unknown drive '{drive_key}'.")
+        return
     folder = (folder or "").strip().strip("/")
     if folder in (".", "/"):
         folder = ""
     try:
-        names = await rclone_lsf(folder)
+        names = await rclone_lsf(folder, drive)
     except PikpakError as e:
         await message.reply_text(str(e))
         return
+    loc = drive_remote(drive, folder) or f"{drive['remote']}:/"
     if not names:
-        await message.reply_text(f"📂 {PIKPAK_REMOTE}:{folder or '/'} is empty.")
+        await message.reply_text(f"📂 {loc} is empty.")
         return
     shown = names[:50]
     more = f"\n… ({len(names) - 50} more)" if len(names) > 50 else ""
-    header = f"📁 {PIKPAK_REMOTE}:{folder or '/'}  ({len(names)} entries)\n\n"
+    header = f"📁 {loc}  ({len(names)} entries)\n\n"
     # Plain text (no parse_mode): filenames can contain markdown/HTML-breaking chars.
     await message.reply_text(header + "\n".join(shown) + more)
 
@@ -453,22 +506,26 @@ async def do_ls(message, folder):
 async def jobs_text(db) -> str:
     """HTML listing of the last 10 download jobs (shared by /pikpak_jobs + menu button)."""
     rs = await db.execute(
-        "SELECT id, filename, size, status, progress, error "
+        "SELECT id, filename, size, status, progress, error, source "
         "FROM download_jobs ORDER BY id DESC LIMIT 10"
     )
     if not rs.rows:
-        return "No download jobs yet. Start one with /pikpak &lt;path&gt;."
+        return "No download jobs yet. Start one with /pikpak &lt;path&gt; or /baidu &lt;path&gt;."
     lines = ["📋 <b>Last 10 download jobs</b>"]
-    for jid, fname, size, status, progress, error in rs.rows:
+    for jid, fname, size, status, progress, error, source in rs.rows:
         icon = _STATUS_ICON.get(status, "•")
+        drive = resolve_drive(source)
+        tag = f"[{html.escape(drive['display'] if drive else str(source))}] "
         extra = f" {progress}%" if status == "downloading" else ""
         tail = f" — {html.escape(error[:60])}" if status == "failed" and error else ""
-        lines.append(f"{icon} #{jid} {html.escape(str(fname))} ({human_size(size)}) [{status}{extra}]{tail}")
+        lines.append(f"{icon} #{jid} {tag}{html.escape(str(fname))} ({human_size(size)}) [{status}{extra}]{tail}")
     return "\n".join(lines)
 
 
 # --- Thin command handlers ---------------------------------------------------
-async def on_pikpak(update, context):
+# Generic cores parameterised by drive_key; per-drive commands are thin wrappers so adding a
+# drive = a registry entry + two 1-line handlers registered in bot.py.
+async def _cmd_download(update, context, drive_key):
     user, message = update.effective_user, update.message
     if message is None or user is None:
         return
@@ -477,13 +534,14 @@ async def on_pikpak(update, context):
         await _deny(message, user.id)
         return
     if not context.args:
-        await message.reply_text("Usage: `/pikpak <remote_path>`\nBrowse paths with `/pikpak_ls [folder]`.",
-                                 parse_mode="Markdown")
+        await message.reply_text(
+            f"Usage: `/{drive_key} <remote_path>`\nBrowse paths with `/{drive_key}_ls [folder]`.",
+            parse_mode="Markdown")
         return
-    await start_download(message, db, " ".join(context.args))
+    await start_download(message, db, " ".join(context.args), drive_key)
 
 
-async def on_ls(update, context):
+async def _cmd_ls(update, context, drive_key):
     user, message = update.effective_user, update.message
     if message is None or user is None:
         return
@@ -491,7 +549,23 @@ async def on_ls(update, context):
     if not await is_user_authorized(db, user.id):
         await _deny(message, user.id)
         return
-    await do_ls(message, " ".join(context.args) if context.args else "")
+    await do_ls(message, " ".join(context.args) if context.args else "", drive_key)
+
+
+async def on_pikpak(update, context):
+    await _cmd_download(update, context, "pikpak")
+
+
+async def on_ls(update, context):
+    await _cmd_ls(update, context, "pikpak")
+
+
+async def on_baidu(update, context):
+    await _cmd_download(update, context, "baidu")
+
+
+async def on_baidu_ls(update, context):
+    await _cmd_ls(update, context, "baidu")
 
 
 async def on_jobs(update, context):
@@ -509,10 +583,12 @@ async def on_jobs(update, context):
 # The current folder + its listing are cached in user_data so callback_data can carry a tiny
 # index (pk:cd:N / pk:dl:N) instead of a full path — Telegram caps callback_data at 64 bytes.
 async def render_browser(query, context, folder):
-    """Edit the browse message to show `folder`'s entries as buttons (📁 open / 📄 download)."""
+    """Edit the browse message to show `folder`'s entries as buttons (📁 open / 📄 download).
+    The interactive browser is PikPak-only UI; other drives use `/<drive> <path>` directly."""
+    drive = resolve_drive("pikpak")
     folder = (folder or "").strip().strip("/")
     try:
-        names = await rclone_lsf(folder)
+        names = await rclone_lsf(folder, drive)
     except PikpakError as e:
         kb = [[InlineKeyboardButton("⬅️ PikPak menu", callback_data="menu:pikpak_menu")]]
         await query.edit_message_text(str(e), reply_markup=InlineKeyboardMarkup(kb))
@@ -530,7 +606,7 @@ async def render_browser(query, context, folder):
     rows.append([InlineKeyboardButton("⬅️ PikPak menu", callback_data="menu:pikpak_menu")])
     more = (f"\n… and {len(names) - BROWSE_LIMIT} more — narrow with /pikpak_ls {folder}"
             if len(names) > BROWSE_LIMIT else "")
-    loc = f"{PIKPAK_REMOTE}:/{folder}" if folder else f"{PIKPAK_REMOTE}:/"
+    loc = drive_remote(drive, folder) or f"{drive['remote']}:/"
     header = (f"📂 <b>{html.escape(loc)}</b>\n"
               f"Tap 📁 to open a folder, 📄 to download a file.{html.escape(more)}")
     await query.edit_message_text(header, reply_markup=InlineKeyboardMarkup(rows), parse_mode="HTML")
