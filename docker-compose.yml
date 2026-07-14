@@ -184,6 +184,10 @@ services:
   # tunnel or the existing Cloudflare Tunnel. Setup/runbook: infra/openlist/README.md.
   openlist:
     image: openlistteam/openlist:latest
+    # The image's Dockerfile sets a non-root USER, but the named volume is root-owned, so the
+    # app crash-loops with "user does not have write/execute permissions for ./data" (PUID/PGID
+    # env is ignored because it never starts as root). Run as root over the root-owned volume.
+    user: "0:0"
     volumes:
       - openlist-data:/opt/openlist/data
     ports:
