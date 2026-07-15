@@ -582,15 +582,18 @@ async def on_jobs(update, context):
 # --- Interactive button browser (navigate folders / tap a file to download) --
 # The current folder + its listing are cached in user_data so callback_data can carry a tiny
 # index (pk:cd:N / pk:dl:N) instead of a full path — Telegram caps callback_data at 64 bytes.
-async def render_browser(query, context, folder):
+async def render_browser(query, context, folder, drive_key="pikpak"):
     """Edit the browse message to show `folder`'s entries as buttons (📁 open / 📄 download).
-    The interactive browser is PikPak-only UI; other drives use `/<drive> <path>` directly."""
-    drive = resolve_drive("pikpak")
+    Works for any registry drive; the active drive is cached in user_data so the pk:* callbacks
+    (which only carry a tiny index) know which drive to act on."""
+    drive = resolve_drive(drive_key) or resolve_drive("pikpak")
+    back = f"drive:menu:{drive_key}"
     folder = (folder or "").strip().strip("/")
+    context.user_data["pk_drive"] = drive_key
     try:
         names = await rclone_lsf(folder, drive)
     except PikpakError as e:
-        kb = [[InlineKeyboardButton("⬅️ PikPak menu", callback_data="menu:pikpak_menu")]]
+        kb = [[InlineKeyboardButton(f"⬅️ {drive.get('display', drive_key)} menu", callback_data=back)]]
         await query.edit_message_text(str(e), reply_markup=InlineKeyboardMarkup(kb))
         return
     shown = names[:BROWSE_LIMIT]
@@ -603,8 +606,8 @@ async def render_browser(query, context, folder):
         is_dir = name.endswith("/")
         label = ("📁 " if is_dir else "📄 ") + name.rstrip("/")[:38]
         rows.append([InlineKeyboardButton(label, callback_data=f"pk:{'cd' if is_dir else 'dl'}:{idx}")])
-    rows.append([InlineKeyboardButton("⬅️ PikPak menu", callback_data="menu:pikpak_menu")])
-    more = (f"\n… and {len(names) - BROWSE_LIMIT} more — narrow with /pikpak_ls {folder}"
+    rows.append([InlineKeyboardButton(f"⬅️ {drive.get('display', drive_key)} menu", callback_data=back)])
+    more = (f"\n… and {len(names) - BROWSE_LIMIT} more — narrow with /{drive_key}_ls {folder}"
             if len(names) > BROWSE_LIMIT else "")
     loc = drive_remote(drive, folder) or f"{drive['remote']}:/"
     header = (f"📂 <b>{html.escape(loc)}</b>\n"
@@ -613,21 +616,22 @@ async def render_browser(query, context, folder):
 
 
 async def browse_navigate(query, context, data, db):
-    """Handle a pk:* browser callback (pk:up / pk:cd:N / pk:dl:N)."""
+    """Handle a pk:* browser callback (pk:up / pk:cd:N / pk:dl:N) for the cached active drive."""
+    drive_key = context.user_data.get("pk_drive", "pikpak")
     cwd = context.user_data.get("pk_cwd", "")
     items = context.user_data.get("pk_items", [])
     if data == "pk:up":
         parent = cwd.rsplit("/", 1)[0] if "/" in cwd else ""
-        await render_browser(query, context, parent)
+        await render_browser(query, context, parent, drive_key)
         return
     try:
         _, action, idx_s = data.split(":", 2)
         name = items[int(idx_s)]
     except (ValueError, IndexError):
-        await render_browser(query, context, cwd)  # stale listing — re-list current folder
+        await render_browser(query, context, cwd, drive_key)  # stale listing — re-list current folder
         return
     path = (f"{cwd}/{name}" if cwd else name).strip("/")
     if action == "cd":
-        await render_browser(query, context, path)
+        await render_browser(query, context, path, drive_key)
     elif action == "dl":
-        await start_download(query.message, db, path)
+        await start_download(query.message, db, path, drive_key)

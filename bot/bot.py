@@ -44,6 +44,7 @@ from bot_config import (  # noqa: F401  (re-exported for index_history.py)
     OWNER_USER_ID,
     TELEGRAM_API_URL,
     DATABASE_URL,
+    DRIVES,
     log,
 )
 from tg_helpers import (  # noqa: F401  (re-exported)
@@ -602,7 +603,7 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edi
             InlineKeyboardButton("📥 How to Upload", callback_data="menu:upload_guide"),
             InlineKeyboardButton("👤 My Auth Info", callback_data="menu:auth_info")
         ],
-        [InlineKeyboardButton("☁️ PikPak", callback_data="menu:pikpak_menu")],
+        [InlineKeyboardButton("☁️ Cloud Drives", callback_data="menu:drives")],
     ]
 
     # Telegram API rejects 'localhost' or '127.0.0.1' in inline keyboard URLs, which causes a BadRequest crash.
@@ -640,9 +641,10 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("pikpak_await"):
         prompt_id = context.user_data.pop("pikpak_prompt_id", None)
         context.user_data.pop("pikpak_await", None)
+        context.user_data.pop("pikpak_drive", None)
         if prompt_id:
             await _delete_messages(context, message.chat_id, [prompt_id])
-        await message.reply_text("❌ PikPak prompt cancelled.")
+        await message.reply_text("❌ Drive download prompt cancelled.")
         return
 
     if "upload_file" in context.user_data or "upload_state" in context.user_data or "upload_queue" in context.user_data:
@@ -1074,12 +1076,13 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ptext = (message.text or "").strip()
         prompt_id = context.user_data.pop("pikpak_prompt_id", None)
         context.user_data.pop("pikpak_await", None)  # consumed (a command also cancels the prompt)
+        drive_key = context.user_data.pop("pikpak_drive", "pikpak")
         if ptext.startswith("/"):
             return  # let CommandHandlers run
         if pikpak_mode == "path":
-            await pikpak_start_download(message, db, ptext)
+            await pikpak_start_download(message, db, ptext, drive_key)
         elif pikpak_mode == "ls":
-            await pikpak_do_ls(message, ptext)
+            await pikpak_do_ls(message, ptext, drive_key)
         # Tidy the noise: delete the bot's prompt + the user's typed reply, keep the result.
         cleanup = [message.message_id] + ([prompt_id] if prompt_id else [])
         await _delete_messages(context, message.chat_id, cleanup)
@@ -1190,29 +1193,50 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-    elif data == "menu:pikpak_menu":
+    elif data == "menu:drives":
+        # Drive picker — one button per registry drive (PikPak, Baidu, …).
         text = (
-            "☁️ <b>PikPak Remote-Download</b>\n\n"
-            "Pull a file from your PikPak into the cloud drive — all by tapping, "
-            "no need to type a command or path:"
+            "☁️ <b>Cloud Drives</b>\n\n"
+            "Pick a drive to browse and pull files from into your cloud drive:"
         )
         keyboard = [
-            [InlineKeyboardButton("📂 Browse & download", callback_data="pikpak:browse")],
-            [InlineKeyboardButton("📥 Download by path", callback_data="pikpak:download")],
-            [InlineKeyboardButton("📋 Recent jobs", callback_data="pikpak:jobs")],
-            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")],
+            [InlineKeyboardButton(f"☁️ {d.get('display', k)}", callback_data=f"drive:menu:{k}")]
+            for k, d in DRIVES.items()
+        ]
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")])
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+    elif data.startswith("drive:menu:"):
+        drive_key = data.split(":", 2)[2]
+        drive = DRIVES.get(drive_key)
+        if not drive:
+            await query.edit_message_text("❌ Unknown drive.")
+            return
+        text = (
+            f"☁️ <b>{html.escape(drive.get('display', drive_key))} Remote-Download</b>\n\n"
+            "Pull a file into the cloud drive — all by tapping, no need to type a command or path:"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📂 Browse & download", callback_data=f"drive:browse:{drive_key}")],
+            [InlineKeyboardButton("📥 Download by path", callback_data=f"drive:path:{drive_key}")],
+            [InlineKeyboardButton("📋 Recent jobs", callback_data=f"drive:jobs:{drive_key}")],
+            [InlineKeyboardButton("⬅️ Back to Drives", callback_data="menu:drives")],
         ]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-    elif data == "pikpak:browse":
+    elif data.startswith("drive:browse:"):
         # Interactive browser: navigate folders + tap a file to download — no typing.
-        await pikpak_render_browser(query, context, "")
+        drive_key = data.split(":", 2)[2]
+        await pikpak_render_browser(query, context, "", drive_key)
 
-    elif data == "pikpak:download":
+    elif data.startswith("drive:path:"):
         # Fallback for when you already know/paste an exact path.
+        drive_key = data.split(":", 2)[2]
+        drive = DRIVES.get(drive_key, {})
         context.user_data["pikpak_await"] = "path"
+        context.user_data["pikpak_drive"] = drive_key
         prompt = await query.message.reply_text(
-            "📥 Send the PikPak <b>file path</b> to download.\n"
+            f"📥 Send the {html.escape(drive.get('display', drive_key))} <b>file path</b> to download.\n"
             "Example: <code>My Pack/delyn.jpg</code>\n\n"
             "Send /cancel to abort.",
             parse_mode="HTML",
@@ -1220,8 +1244,9 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data["pikpak_prompt_id"] = prompt.message_id
 
-    elif data == "pikpak:jobs":
-        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="menu:pikpak_menu")]]
+    elif data.startswith("drive:jobs:"):
+        drive_key = data.split(":", 2)[2]
+        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data=f"drive:menu:{drive_key}")]]
         await query.edit_message_text(
             await pikpak_jobs_text(db),
             reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML",

@@ -93,9 +93,10 @@ key to an rclone remote + path prefix. **PikPak** uses its native `pikpak:` remo
 prefix = the OpenList mount path (`baidu`). Adding a drive = one registry entry + two 1-line
 handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/README.md`](../infra/openlist/README.md).
 
-0. **Interactive (no typing, PikPak only):** open the bot's `/menu` → **☁️ PikPak** → **📂 Browse
-   & download** → an inline-button browser lists the remote; tap 📁 to descend, 📄 to download.
-   (Other drives use the typed `/<drive> <path>` commands.)
+0. **Interactive (no typing):** open the bot's `/menu` → **☁️ Cloud Drives** → pick a drive
+   (PikPak / Baidu / …) → **📂 Browse & download** → an inline-button browser lists that drive;
+   tap 📁 to descend, 📄 to download. The submenu (Browse / Download by path / Recent jobs) is the
+   same for every drive; the active drive is cached in `user_data` so the pk:* callbacks route to it.
 1. **Discover** (optional, typed): `/pikpak_ls [folder]` / `/baidu_ls [folder]` → `rclone lsf` on
    that drive lists up to ~50 entries (root if omitted) so you can copy a path.
 2. **Request**: `/pikpak <path>` or `/baidu <path>` → the bot runs `rclone lsjson --stat` on the
@@ -125,7 +126,7 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    `_track_upload` task follows the `upload_jobs` row to `done` → sets `download_jobs` → `done`,
    surfacing the watcher's whole-file part progress (*"uploading N part(s)…"*) while it runs. **Bot**
    indexes the new `channel_post`(s) (Flow C).
-6. **Status**: `/pikpak_jobs` (or **☁️ PikPak → 📋 Recent jobs**) lists the last 10 download jobs
+6. **Status**: `/pikpak_jobs` (or **☁️ Cloud Drives → <drive> → 📋 Recent jobs**) lists the last 10 download jobs
    across all drives (drive name tagged) with status + live `%`.
 
 > **Orphan parts on failure (known limitation).** If a multi-part upload fails partway, the parts

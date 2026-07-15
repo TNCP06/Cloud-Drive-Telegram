@@ -13,7 +13,7 @@ approximate and will drift — treat function names as the stable anchor.
 > `tg_helpers.py` (pure helpers), `db_ops.py` (idempotent Postgres ops), `indexing.py`
 > (channel indexing + thumbnail harvest + `index_bot_copy`), `db_backup.py` (daily DB backup
 > → Telegram), `pikpak.py` (generic remote-download: `/pikpak` `/baidu` + `_ls`/`_jobs`, drive
-> registry, ☁️ PikPak inline-button browser + in-bot rclone worker). `bot.py` keeps the interactive handlers
+> registry, ☁️ Cloud Drives inline-button browser + in-bot rclone worker). `bot.py` keeps the interactive handlers
 > + `main()` and **re-exports** the names
 > `index_history.py` imports (`from bot import …`). The streamer's background compression lives in
 > `stream_compress.py` and seek-preview sprite generation in `stream_seekpreview.py`.
@@ -57,9 +57,11 @@ Reusable cores `start_download(…, drive_key)` (validate via `rclone_stat`; **s
 row with `source=<drive>` + progress reply), `do_ls(…, drive_key)` (browse via `rclone_lsf`,
 ~50-entry cap), `jobs_text` (last 10 jobs across all drives, drive-tagged) — shared by generic cores
 `_cmd_download`/`_cmd_ls` and the thin per-drive handlers `on_pikpak`/`on_ls`/`on_baidu`/`on_baidu_ls`,
-`on_jobs` (`/pikpak_jobs`), **and** the ☁️ PikPak inline-button menu (PikPak-only). `render_browser`/
-`browse_navigate` drive the interactive folder browser (callback carries a tiny index into the cached
-listing, not the path → under Telegram's 64-byte cap). All gated by `is_user_authorized`.
+`on_jobs` (`/pikpak_jobs`), **and** the ☁️ Cloud Drives inline-button menu (drive picker →
+per-drive submenu, `menu:drives`/`drive:menu|browse|path|jobs:<key>` callbacks in bot.py).
+`render_browser(…, drive_key)`/`browse_navigate` drive the interactive folder browser for any drive
+(callback carries a tiny index into the cached listing + `user_data['pk_drive']` for the active drive
+→ under Telegram's 64-byte cap). All gated by `is_user_authorized`.
 Worker: `start_workers` (spawn `PIKPAK_MAX_CONCURRENT` `_worker_loop` tasks in `post_init`),
 `_claim_next` (atomic `UPDATE … FOR UPDATE SKIP LOCKED`, returns `source`), `_process` (resolve
 drive → `_rclone_copy` with retry+backoff + slow-transfer flags → parse `--stats-one-line` `%` →
