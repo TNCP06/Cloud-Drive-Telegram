@@ -177,6 +177,37 @@ def _clean_stats(line: str) -> str:
     return _LOG_PREFIX.sub("", line).strip()
 
 
+def _dir_size(path: str) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+async def _reclaim_orphan_staging(db) -> int:
+    """Delete _pikpak staging dirs whose download job is no longer active (done/failed/gone) → free
+    disk before rejecting a download. Only numeric job-id dirs are touched; active jobs
+    (queued/downloading/downloaded/uploading) and non-job dirs are left alone. Returns bytes freed."""
+    try:
+        names = os.listdir(PIKPAK_STAGING_DIR)
+    except OSError:
+        return 0
+    rs = await db.execute(
+        "SELECT id FROM download_jobs WHERE status IN ('queued','downloading','downloaded','uploading')")
+    active = {str(r[0]) for r in rs.rows}
+    freed = 0
+    for n in names:
+        p = os.path.join(PIKPAK_STAGING_DIR, n)
+        if n.isdigit() and n not in active and os.path.isdir(p):
+            freed += _dir_size(p)
+            shutil.rmtree(p, ignore_errors=True)
+    return freed
+
+
 def _resolve_single(dst: str) -> str:
     files = [os.path.join(dst, n) for n in os.listdir(dst)
              if os.path.isfile(os.path.join(dst, n))]
@@ -487,11 +518,18 @@ async def start_download(message, db, remote_path, drive_key="pikpak"):
         free = shutil.disk_usage(PIKPAK_STAGING_DIR).free
     except OSError:
         free = None
+    reclaimed = 0
     if free is not None and free < need:
+        # Don't reject outright — bin orphaned staging (junk from done/failed jobs) first, then re-check.
+        reclaimed = await _reclaim_orphan_staging(db)
+        if reclaimed:
+            free = shutil.disk_usage(PIKPAK_STAGING_DIR).free
+    if free is not None and free < need:
+        note = f" (freed {human_size(reclaimed)} of junk first)" if reclaimed else ""
         await message.reply_text(
-            f"❌ Not enough disk on the server for {fname} ({human_size(size)}). "
+            f"❌ Not enough disk for {fname} ({human_size(size)}){note}. "
             f"Free: {human_size(free)}, need ~{human_size(need)}. "
-            f"Free up space (delete old files, clear the video cache) and retry.")
+            f"Delete some stored files or clear the video cache on the server, then retry.")
         return
     split_note = " (will be uploaded in parts)" if size > PIKPAK_MAX_BYTES else ""
     sent = await message.reply_text(f"🗂 Queued {fname} ({human_size(size)}){split_note} for download…")
