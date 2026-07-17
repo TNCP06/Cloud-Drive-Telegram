@@ -477,6 +477,22 @@ async def start_download(message, db, remote_path, drive_key="pikpak"):
             "Media files can't be split (a split video won't stream/play), so it's rejected. "
             "Only non-media files are split and uploaded in parts.")
         return
+    # Disk-guard: refuse up front if the staging volume can't hold the file + split/handoff overhead,
+    # so a big download can't fill the disk (bricking postgres/streamer/web) then fail. 1.2× covers a
+    # split part staged alongside the whole file. ponytail: queue-time only — add a worker-start recheck
+    # if concurrent downloads (PIKPAK_MAX_CONCURRENT>1) ever make between-queue-and-run depletion real.
+    need = int(size * 1.2)
+    try:
+        os.makedirs(PIKPAK_STAGING_DIR, exist_ok=True)
+        free = shutil.disk_usage(PIKPAK_STAGING_DIR).free
+    except OSError:
+        free = None
+    if free is not None and free < need:
+        await message.reply_text(
+            f"❌ Not enough disk on the server for {fname} ({human_size(size)}). "
+            f"Free: {human_size(free)}, need ~{human_size(need)}. "
+            f"Free up space (delete old files, clear the video cache) and retry.")
+        return
     split_note = " (will be uploaded in parts)" if size > PIKPAK_MAX_BYTES else ""
     sent = await message.reply_text(f"🗂 Queued {fname} ({human_size(size)}){split_note} for download…")
     rs = await db.execute(
