@@ -61,9 +61,20 @@ POLL_INTERVAL = 5
 # ---------------------------------------------------------------------------
 # Thumbnail helpers
 # ---------------------------------------------------------------------------
+# Multi-volume archive part number, from the two common cloud-drive schemes:
+#   name.EXT.001 / .002        (7-Zip / split-zip numeric — require the .EXT. so a bare
+#                               "backup.2024" is NOT mistaken for part 2024)
+#   name.partN.rar / .part01   (modern RAR)
+# ponytail: old-RAR .rNN and classic split-zip .z01/.zip use inverted/offset ordering —
+# rare from cloud drives and ambiguous, so left unhandled (they still get caught, not crash).
+_VOL_RAR_RE = re.compile(r"\.part0*(\d+)\.rar$", re.IGNORECASE)
+_VOL_NUM_RE = re.compile(r"\.[^.\s]+\.(\d{3,})$")
+
+
 def _volume_no(path: str) -> "int | None":
-    """External multi-volume suffix (.001/.002/...) -> int part number, else None."""
-    m = re.search(r"\.(\d{3,})$", os.path.basename(path))
+    """Multi-volume part number from the filename, else None (single file)."""
+    base = os.path.basename(path)
+    m = _VOL_RAR_RE.search(base) or _VOL_NUM_RE.search(base)
     return int(m.group(1)) if m else None
 
 
