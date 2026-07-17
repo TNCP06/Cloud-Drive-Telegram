@@ -22,7 +22,12 @@ step 1's scrub-on-claim keeps that window to seconds.
 import asyncio
 import os
 import shutil
-import subprocess
+
+from telethon.errors import FloodWaitError
+try:
+    from telethon.errors import FloodPremiumWaitError
+except ImportError:  # older Telethon → premium flood-wait maps to the base class
+    FloodPremiumWaitError = FloodWaitError
 
 from bot_config import PIKPAK_STAGING_DIR, PIKPAK_MAX_BYTES, DRIVE_SPLIT_PART_MB, log
 
@@ -120,8 +125,27 @@ async def _claim(db):
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
+async def _tg_retry(call, what):
+    """Await a Telethon call, sleeping through Telegram flood-waits (incl. the non-premium
+    FLOOD_PREMIUM_WAIT Telegram imposes on large downloads) instead of crashing the job."""
+    for attempt in range(12):
+        try:
+            return await call()
+        except (FloodPremiumWaitError, FloodWaitError) as e:
+            wait = int(getattr(e, "seconds", 5)) + 2
+            log.warning("Unpack: Telegram flood-wait %ss on %s (attempt %s/12)", wait, what, attempt + 1)
+            await asyncio.sleep(wait)
+    raise UnpackError(f"Telegram flood-limited {what} after repeated waits — try again later.")
+
+
 async def _download_and_concat(client, channel, db, item_id, workdir) -> str:
     """Download every part of the item from Telegram and concat in part order → the archive path."""
+    # Let Telethon sleep through short flood-waits internally (resumes mid-download, no restart);
+    # _tg_retry is the backstop for the premium variant if it isn't auto-handled.
+    try:
+        client.flood_sleep_threshold = max(int(getattr(client, "flood_sleep_threshold", 60) or 60), 300)
+    except Exception:  # noqa: BLE001
+        pass
     rs = await db.execute(
         "SELECT channel_msg_id, file_name FROM parts WHERE item_id = ? ORDER BY part_number, channel_msg_id",
         [item_id],
@@ -136,11 +160,13 @@ async def _download_and_concat(client, channel, db, item_id, workdir) -> str:
     archive_path = os.path.join(workdir, os.path.basename(base) or "archive.bin")
     with open(archive_path, "wb") as out:
         for channel_msg_id, _fname in rs.rows:
-            msg = await client.get_messages(channel, ids=int(channel_msg_id))
+            msg = await _tg_retry(
+                lambda cid=channel_msg_id: client.get_messages(channel, ids=int(cid)), "message fetch")
             if not msg or not msg.media:
                 raise UnpackError(f"Part message {channel_msg_id} is missing or has no file.")
             part_tmp = os.path.join(workdir, f"_part_{channel_msg_id}")
-            await client.download_media(msg, file=part_tmp)
+            await _tg_retry(
+                lambda m=msg, p=part_tmp: client.download_media(m, file=p), f"part {channel_msg_id} download")
             # Blocking file IO off the event loop so uploads/progress keep running. Delete each part
             # right after appending → peak disk ≈ archive so far + one part.
             await asyncio.to_thread(_append_and_drop, part_tmp, out)

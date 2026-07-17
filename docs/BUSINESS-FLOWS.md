@@ -120,7 +120,8 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    (`pikpak_changed` NOTIFY, shown in `/pikpak_jobs`) and the Telegram message edited live (≤ 1 / ~6 s).
    **Give-up policy**: abort only on a genuine no-progress stall (< `DRIVE_STALL_MIN_MB` in
    `DRIVE_STALL_WINDOW_S`, default 20 MB / 30 min) or the absolute backstop `DRIVE_MAX_DL_SECONDS`
-   (default 24 h) — a slow-but-advancing transfer is left to finish. A permanent error
+   (default 7 days — multi-day transfers are fine) — a slow-but-advancing transfer is left to finish.
+   A permanent error
    (auth/not-found) or give-up → job `failed`, **staging wiped**.
 4. **Handoff**: on success the worker inserts an `upload_jobs` row — `origin='upload'`,
    `cleanup_source=1`, `status='pending'`, `title='<drive folder>/<remote subdirs>/<name>'`. The

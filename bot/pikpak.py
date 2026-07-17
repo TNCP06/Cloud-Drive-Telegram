@@ -58,7 +58,7 @@ DB_THROTTLE_S = 5           # min seconds between download_jobs progress writes 
 # long it takes). Backstop: an absolute ceiling so nothing runs truly forever.
 STALL_WINDOW_S = int(os.environ.get("DRIVE_STALL_WINDOW_S", str(30 * 60)))
 STALL_MIN_BYTES = int(os.environ.get("DRIVE_STALL_MIN_MB", "20")) * 1048576
-MAX_DL_SECONDS = int(os.environ.get("DRIVE_MAX_DL_SECONDS", str(24 * 3600)))
+MAX_DL_SECONDS = int(os.environ.get("DRIVE_MAX_DL_SECONDS", str(7 * 24 * 3600)))  # 7d — multi-day safe
 _PCT = re.compile(r"(\d+)%")
 _SPEED = re.compile(r"([\d.]+\s*[KMGTP]?i?B/s)")   # rclone one-line speed field, e.g. "5.12 MiB/s"
 # Strip rclone's "2026/07/12 10:00:00 INFO  : " log prefix → leaves "15 MiB / 1 GiB, 1%, 5 MiB/s, ETA 3m".
