@@ -53,9 +53,12 @@ BROWSE_LIMIT = 50           # max entries shown as buttons per folder (Telegram 
 POLL_INTERVAL = 3           # seconds between queue polls (per worker)
 EDIT_THROTTLE_S = 6         # min seconds between Telegram progress-message edits (rate-limit safe)
 DB_THROTTLE_S = 5           # min seconds between download_jobs progress writes (except on % change)
-# Hard per-download time cap: abort a drive too throttled to ever finish (default 4h). Configurable
-# so a genuinely slow-but-legit multi-GB transfer can be given more headroom.
-MAX_DL_SECONDS = int(os.environ.get("DRIVE_MAX_DL_SECONDS", str(4 * 3600)))
+# Give-up policy for a resumable download. Primary: a no-progress window — abort only if fewer than
+# STALL_MIN_BYTES arrive within STALL_WINDOW_S (a slow-but-advancing transfer is left to finish, however
+# long it takes). Backstop: an absolute ceiling so nothing runs truly forever.
+STALL_WINDOW_S = int(os.environ.get("DRIVE_STALL_WINDOW_S", str(30 * 60)))
+STALL_MIN_BYTES = int(os.environ.get("DRIVE_STALL_MIN_MB", "20")) * 1048576
+MAX_DL_SECONDS = int(os.environ.get("DRIVE_MAX_DL_SECONDS", str(24 * 3600)))
 _PCT = re.compile(r"(\d+)%")
 _SPEED = re.compile(r"([\d.]+\s*[KMGTP]?i?B/s)")   # rclone one-line speed field, e.g. "5.12 MiB/s"
 # Strip rclone's "2026/07/12 10:00:00 INFO  : " log prefix → leaves "15 MiB / 1 GiB, 1%, 5 MiB/s, ETA 3m".
@@ -223,7 +226,7 @@ def _resolve_single(dst: str) -> str:
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
-async def _set(db, jid, *, status=None, progress=None, error=None, speed=None):
+async def _set(db, jid, *, status=None, progress=None, error=None, speed=None, bytes_done=None):
     cols, vals = [], []
     if status is not None:
         cols.append("status=?"); vals.append(status)
@@ -233,6 +236,8 @@ async def _set(db, jid, *, status=None, progress=None, error=None, speed=None):
         cols.append("error=?"); vals.append(error)
     if speed is not None:
         cols.append("speed=?"); vals.append(speed)
+    if bytes_done is not None:
+        cols.append("bytes_done=?"); vals.append(bytes_done)
     cols.append("updated_at=now_text()")
     vals.append(jid)
     await db.execute(f"UPDATE download_jobs SET {', '.join(cols)} WHERE id=?", vals)
@@ -244,13 +249,13 @@ async def _claim_next(db):
         "UPDATE download_jobs SET status='downloading', updated_at=now_text() "
         "WHERE id = (SELECT id FROM download_jobs WHERE status='queued' "
         "            ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
-        "RETURNING id, remote_path, filename, size, chat_id, message_id, source"
+        "RETURNING id, remote_path, filename, size, chat_id, message_id, source, bytes_done"
     )
     if not rs.rows:
         return None
     r = rs.rows[0]
     return {"id": r[0], "remote_path": r[1], "filename": r[2],
-            "size": r[3], "chat_id": r[4], "message_id": r[5], "source": r[6]}
+            "size": r[3], "chat_id": r[4], "message_id": r[5], "source": r[6], "bytes_done": r[7]}
 
 
 # ---------------------------------------------------------------------------
@@ -272,65 +277,101 @@ async def _safe_edit(bot, job, text, state, force=False):
 # ---------------------------------------------------------------------------
 # The download itself (with retries + backoff)
 # ---------------------------------------------------------------------------
+def _reserve(path, size):
+    """Preallocate `size` bytes up front so the download can't run the disk out mid-transfer and the
+    space is committed against other downloads. fallocate (real blocks) → truncate (sparse) fallback.
+    Keeps any existing partial content (resume)."""
+    if os.path.exists(path) and os.path.getsize(path) >= size:
+        return
+    with open(path, "r+b" if os.path.exists(path) else "wb") as f:
+        try:
+            os.posix_fallocate(f.fileno(), 0, size)   # Linux: reserves real blocks
+        except (AttributeError, OSError):
+            f.truncate(size)                          # non-Linux / no-space: sparse fallback
+
+
+def _speed_str(nbytes, secs):
+    return (human_size(nbytes / secs).replace(" ", "") + "/s") if secs > 0 and nbytes >= 0 else ""
+
+
+_PERM_ERR_KEYS = ("not found in config", "unknown remote", "didn't find section", "no such remote",
+                  "401", "403", "unauthorized", "invalid_grant", "oauth",
+                  "object not found", "directory not found", "doesn't exist")
+
+
 async def _rclone_copy(bot, db, job, dst, state, drive):
+    """Resumable download. `rclone cat --offset <bytes_done>` streams from the last saved byte into a
+    pre-reserved file, so a deploy / restart / transient error / throttle resumes instead of
+    restarting from 0. Progress persists in download_jobs.bytes_done. Give up only on a genuine
+    no-progress stall (STALL_WINDOW_S) or the absolute backstop (MAX_DL_SECONDS) — a slow-but-advancing
+    download is allowed to finish however long it takes."""
     remote = drive_remote(drive, job["remote_path"])
-    last_err = ""
-    for attempt in range(1, PIKPAK_RETRIES + 1):
+    size = int(job.get("size") or 0)
+    fname = job["filename"] or f"download_{job['id']}"
+    os.makedirs(dst, exist_ok=True)
+    fpath = os.path.join(dst, fname)
+    _reserve(fpath, size)
+
+    done = min(int(job.get("bytes_done") or 0), size)
+    now = time.monotonic()
+    state["spd_bytes"], state["spd_t"] = done, now
+    win_bytes, win_t = done, now  # no-progress window anchor
+
+    while done < size:
         try:
             proc = await asyncio.create_subprocess_exec(
-                RCLONE_BIN, "copy", remote, dst,
-                # --stats-log-level NOTICE: without it, piped (non-TTY) stats are emitted at INFO
-                # and suppressed by the default NOTICE log level → no progress lines ever reach us
-                # (job sits at 0% then jumps to done). NOTICE makes the one-line stats show up.
-                "--stats=1s", "--stats-one-line", "--stats-log-level", "NOTICE", "--transfers=1",
-                # Chinese drives (Baidu non-SVIP) throttle hard: tolerate very slow multi-GB
-                # transfers instead of failing fast. Low-level retries + generous timeouts.
-                "--low-level-retries=10", "--retries=3",
-                "--timeout=300s", "--contimeout=60s",
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                RCLONE_BIN, "cat", remote, "--offset", str(done),
+                "--low-level-retries=10", "--timeout=300s", "--contimeout=60s",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError:
             raise PikpakError(f"rclone binary not found ('{RCLONE_BIN}').")
-        tail = deque(maxlen=8)
-        async for raw in proc.stderr:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line:
-                continue
-            tail.append(line)
-            # Stall-watchdog: kill a download dragging past the hard cap. rclone's --timeout only
-            # catches a full data stall; a throttled drive that trickles bytes forever (the 6.7GB
-            # Baidu zombie) never times out and never finishes. state["start"] spans all retries.
-            if time.monotonic() - state["start"] > MAX_DL_SECONDS:
-                proc.kill()
-                await proc.wait()
-                raise PikpakError(
-                    f"⏱ Aborted after {MAX_DL_SECONDS // 3600}h — {drive.get('display', drive['remote'])} "
-                    f"too slow/throttled to finish {job['filename']}. Staging cleaned; try again later.")
-            m = _PCT.search(line)
-            sm = _SPEED.search(line)
-            pct = min(99, int(m.group(1))) if m else None
-            speed = sm.group(1).replace(" ", "") if sm else None
-            now = time.monotonic()
-            changed = pct is not None and pct != state["last_pct"]
-            if pct is not None:
-                state["last_pct"] = pct
-            if pct is not None or speed is not None:
-                # Throttle DB writes: on % change, else at most every DB_THROTTLE_S to refresh speed —
-                # avoids ~1 write+NOTIFY/s churning Postgres/web SSE on a multi-hour download.
-                if changed or now - state["last_db"] >= DB_THROTTLE_S:
-                    state["last_db"] = now
-                    await _set(db, job["id"], progress=pct, speed=speed)
-                # Show rclone's own size/percent/speed/ETA line (edit is itself throttled).
-                await _safe_edit(bot, job, f"⬇️ {job['filename']}\n{_clean_stats(line)}", state)
-        await proc.wait()
-        if proc.returncode == 0:
-            return
-        last_err = "\n".join(tail)[-400:]
-        log.warning("PikPak job #%s rclone attempt %s/%s failed (rc=%s)",
-                    job["id"], attempt, PIKPAK_RETRIES, proc.returncode)
-        if attempt < PIKPAK_RETRIES:
-            await asyncio.sleep(min(30, 2 ** attempt))  # backoff: 2s, 4s, 8s…
-    raise PikpakError(f"rclone copy failed after {PIKPAK_RETRIES} attempts.\n{last_err}")
+        try:
+            with open(fpath, "r+b") as f:
+                f.seek(done)
+                while True:
+                    chunk = await proc.stdout.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    now = time.monotonic()
+                    if done - win_bytes >= STALL_MIN_BYTES:  # real progress → reset the stall window
+                        win_bytes, win_t = done, now
+                    if now - win_t > STALL_WINDOW_S:
+                        proc.kill(); await proc.wait()
+                        await _set(db, job["id"], bytes_done=done)
+                        raise PikpakError(
+                            f"⏱ Aborted {fname} — no progress for {STALL_WINDOW_S // 60} min "
+                            f"({drive.get('display', drive['remote'])} stalled at {human_size(done)}).")
+                    if now - state["start"] > MAX_DL_SECONDS:
+                        proc.kill(); await proc.wait()
+                        await _set(db, job["id"], bytes_done=done)
+                        raise PikpakError(
+                            f"⏱ Aborted {fname} — hit the {MAX_DL_SECONDS // 3600}h ceiling at "
+                            f"{human_size(done)}/{human_size(size)}.")
+                    if now - state["last_db"] >= DB_THROTTLE_S:
+                        pct = min(99, int(done / size * 100)) if size else 0
+                        spd = _speed_str(done - state["spd_bytes"], now - state["spd_t"])
+                        state["spd_bytes"], state["spd_t"], state["last_db"] = done, now, now
+                        await _set(db, job["id"], progress=pct, speed=spd, bytes_done=done)
+                        await _safe_edit(
+                            bot, job, f"⬇️ {fname}\n{human_size(done)} / {human_size(size)} ({pct}%, {spd})", state)
+            await proc.wait()
+        finally:
+            if proc.returncode is None:
+                proc.kill(); await proc.wait()
+        if proc.returncode == 0 and done >= size:
+            break
+        # Transient interruption (throttle/timeout/short stream) → persist, classify, resume from `done`.
+        err = (await proc.stderr.read()).decode("utf-8", "replace")
+        await _set(db, job["id"], bytes_done=done)
+        if any(k in err.lower() for k in _PERM_ERR_KEYS):
+            raise PikpakError(_classify_rclone_error(err, job["remote_path"], drive))
+        log.warning("PikPak job #%s resumable cat interrupted at %s/%s (rc=%s) — resuming",
+                    job["id"], done, size, proc.returncode)
+        await asyncio.sleep(3)  # brief backoff before resuming
+    await _set(db, job["id"], progress=100, bytes_done=done)
 
 
 async def _process(bot, db, job):
@@ -341,6 +382,20 @@ async def _process(bot, db, job):
     await _safe_edit(bot, job, f"⬇️ Downloading {fname} ({human_size(size)}) …", state, force=True)
     try:
         os.makedirs(dst, exist_ok=True)
+        # Run-time disk verify before the download reserves the full size: reclaim orphaned staging,
+        # then bail if the file still won't fit (disk may have changed since the queue-time guard).
+        remaining = int(size) - min(int(job.get("bytes_done") or 0), int(size))
+        try:
+            free = shutil.disk_usage(PIKPAK_STAGING_DIR).free
+        except OSError:
+            free = None
+        if free is not None and free < remaining:
+            await _reclaim_orphan_staging(db)
+            free = shutil.disk_usage(PIKPAK_STAGING_DIR).free
+        if free is not None and free < remaining:
+            raise PikpakError(
+                f"❌ Not enough disk to finish {fname}: {human_size(free)} free, "
+                f"{human_size(remaining)} still needed.")
         await _rclone_copy(bot, db, job, dst, state, drive)
         _resolve_single(dst)  # sanity: a file actually landed
 
@@ -444,6 +499,7 @@ async def ensure_schema(db):
                           CHECK (status IN ('queued','downloading','downloaded','uploading','done','failed')),
             progress    INTEGER NOT NULL DEFAULT 0,
             speed       TEXT,
+            bytes_done  BIGINT NOT NULL DEFAULT 0,
             error       TEXT,
             chat_id     BIGINT,
             message_id  BIGINT,
@@ -452,7 +508,8 @@ async def ensure_schema(db):
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status)")
-    await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS speed TEXT")  # existing DBs
+    await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS speed TEXT")            # existing DBs
+    await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS bytes_done BIGINT NOT NULL DEFAULT 0")
     await db.execute(
         "CREATE OR REPLACE FUNCTION notify_pikpak_change() RETURNS trigger "
         "LANGUAGE plpgsql AS $func$ BEGIN "

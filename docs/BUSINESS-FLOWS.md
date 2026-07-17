@@ -110,17 +110,18 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    won't fit (so a big download can't fill the small shared VPS disk). Otherwise it inserts a
    `download_jobs` row (`status='queued'`, `source=<drive>`) and replies a progress message.
 3. **Worker** (in-bot, `PIKPAK_MAX_CONCURRENT` asyncio tasks polling every 3 s, `FOR UPDATE SKIP
-   LOCKED` claim) resolves the drive from `download_jobs.source` and runs `rclone copy <remote:path>
-   /staging/_pikpak/<jobid>` with `--stats-one-line --stats-log-level NOTICE` + slow-transfer flags
-   (`--low-level-retries=10`, `--timeout=300s`, `--contimeout=60s`) to tolerate Baidu throttling.
-   (`--stats-log-level NOTICE` is required: piped/non-TTY stats are emitted at INFO and hidden by the
-   default log level, so without it the job sits at 0% then jumps to done.) It parses `%`/speed/ETA,
-   writes `download_jobs.progress` + `download_jobs.speed` (`pikpak_changed` NOTIFY, shown in
-   `/pikpak_jobs`), and **edits the Telegram message live** (throttled 1 edit / ~6 s; DB progress
-   write throttled to on-%-change or every ~5 s). A **stall-watchdog** kills a download running past
-   `DRIVE_MAX_DL_SECONDS` (default 4 h) — a throttled drive that trickles bytes forever never hits
-   rclone's `--timeout`. Non-zero rclone exit → retry ≤ `PIKPAK_RETRIES`; final failure / cap hit →
-   job `failed`, **staging wiped**.
+   LOCKED` claim) resolves the drive from `download_jobs.source` and runs a **resumable** download into
+   `/staging/_pikpak/<jobid>/<name>`: the file is **pre-reserved** to its full size (`posix_fallocate`,
+   truncate fallback) — disk reservation, so it can't run the volume out mid-transfer — and
+   `rclone cat <remote:path> --offset <bytes_done>` streams from the last saved byte. Progress persists
+   in `download_jobs.bytes_done`, so a deploy/restart (ensure_schema requeues `downloading`→`queued`),
+   a transient error, or a throttle **resumes from where it left off instead of restarting at 0**.
+   Speed is computed from the byte rate; `download_jobs.progress`/`speed` are written throttled
+   (`pikpak_changed` NOTIFY, shown in `/pikpak_jobs`) and the Telegram message edited live (≤ 1 / ~6 s).
+   **Give-up policy**: abort only on a genuine no-progress stall (< `DRIVE_STALL_MIN_MB` in
+   `DRIVE_STALL_WINDOW_S`, default 20 MB / 30 min) or the absolute backstop `DRIVE_MAX_DL_SECONDS`
+   (default 24 h) — a slow-but-advancing transfer is left to finish. A permanent error
+   (auth/not-found) or give-up → job `failed`, **staging wiped**.
 4. **Handoff**: on success the worker inserts an `upload_jobs` row — `origin='upload'`,
    `cleanup_source=1`, `status='pending'`, `title='<drive folder>/<remote subdirs>/<name>'`. The
    **`part_size`** encodes the split policy: media / non-media ≤ 2 GB → `4096` (single part,
@@ -140,6 +141,32 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
 > already sent to Telegram are indexed as a partial item (e.g. showing 2/4). This is a pre-existing
 > property of the watcher's multi-part upload, shared with browser uploads; the download job is
 > marked `failed`. Cleaning up orphan parts would require touching the watcher (out of scope here).
+
+---
+
+## A4. Unpack a stored archive → stream its contents ([`bot/unpack.py`](../bot/unpack.py))
+
+Goal: watch a video that lives *inside* a stored (possibly password-protected, possibly split) 7z
+without downloading it locally. You can't stream from inside an archive, so the archive is extracted
+on the VPS and its contents are re-stored as normal items — the video then streams like any other.
+
+1. **Trigger (web only)**: an archive item's kebab → **Unpack archive** → a dialog takes an optional
+   password → the `unpackArchive` server action inserts an `unpack_jobs` row (`item_id` + `password`,
+   `status='queued'`). Guarded: archive-kind only, and refused if one is already queued/running.
+2. **Worker** (`unpack.worker_loop`, inside the **watcher** process — it has the Telethon client +
+   p7zip). `_claim` grabs the oldest queued job and **scrubs the password in the same statement**
+   (CTE reads it, UPDATE nulls it → it never lingers in the DB beyond the seconds before claim).
+3. **Disk-guard** (`size × 3` must be free), then `_download_and_concat` Telethon-downloads every
+   part and concatenates them in part order → the archive (ordered concat reconstructs both 7z-native
+   multi-volumes and raw binary splits). `_extract` runs `7z x -p… -o…` (`-p` always passed so 7z
+   never blocks on a prompt; wrong/missing password → a clear `failed` message).
+4. **Re-store**: `_stage_outputs` moves each extracted file into its own staging dir and inserts an
+   `upload_jobs` row (`origin='upload'`, `cleanup_source=1`; **media → streamable**, else document;
+   title nests under `<archive> (unpacked)/…`). The existing watcher pipeline (Flow A2 step 4) uploads
+   them and the **bot** indexes them (Flow C) — the video appears in the drive, streamable (Flow E2).
+5. **Original archive is kept** (never deleted). The worker cleans its own temp dirs; per-file staging
+   dirs are cleaned by the watcher after upload. Progress/errors on `unpack_jobs` (`unpack_changed`
+   NOTIFY). Password: never logged, passed to 7z via `-p` (argv, single-user VPS).
 
 ---
 
