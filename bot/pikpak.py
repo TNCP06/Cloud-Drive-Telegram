@@ -52,6 +52,10 @@ BROWSE_LIMIT = 50           # max entries shown as buttons per folder (Telegram 
 
 POLL_INTERVAL = 3           # seconds between queue polls (per worker)
 EDIT_THROTTLE_S = 6         # min seconds between Telegram progress-message edits (rate-limit safe)
+DB_THROTTLE_S = 5           # min seconds between download_jobs progress writes (except on % change)
+# Hard per-download time cap: abort a drive too throttled to ever finish (default 4h). Configurable
+# so a genuinely slow-but-legit multi-GB transfer can be given more headroom.
+MAX_DL_SECONDS = int(os.environ.get("DRIVE_MAX_DL_SECONDS", str(4 * 3600)))
 _PCT = re.compile(r"(\d+)%")
 _SPEED = re.compile(r"([\d.]+\s*[KMGTP]?i?B/s)")   # rclone one-line speed field, e.g. "5.12 MiB/s"
 # Strip rclone's "2026/07/12 10:00:00 INFO  : " log prefix → leaves "15 MiB / 1 GiB, 1%, 5 MiB/s, ETA 3m".
@@ -293,15 +297,30 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
             if not line:
                 continue
             tail.append(line)
+            # Stall-watchdog: kill a download dragging past the hard cap. rclone's --timeout only
+            # catches a full data stall; a throttled drive that trickles bytes forever (the 6.7GB
+            # Baidu zombie) never times out and never finishes. state["start"] spans all retries.
+            if time.monotonic() - state["start"] > MAX_DL_SECONDS:
+                proc.kill()
+                await proc.wait()
+                raise PikpakError(
+                    f"⏱ Aborted after {MAX_DL_SECONDS // 3600}h — {drive.get('display', drive['remote'])} "
+                    f"too slow/throttled to finish {job['filename']}. Staging cleaned; try again later.")
             m = _PCT.search(line)
             sm = _SPEED.search(line)
             pct = min(99, int(m.group(1))) if m else None
             speed = sm.group(1).replace(" ", "") if sm else None
+            now = time.monotonic()
+            changed = pct is not None and pct != state["last_pct"]
             if pct is not None:
                 state["last_pct"] = pct
             if pct is not None or speed is not None:
-                await _set(db, job["id"], progress=pct, speed=speed)
-                # Show rclone's own size/percent/speed/ETA line (throttled edit).
+                # Throttle DB writes: on % change, else at most every DB_THROTTLE_S to refresh speed —
+                # avoids ~1 write+NOTIFY/s churning Postgres/web SSE on a multi-hour download.
+                if changed or now - state["last_db"] >= DB_THROTTLE_S:
+                    state["last_db"] = now
+                    await _set(db, job["id"], progress=pct, speed=speed)
+                # Show rclone's own size/percent/speed/ETA line (edit is itself throttled).
                 await _safe_edit(bot, job, f"⬇️ {job['filename']}\n{_clean_stats(line)}", state)
         await proc.wait()
         if proc.returncode == 0:
@@ -318,7 +337,7 @@ async def _process(bot, db, job):
     jid, fname, size = job["id"], job["filename"], job["size"]
     drive = resolve_drive(job.get("source")) or resolve_drive("pikpak")
     dst = os.path.join(PIKPAK_STAGING_DIR, str(jid))
-    state = {"last_edit": 0.0, "last_pct": -1}
+    state = {"last_edit": 0.0, "last_pct": -1, "last_db": 0.0, "start": time.monotonic()}
     await _safe_edit(bot, job, f"⬇️ Downloading {fname} ({human_size(size)}) …", state, force=True)
     try:
         os.makedirs(dst, exist_ok=True)

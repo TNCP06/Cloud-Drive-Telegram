@@ -105,8 +105,10 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    pointing at `rclone config` for PikPak or the **OpenList UI** for WebDAV drives), the path is
    missing, or it's a folder. **Size policy** (all drives): a **media** file > **`PIKPAK_MAX_BYTES`**
    (2 GB) is **rejected** — a binary-split video can't be streamed. A **non-media** file > 2 GB is
-   **accepted** and split later. Otherwise it inserts a `download_jobs` row (`status='queued'`,
-   `source=<drive>`) and replies a progress message.
+   **accepted** and split later. **Disk-guard**: if free space on the staging volume `< size × 1.2`
+   it first reclaims orphaned `_pikpak/<jid>` staging of done/failed jobs, then rejects if it still
+   won't fit (so a big download can't fill the small shared VPS disk). Otherwise it inserts a
+   `download_jobs` row (`status='queued'`, `source=<drive>`) and replies a progress message.
 3. **Worker** (in-bot, `PIKPAK_MAX_CONCURRENT` asyncio tasks polling every 3 s, `FOR UPDATE SKIP
    LOCKED` claim) resolves the drive from `download_jobs.source` and runs `rclone copy <remote:path>
    /staging/_pikpak/<jobid>` with `--stats-one-line --stats-log-level NOTICE` + slow-transfer flags
@@ -114,8 +116,11 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    (`--stats-log-level NOTICE` is required: piped/non-TTY stats are emitted at INFO and hidden by the
    default log level, so without it the job sits at 0% then jumps to done.) It parses `%`/speed/ETA,
    writes `download_jobs.progress` + `download_jobs.speed` (`pikpak_changed` NOTIFY, shown in
-   `/pikpak_jobs`), and **edits the Telegram message live** (throttled 1 edit / ~6 s). Non-zero rclone
-   exit → retry ≤ `PIKPAK_RETRIES`; final failure → job `failed`, **staging wiped**.
+   `/pikpak_jobs`), and **edits the Telegram message live** (throttled 1 edit / ~6 s; DB progress
+   write throttled to on-%-change or every ~5 s). A **stall-watchdog** kills a download running past
+   `DRIVE_MAX_DL_SECONDS` (default 4 h) — a throttled drive that trickles bytes forever never hits
+   rclone's `--timeout`. Non-zero rclone exit → retry ≤ `PIKPAK_RETRIES`; final failure / cap hit →
+   job `failed`, **staging wiped**.
 4. **Handoff**: on success the worker inserts an `upload_jobs` row — `origin='upload'`,
    `cleanup_source=1`, `status='pending'`, `title='<drive folder>/<remote subdirs>/<name>'`. The
    **`part_size`** encodes the split policy: media / non-media ≤ 2 GB → `4096` (single part,
