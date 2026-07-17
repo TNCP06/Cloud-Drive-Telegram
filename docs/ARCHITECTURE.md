@@ -74,7 +74,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 
 Key principle (storage path): **the web never streams file bytes to Telegram.** The watcher
 pushes parts to Telegram (MTProto); downloads go Telegram→user's chat (`copy_message`).
-Video streaming goes Telegram→streamer cache→Next.js proxy→Service Worker (IndexedDB cache)→browser `<video>` element.
+Video streaming goes Telegram→streamer cache→Next.js proxy→browser `<video>` element (native buffering; no Service Worker in the path).
 
 Two upload entry points:
 - **`local`** — pick a path on the machine that runs the watcher (laptop mode). The file never
@@ -154,7 +154,7 @@ These are load-bearing — break them and indexing/downloads break:
   that endpoint, so the grid payload stays tiny regardless of library size. The full gallery loads
   on demand via `getGallery()`.
 - **Streamer Deadlock & Priority Invariants:** To avoid Telethon connection choking and deadlocks during concurrent browser seeks, main client playback requests always take absolute priority. Prefetch tasks for the same video are immediately cancelled and awaited (ensuring they release their Telegram locks) before a main playback request proceeds. Additionally, prefetch tasks are only scheduled to start *after* the main playback request successfully completes yielding its chunks, eliminating concurrent lock contention. Finally, the Next.js API proxy disables Keep-Alive (`Connection: close`) to force immediate Uvicorn request completion, ensuring completed chunks are promoted to cache on connection termination.
-- **Client-side Video Caching (Service Worker + IndexedDB):** Video requests to `/api/stream/*` are intercepted by the client's Service Worker (`web/public/sw.js`). Video chunks of 2 MB are stored locally in IndexedDB (`video-cache-db`). An LRU (Least Recently Used) policy automatically evicts older file caches once the total size exceeds 4 GB. This saves VPS bandwidth and allows instant seeking/playback of cached parts without hitting the VPS.
+- **No client-side video cache:** an earlier Service Worker intercepted `/api/stream/*` and cached 2 MB chunks in IndexedDB, but its 4 MB-max responses + sequential chunk fetches caused periodic playback stalls (and a full-store `getAll()` per write hammered client RAM/IO). `web/public/sw.js` is now a kill-switch that unregisters the old SW and deletes `video-cache-db`; the browser's native `<video>` buffering talks straight to the proxy.
 
 ---
 
@@ -166,34 +166,6 @@ verified in [`web/middleware.ts`](../web/middleware.ts) (edge) and login server 
 (middleware bounces it; `login/page.tsx` also redirects server-side as defence in depth).
 Telegram-side access control is separate: the bot only obeys `/start` downloads and Bot Drop
 from `OWNER_USER_ID`.
-
-### Demo Mode
-
-Set `DEMO_MODE=true` (env) to run the dashboard without a real database or Telegram account.
-Activating demo mode:
-- **Replaces all data reads** -- `getDriveData()` returns fake seeder data from `lib/demo.ts`
-  instead of querying Postgres. No `DATABASE_URL` is needed.
-- **Writes mutate the in-memory seeder data instead of a DB** -- favorite/trash/restore/purge,
-  folder create/rename/delete/restore/move, and tag create/rename/recolor/delete all check
-  `isDemoMode()` and edit `DEMO_FILES`/`DEMO_FOLDERS`/`DEMO_TAGS` (`lib/demo.ts`) in place, then
-  `refresh()` as usual -- so the UI change actually sticks (until the server restarts) instead of
-  throwing. Actions with no meaningful demo effect (uploads needing real file bytes; thumbnail
-  fetch/upload; moving into the always-empty Private space) still no-op, either via `demoGuard()`
-  (`actions/_shared.ts`, throws -- only used by `uploads.ts`, whose callers already catch and show
-  the message) or a silent `isDemoMode()` early-return (private/thumbnail actions, whose callers
-  don't wrap them in try/catch).
-- **Shows a fixed banner** -- `components/DemoBanner.tsx` renders a purple fixed-top bar
-  labelled "Demo Mode -- data is fictional, no changes are saved" so visitors know they
-  are looking at a showcase.
-- **Recommended credentials** -- when demoing publicly, set `APP_PASSWORD=login` and `PIN=123456`
-  (auth still gates every route; demo mode does not bypass it). The login page and the Private PIN
-  screen display these values on-screen (`login/LoginForm.tsx`, `components/PrivateLock.tsx`, both
-  passed `demo={isDemoMode()}` from their server page) so visitors can sign in without asking.
-
-Seeder data (`lib/demo.ts`) covers: multi-part archives, versioned families, media (video/image/
-audio/PDF, each with a colored placeholder `thumb`), nested folders, an empty folder, a trashed
-folder, starred items, and trashed items -- enough to exercise every UI view (Main grid, Recent,
-Favorites, Trash, Folder navigation).
 
 ---
 

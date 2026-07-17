@@ -215,25 +215,13 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 ### `web/lib/` — server-side data & helpers
 - `db.ts` — `pg` Pool wrapped to expose the libSQL-style `db.execute(sql | {sql,args})` → `{rows}`
   surface (rewrites `?`→`$n`; BIGINT→Number). `server-only` keeps `DATABASE_URL` out of the browser.
-- `demo.ts` — **Demo mode seeder + in-memory store**. `isDemoMode()` (`DEMO_MODE=true` env check).
-  `DEMO_TAGS`, `DEMO_FILES`, `DEMO_FOLDERS` — seeder data covering every file sub-type (multi-part
-  archive, versioned family, media: video/image/audio/PDF, course, backup, each media item with a
-  colored placeholder `thumb`), nested folders, an empty folder, a trashed folder, starred/trashed
-  items. `demoResolveTagIds(namesCsv)` — name→id resolution against `DEMO_TAGS`, creating new tags
-  as needed (in-memory twin of `actions/_shared.ts`'s `resolveTagId`). These arrays are **mutated
-  directly** by the write actions in `actions/items.ts`, `folders.ts`, `tags.ts` when `isDemoMode()`
-  (favorite/trash/restore/purge, folder CRUD + move, tag CRUD) — so demo edits visibly stick instead
-  of throwing, until the process restarts. Imported by `lib/items.ts` (read path), `lib/uploads.ts`,
-  and most of `actions/*.ts`.
 - `types.ts` — `Kind`, `Tag`, `DriveFile` (UI shape; incl. `firstPartId` + `fileName` for
   streaming), `GalleryPart` (part ID, file name, and thumbnail data URL), `UploadJob` (now incl. `origin`,
   `partsDone`, `totalBytes`), `UploadOrigin`, `UploadStatus`, `WatcherStatus`, `FsEntry`/`FsListing`/`FsShortcut`.
 - `staging.ts` — shared resumable-upload staging paths. `STAGING_ROOT`
   (`UPLOAD_STAGING_DIR`, `/staging` in Docker), `jobDir(token)`, `stagedFilePath(token,name)`
   with strict token/path-traversal guards. Used by the upload API + the watcher reads the same dir.
-- `items.ts` — `getDriveData(space = "main" | "private")`: the main read. **Short-circuits to demo
-  seeder data when `DEMO_MODE=true`** (private space returns empty; no Postgres query is made).
-  Otherwise: one batched query set → shapes `DriveFile[]` + `Tag[]`, **filtered by `is_private`**
+- `items.ts` — `getDriveData(space = "main" | "private")`: the main read. One batched query set → shapes `DriveFile[]` + `Tag[]`, **filtered by `is_private`**
   (Main = 0, Private = 1). The tag list only includes tags still used by an item in that space, so a
   tag whose last file moved to Private vanishes from Main. Sets each item's `thumb` to a **cover URL**
   `/api/thumb/{id}` when a cover exists (no base64 in the payload), fetches `firstPartId`/`fileName`
@@ -328,7 +316,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   inserting a duplicate, so a client retrying `complete` after a reload can't double-queue.
 - `api/stream/[partId]/route.ts` — **streaming proxy** (`nodejs` runtime). Authenticates via
   cookie, then proxies `Range` requests to the streamer service (`STREAMER_URL`, default
-  `http://streamer:8080`). Pipes the 206 response body back to the browser's `<video>` element (intercepted and cached by the client-side Service Worker).
+  `http://streamer:8080`). Pipes the 206 response body straight back to the browser's `<video>` element.
 - `api/subtitles/[partId]/route.ts` (lang list) + `api/subtitles/[partId]/[lang]/route.ts` (one WebVTT
   track) — cookie-auth proxies to the streamer's `/subtitles/...` endpoints; the player loads these as
   `<track>`s.
@@ -344,7 +332,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `login/` (`page.tsx` + `actions.ts` + `LoginForm.tsx`). `loading.tsx`/`error.tsx` per route.
 
 ### `web/public/` — static assets
-- `sw.js` — **client-side Service Worker**. Intercepts video range requests, caches 2 MB chunks in IndexedDB (`video-cache-db`), reconstructs partial responses, and runs LRU cache eviction targeting a 4 GB limit. **Validates the cached size against the server once per SW lifetime and namespaces chunk keys by size** (`partId_size_chunk_i`) so an original→compressed variant switch can't mix two variants' bytes (purges stale chunks on a size change).
+- `sw.js` — **kill-switch Service Worker**. The old video-chunk IndexedDB cache SW caused periodic playback stalls (4 MB-max responses + sequential fetches + full-store `getAll()` per write); this replacement unregisters itself, deletes `video-cache-db`, and intercepts nothing. Kept (and still registered) so clients running the old SW pick it up and get cleaned.
 - `logo.png` — sidebar/brand logo. **Note:** `next.config.ts` uses `output: "standalone"`, which does **not** bundle `public/`; `web/Dockerfile` must `COPY .../public ./public` into the run stage or these assets 404 in production.
 
 ### `web/` — auth & config
@@ -354,14 +342,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   - **`APP_PASSWORD` set** -- all routes require the cookie; unauthenticated requests → `/login`.
   - `/api/upload`, `/api/stream`, and `/api/seek-preview` are excluded from the matcher to avoid
     the 10 MB middleware body-size limit; these routes perform their own cookie auth check internally.
-- `DEMO_MODE=true` (env) -- showcase mode; no DB or Telegram credentials needed. `getDriveData()`
-  returns seeder data; most write actions mutate `lib/demo.ts`'s arrays in place instead of
-  throwing (uploads/thumbnails/Private-space moves still no-op, silently or via `demoGuard()`);
-  `components/DemoBanner.tsx` shows a fixed-top banner; `LoginForm`/`PrivateLock` show the demo
-  password/PIN on-screen when `demo` prop is set. See ARCHITECTURE.md §7 for details.
 
 ### `web/components/` — UI (client)
-- `ServiceWorkerRegister.tsx` — registers the Service Worker (`sw.js`) on the client side (localhost/HTTPS).
+- `ServiceWorkerRegister.tsx` — registers `sw.js` (localhost/HTTPS) — now only distributes the kill-switch SW above.
 - `DriveApp.tsx` — top-level app shell/state (largest component; its pure view-model logic — section
   grouping `buildGroups`/`GROUP_OPTIONS`, the `SORTS` comparators, and the optimistic `fileReducer`/
   `folderReducer` overlays — lives in **`lib/driveView.ts`**). Takes a `space` prop ("main"|"private");

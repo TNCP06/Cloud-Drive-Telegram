@@ -269,9 +269,9 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
    fresh loads serve compressed; an in-progress stream's open fd keeps working on Linux). Tunable via
    `VIDEO_*` / `COMPRESSED_*` env (`VIDEO_COMPRESS=0` disables it). Fallback (non-local) mode does
    not compress.
-   * **Device cache caveat:** on HTTPS (e.g. Vercel) the Service Worker caches chunks per device. It
-     re-validates the file size once per SW lifetime and namespaces chunk keys by size, so the
-     original→compressed size change can't corrupt playback by mixing variants.
+   * The old per-device Service Worker chunk cache was removed (it caused periodic playback
+     stalls); the browser's native `<video>` buffering handles the original→compressed size
+     change by simply re-requesting ranges against the newly reported size.
 8. **Background seek-preview generation:** on first view (local Bot API mode), the streamer also fires
    a background seek-preview sprite-sheet job (`stream_seekpreview.py`). ffmpeg extracts thumbnails at
    regular intervals and assembles them into a sprite sheet JPEG + a VTT mapping file in the persistent
