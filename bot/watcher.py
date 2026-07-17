@@ -33,6 +33,7 @@ archives only), WORKER_OUT_DIR (temp split parts).
 import asyncio
 import base64
 import math
+import re
 import os
 import shutil
 import subprocess
@@ -60,6 +61,12 @@ POLL_INTERVAL = 5
 # ---------------------------------------------------------------------------
 # Thumbnail helpers
 # ---------------------------------------------------------------------------
+def _volume_no(path: str) -> "int | None":
+    """External multi-volume suffix (.001/.002/...) -> int part number, else None."""
+    m = re.search(r"\.(\d{3,})$", os.path.basename(path))
+    return int(m.group(1)) if m else None
+
+
 def make_video_thumbnail(path: str) -> "str | None":
     """Extract a frame at 1 s via ffmpeg. Returns temp JPEG path, or None if unavailable/failed."""
     if os.path.splitext(path)[1].lower() not in _VIDEO_EXTS:
@@ -413,8 +420,14 @@ async def process(client, db, channel, job):
                 for i, p in enumerate(plan[1], start=1):
                     if i <= parts_done:
                         continue  # already pushed in a previous run
-                    caption = build_caption(title, i, total, tags)
-                    print(f"  [{i}/{total}] {os.path.basename(p)}")
+                    # External multi-volume archives (.001/.002) arrive as separate
+                    # jobs; number the part from the volume suffix, not the loop index,
+                    # so sibling volumes do not collide on (item_id, part_number).
+                    # ponytail: caption total may read "2/2" vs "1/1" across jobs;
+                    # recompute_totals GREATEST(total_parts, COUNT(*)) self-heals it.
+                    part_no = _volume_no(p) or i
+                    caption = build_caption(title, part_no, max(total, part_no), tags)
+                    print(f"  [{part_no}/{max(total, part_no)}] {os.path.basename(p)}")
                     msg = await _send_file_smart(
                         client, channel, p, caption, as_document, thumb_path, make_cb(i)
                     )
