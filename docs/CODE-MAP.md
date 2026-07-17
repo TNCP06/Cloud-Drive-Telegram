@@ -93,7 +93,20 @@ fall back to a document so the upload never dies),
 `process` (build plan `list`/`stream` → upload each part, checkpoint after each, cleanup temp
 parts + staging dir on success), `resolve_channel`, `main` (poll loop, 5 s).
 Writes `watcher.pid`. **`ffmpeg`** for media thumbnails; **7-Zip only for `local` archives**.
-Imports `normalize_tags, build_caption, safe_name, collect_parts` from `worker.py`.
+Imports `normalize_tags, build_caption, safe_name, collect_parts` from `worker.py`. Also
+`import unpack` → spawns `unpack.worker_loop` in `main` (shares this process's Telethon client + 7z).
+
+### `unpack.py` — archive-unpack worker (in the **watcher** process, Telethon + p7zip)
+Extracts a stored multi-part archive item and re-stores its contents as normal (streamable) items,
+so e.g. a video inside a password-protected 7z is watchable in-app without a local download. Polls
+`unpack_jobs` (inserted by the web `unpackArchive` action). `_claim` (oldest queued + **scrub the
+password in the same statement** — a CTE reads it before the UPDATE nulls it), `_download_and_concat`
+(Telethon-download every part → ordered binary concat → the archive), `_extract` (async `7z x -p…`;
+`-p` always passed so it never blocks on a prompt), `_stage_outputs` (each extracted file → own
+staging dir + an `upload_jobs` row so the existing pipeline uploads + the bot indexes it; title nests
+under `<archive> (unpacked)/…`), `_process` (disk-guard `size×3` → download → extract → stage →
+cleanup; **keeps the original archive**), `ensure_schema`, `worker_loop`. Password: never logged,
+passed to 7z via `-p` (argv, single-user VPS).
 
 ### `worker.py` — standalone upload CLI (Telethon, **laptop**)
 Same upload logic as the watcher but argparse-driven (`archive` / `media` subcommands).

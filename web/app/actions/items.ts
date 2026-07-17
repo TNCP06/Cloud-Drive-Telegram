@@ -139,6 +139,37 @@ export async function updateMetadata(
   refresh();
 }
 
+// Queue a stored archive to be unpacked on the server (bot/unpack.py): download its parts,
+// concat + 7z-extract them, and re-store each extracted file (video → streamable). The original
+// archive is kept. `password` is optional and transient — the worker NULLs it the instant it
+// claims the job. Returns {ok} or {ok:false, error} for a user-facing toast.
+export async function unpackArchive(
+  itemId: number,
+  password: string
+): Promise<{ ok: boolean; error?: string }> {
+  const it = await db.execute({
+    sql: "SELECT kind FROM items WHERE id = ? AND deleted_at IS NULL",
+    args: [itemId],
+  });
+  if (it.rows.length === 0) return { ok: false, error: "Item not found." };
+  if ((it.rows[0].kind as string) !== "archive")
+    return { ok: false, error: "Only archives can be unpacked." };
+
+  const active = await db.execute({
+    sql: "SELECT 1 FROM unpack_jobs WHERE item_id = ? AND status IN ('queued','running')",
+    args: [itemId],
+  });
+  if (active.rows.length > 0)
+    return { ok: false, error: "This archive is already being unpacked." };
+
+  await db.execute({
+    sql: "INSERT INTO unpack_jobs (item_id, password, status) VALUES (?, ?, 'queued')",
+    args: [itemId, password || null],
+  });
+  refresh();
+  return { ok: true };
+}
+
 export async function bulkToggleFavorite(itemIds: number[], starred: boolean) {
   if (itemIds.length === 0) return;
   for (const itemId of itemIds) {

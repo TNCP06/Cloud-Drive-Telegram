@@ -48,6 +48,7 @@ import {
   CreateFolderModal,
   RenameFolderModal,
   MoveToFolderModal,
+  UnpackModal,
   FolderDetailsModal,
   EmptyState,
   ConfirmEmptyTrash,
@@ -58,6 +59,7 @@ import {
   softDelete,
   purgeNow,
   updateMetadata,
+  unpackArchive,
   createFolder,
   renameFolder,
   deleteFolder,
@@ -191,6 +193,7 @@ export function DriveApp({
   // Unified move target: any mix of items + folders (kebab → one entry; toolbar → the
   // whole selection). null = no move dialog open.
   const [moveTarget, setMoveTarget] = useState<{ itemIds: number[]; folderIds: number[] } | null>(null);
+  const [unpackTarget, setUnpackTarget] = useState<DriveFile | null>(null);
   const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
   // Standalone folder details popup (Alt+Enter / kebab Detail / toolbar Details).
   const [folderDetail, setFolderDetail] = useState<Folder | null>(null);
@@ -392,6 +395,16 @@ export function DriveApp({
     startTransition(async () => {
       optimizeFiles({ type: "meta", id: item.id, title: input.title, kind: input.kind });
       await updateMetadata(item.id, input);
+    });
+  const doUnpack = (item: DriveFile, password: string) =>
+    startTransition(async () => {
+      setUnpackTarget(null);
+      const r = await unpackArchive(item.id, password);
+      setToast(
+        r.ok
+          ? "Unpacking started — extracted files will appear in your drive shortly."
+          : r.error ?? "Failed to start unpack."
+      );
     });
 
   /* ---- counts ---- */
@@ -1510,6 +1523,16 @@ export function DriveApp({
                     closeMenu();
                   }}
                 />
+                {menu.item.kind === "archive" && (
+                  <MenuItem
+                    icon="download"
+                    label="Unpack archive"
+                    onClick={() => {
+                      setUnpackTarget(menu.item);
+                      closeMenu();
+                    }}
+                  />
+                )}
                 <div className="menu-sep"></div>
                 <MenuItem
                   icon="download"
@@ -1904,6 +1927,15 @@ export function DriveApp({
             });
             setMoveTarget(null);
           }}
+        />
+      )}
+
+      {/* Unpack archive → optional password → queue an unpack_jobs row (bot/unpack.py). */}
+      {unpackTarget && (
+        <UnpackModal
+          item={{ name: unpackTarget.version ? unpackTarget.family : unpackTarget.name }}
+          onClose={() => setUnpackTarget(null)}
+          onUnpack={(password) => doUnpack(unpackTarget, password)}
         />
       )}
 

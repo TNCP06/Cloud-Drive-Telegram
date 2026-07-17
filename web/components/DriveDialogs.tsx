@@ -329,6 +329,51 @@ export function RenameFolderModal({
   );
 }
 
+export function UnpackModal({
+  item,
+  onClose,
+  onUnpack,
+}: {
+  item: { name: string };
+  onClose: () => void;
+  onUnpack: (password: string) => void;
+}) {
+  const [password, setPassword] = useState("");
+  return (
+    <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="dialog" style={{ maxWidth: 380 }}>
+        <div className="dhead">
+          <h2>Unpack archive</h2>
+        </div>
+        <div className="dbody">
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--ink-2)" }}>
+            Extract “{item.name}” on the server and add its contents to your drive — videos become
+            streamable. The original archive is kept.
+          </p>
+          <input
+            className="input"
+            type="password"
+            style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--line-2)", borderRadius: "8px", background: "var(--card-2)", color: "var(--ink)" }}
+            autoFocus
+            placeholder="Password (leave blank if none)"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && onUnpack(password)}
+          />
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={() => onUnpack(password)}>
+            Unpack
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MoveToFolderModal({
   folders,
   space = "main",

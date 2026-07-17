@@ -46,6 +46,7 @@ from telethon import TelegramClient
 from pg_db import create_client
 
 from worker import normalize_tags, build_caption, safe_name, collect_parts
+import unpack
 
 load_dotenv()
 
@@ -504,6 +505,9 @@ async def main():
         channel = await resolve_channel(client)
         print(f"Watcher ready. Channel: {getattr(channel, 'title', channel)}")
         print(f"Split output: {OUT_DIR}")
+        # Archive-unpack worker shares this process's Telethon client + p7zip.
+        await unpack.ensure_schema(db)
+        asyncio.create_task(unpack.worker_loop(client, channel, db))
         print("Polling upload_jobs… (Ctrl+C to stop)")
         while True:
             job = await claim_next(db)
