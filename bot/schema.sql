@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS download_jobs (
     status      TEXT NOT NULL DEFAULT 'queued'
                   CHECK (status IN ('queued','downloading','downloaded','uploading','done','failed')),
     progress    INTEGER NOT NULL DEFAULT 0,        -- 0..100 (download %)
+    speed       TEXT,                              -- last rclone transfer speed (e.g. "5.12MiB/s"), shown while downloading
     error       TEXT,
     chat_id     BIGINT,                            -- Telegram chat holding the progress message
     message_id  BIGINT,                            -- the progress message the worker edits

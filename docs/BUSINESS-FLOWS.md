@@ -109,11 +109,13 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    `source=<drive>`) and replies a progress message.
 3. **Worker** (in-bot, `PIKPAK_MAX_CONCURRENT` asyncio tasks polling every 3 s, `FOR UPDATE SKIP
    LOCKED` claim) resolves the drive from `download_jobs.source` and runs `rclone copy <remote:path>
-   /staging/_pikpak/<jobid>` with `--stats-one-line` + slow-transfer flags (`--low-level-retries=10`,
-   `--timeout=300s`, `--contimeout=60s`) to tolerate Baidu throttling. It parses `%`/speed/ETA and
-   **edits the Telegram message live** (throttled 1 edit / ~6 s), writing `download_jobs.progress`
-   (`pikpak_changed` NOTIFY). Non-zero rclone exit → retry ≤ `PIKPAK_RETRIES`; final failure → job
-   `failed`, **staging wiped**.
+   /staging/_pikpak/<jobid>` with `--stats-one-line --stats-log-level NOTICE` + slow-transfer flags
+   (`--low-level-retries=10`, `--timeout=300s`, `--contimeout=60s`) to tolerate Baidu throttling.
+   (`--stats-log-level NOTICE` is required: piped/non-TTY stats are emitted at INFO and hidden by the
+   default log level, so without it the job sits at 0% then jumps to done.) It parses `%`/speed/ETA,
+   writes `download_jobs.progress` + `download_jobs.speed` (`pikpak_changed` NOTIFY, shown in
+   `/pikpak_jobs`), and **edits the Telegram message live** (throttled 1 edit / ~6 s). Non-zero rclone
+   exit → retry ≤ `PIKPAK_RETRIES`; final failure → job `failed`, **staging wiped**.
 4. **Handoff**: on success the worker inserts an `upload_jobs` row — `origin='upload'`,
    `cleanup_source=1`, `status='pending'`, `title='<drive folder>/<remote subdirs>/<name>'`. The
    **`part_size`** encodes the split policy: media / non-media ≤ 2 GB → `4096` (single part,

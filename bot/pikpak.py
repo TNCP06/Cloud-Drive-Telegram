@@ -53,6 +53,7 @@ BROWSE_LIMIT = 50           # max entries shown as buttons per folder (Telegram 
 POLL_INTERVAL = 3           # seconds between queue polls (per worker)
 EDIT_THROTTLE_S = 6         # min seconds between Telegram progress-message edits (rate-limit safe)
 _PCT = re.compile(r"(\d+)%")
+_SPEED = re.compile(r"([\d.]+\s*[KMGTP]?i?B/s)")   # rclone one-line speed field, e.g. "5.12 MiB/s"
 # Strip rclone's "2026/07/12 10:00:00 INFO  : " log prefix → leaves "15 MiB / 1 GiB, 1%, 5 MiB/s, ETA 3m".
 _LOG_PREFIX = re.compile(r"^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\s+\S+\s*:\s*")
 _STATUS_ICON = {
@@ -187,7 +188,7 @@ def _resolve_single(dst: str) -> str:
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
-async def _set(db, jid, *, status=None, progress=None, error=None):
+async def _set(db, jid, *, status=None, progress=None, error=None, speed=None):
     cols, vals = [], []
     if status is not None:
         cols.append("status=?"); vals.append(status)
@@ -195,6 +196,8 @@ async def _set(db, jid, *, status=None, progress=None, error=None):
         cols.append("progress=?"); vals.append(progress)
     if error is not None:
         cols.append("error=?"); vals.append(error)
+    if speed is not None:
+        cols.append("speed=?"); vals.append(speed)
     cols.append("updated_at=now_text()")
     vals.append(jid)
     await db.execute(f"UPDATE download_jobs SET {', '.join(cols)} WHERE id=?", vals)
@@ -241,7 +244,10 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
         try:
             proc = await asyncio.create_subprocess_exec(
                 RCLONE_BIN, "copy", remote, dst,
-                "--stats=1s", "--stats-one-line", "--transfers=1",
+                # --stats-log-level NOTICE: without it, piped (non-TTY) stats are emitted at INFO
+                # and suppressed by the default NOTICE log level → no progress lines ever reach us
+                # (job sits at 0% then jumps to done). NOTICE makes the one-line stats show up.
+                "--stats=1s", "--stats-one-line", "--stats-log-level", "NOTICE", "--transfers=1",
                 # Chinese drives (Baidu non-SVIP) throttle hard: tolerate very slow multi-GB
                 # transfers instead of failing fast. Low-level retries + generous timeouts.
                 "--low-level-retries=10", "--retries=3",
@@ -257,13 +263,15 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
                 continue
             tail.append(line)
             m = _PCT.search(line)
-            if m:
-                pct = min(99, int(m.group(1)))
-                if pct != state["last_pct"]:
-                    state["last_pct"] = pct
-                    await _set(db, job["id"], progress=pct)
-                    # Show rclone's own size/percent/speed/ETA line (throttled edit).
-                    await _safe_edit(bot, job, f"⬇️ {job['filename']}\n{_clean_stats(line)}", state)
+            sm = _SPEED.search(line)
+            pct = min(99, int(m.group(1))) if m else None
+            speed = sm.group(1).replace(" ", "") if sm else None
+            if pct is not None:
+                state["last_pct"] = pct
+            if pct is not None or speed is not None:
+                await _set(db, job["id"], progress=pct, speed=speed)
+                # Show rclone's own size/percent/speed/ETA line (throttled edit).
+                await _safe_edit(bot, job, f"⬇️ {job['filename']}\n{_clean_stats(line)}", state)
         await proc.wait()
         if proc.returncode == 0:
             return
@@ -385,6 +393,7 @@ async def ensure_schema(db):
             status      TEXT NOT NULL DEFAULT 'queued'
                           CHECK (status IN ('queued','downloading','downloaded','uploading','done','failed')),
             progress    INTEGER NOT NULL DEFAULT 0,
+            speed       TEXT,
             error       TEXT,
             chat_id     BIGINT,
             message_id  BIGINT,
@@ -393,6 +402,7 @@ async def ensure_schema(db):
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status)")
+    await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS speed TEXT")  # existing DBs
     await db.execute(
         "CREATE OR REPLACE FUNCTION notify_pikpak_change() RETURNS trigger "
         "LANGUAGE plpgsql AS $func$ BEGIN "
@@ -506,17 +516,17 @@ async def do_ls(message, folder, drive_key="pikpak"):
 async def jobs_text(db) -> str:
     """HTML listing of the last 10 download jobs (shared by /pikpak_jobs + menu button)."""
     rs = await db.execute(
-        "SELECT id, filename, size, status, progress, error, source "
+        "SELECT id, filename, size, status, progress, error, source, speed "
         "FROM download_jobs ORDER BY id DESC LIMIT 10"
     )
     if not rs.rows:
         return "No download jobs yet. Start one with /pikpak &lt;path&gt; or /baidu &lt;path&gt;."
     lines = ["📋 <b>Last 10 download jobs</b>"]
-    for jid, fname, size, status, progress, error, source in rs.rows:
+    for jid, fname, size, status, progress, error, source, speed in rs.rows:
         icon = _STATUS_ICON.get(status, "•")
         drive = resolve_drive(source)
         tag = f"[{html.escape(drive['display'] if drive else str(source))}] "
-        extra = f" {progress}%" if status == "downloading" else ""
+        extra = (f" {progress}%" + (f" · {html.escape(speed)}" if speed else "")) if status == "downloading" else ""
         tail = f" — {html.escape(error[:60])}" if status == "failed" and error else ""
         lines.append(f"{icon} #{jid} {tag}{html.escape(str(fname))} ({human_size(size)}) [{status}{extra}]{tail}")
     return "\n".join(lines)
