@@ -124,6 +124,10 @@ TELEGRAM_API_URL = os.environ.get("TELEGRAM_API_URL")
 
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/cache"))
 CACHE_MAX_BYTES = int(os.environ.get("CACHE_MAX_SIZE_GB", "15")) * 1073741824
+# Disk-free floor: evict cache to keep at least this much free on the (shared) volume, so streaming
+# yields disk to a concurrent download and to other projects on the same VPS — a good-neighbor
+# invariant independent of the cache's own size cap. Only TCD's own cache is ever evicted.
+CACHE_FREE_FLOOR_BYTES = int(os.environ.get("CACHE_FREE_FLOOR_GB", "3")) * 1073741824
 PREFETCH_BUFFER = int(os.environ.get("PREFETCH_BUFFER_MB", "30")) * 1048576
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE_MB", "15")) * 1048576
 PREFETCH_TIMEOUT = int(os.environ.get("PREFETCH_TIMEOUT_S", "90"))
@@ -265,10 +269,24 @@ def _cache_total_bytes() -> int:
     return total
 
 
+def _free_disk_bytes() -> int:
+    try:
+        return shutil.disk_usage(CACHE_DIR).free
+    except OSError:
+        return 1 << 60  # unknown → don't force disk-floor eviction
+
+
+def _room_ok(current: int, needed: int) -> bool:
+    """True when adding `needed` keeps the cache under its cap AND leaves the disk above its floor."""
+    return (current + needed <= CACHE_MAX_BYTES
+            and _free_disk_bytes() - needed >= CACHE_FREE_FLOOR_BYTES)
+
+
 def _evict_if_needed(needed: int) -> None:
-    """Evict oldest-accessed part directories until cache has room."""
+    """Evict oldest-accessed part directories until the cache is under its size cap AND the shared
+    disk keeps its free-space floor (whichever bites first)."""
     current = _cache_total_bytes()
-    if current + needed <= CACHE_MAX_BYTES:
+    if _room_ok(current, needed):
         return
 
     # Collect (last_accessed, part_dir) pairs
@@ -290,7 +308,7 @@ def _evict_if_needed(needed: int) -> None:
     entries.sort(key=lambda e: e[0])
 
     for _ts, part_dir in entries:
-        if current + needed <= CACHE_MAX_BYTES:
+        if _room_ok(current, needed):
             break
         dir_size = sum(f.stat().st_size for f in part_dir.iterdir() if f.is_file())
         log.info("Evicting cache dir %s (%.1f MB)", part_dir.name, dir_size / 1048576)
@@ -321,15 +339,19 @@ def _evict_local_api_cache_if_needed(needed_bytes: int) -> None:
                     pass
 
     limit = CACHE_MAX_BYTES
-    if total_size + needed_bytes <= limit:
+    # Room = under the size cap AND leaving the shared disk above its free-space floor (late-binding
+    # lambda: re-reads total_size + live free disk each call as files are unlinked below).
+    room = lambda: (total_size + needed_bytes <= limit
+                    and _free_disk_bytes() - needed_bytes >= CACHE_FREE_FLOOR_BYTES)
+    if room():
         return
 
-    log.info("Local Bot API cache size (%.1f MB) + needed (%.1f MB) exceeds limit (%.1f MB). Evicting...",
-             total_size / 1048576, needed_bytes / 1048576, limit / 1048576)
+    log.info("Local Bot API cache size (%.1f MB) + needed (%.1f MB) exceeds cap/disk-floor. Evicting...",
+             total_size / 1048576, needed_bytes / 1048576)
 
     files.sort(key=lambda x: x[0])
     for _mtime, size, file_path in files:
-        if total_size + needed_bytes <= limit:
+        if room():
             break
         log.info("Evicting local Bot API cached file: %s (%.1f MB)", file_path.name, size / 1048576)
         try:
