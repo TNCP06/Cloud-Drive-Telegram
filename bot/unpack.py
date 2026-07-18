@@ -21,13 +21,10 @@ step 1's scrub-on-claim keeps that window to seconds.
 
 import asyncio
 import os
+import re
 import shutil
 
-from telethon.errors import FloodWaitError
-try:
-    from telethon.errors import FloodPremiumWaitError
-except ImportError:  # older Telethon → premium flood-wait maps to the base class
-    FloodPremiumWaitError = FloodWaitError
+from telethon.errors import FloodError  # base class → catches FLOOD_WAIT and FLOOD_PREMIUM_WAIT alike
 
 from bot_config import PIKPAK_STAGING_DIR, PIKPAK_MAX_BYTES, DRIVE_SPLIT_PART_MB, log
 
@@ -125,17 +122,48 @@ async def _claim(db):
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
+def _flood_secs(e) -> int:
+    """Seconds to wait from a Telegram FloodError (FLOOD_PREMIUM_WAIT_N carries N in its text)."""
+    s = getattr(e, "seconds", None)
+    if s:
+        return int(s)
+    m = re.search(r"WAIT_(\d+)", str(e)) or re.search(r"(\d+)\s*second", str(e))
+    return int(m.group(1)) if m else 30
+
+
 async def _tg_retry(call, what):
-    """Await a Telethon call, sleeping through Telegram flood-waits (incl. the non-premium
-    FLOOD_PREMIUM_WAIT Telegram imposes on large downloads) instead of crashing the job."""
+    """Await a small Telethon call (e.g. get_messages), sleeping through flood-waits."""
     for attempt in range(12):
         try:
             return await call()
-        except (FloodPremiumWaitError, FloodWaitError) as e:
-            wait = int(getattr(e, "seconds", 5)) + 2
+        except FloodError as e:
+            wait = _flood_secs(e) + 2
             log.warning("Unpack: Telegram flood-wait %ss on %s (attempt %s/12)", wait, what, attempt + 1)
             await asyncio.sleep(wait)
     raise UnpackError(f"Telegram flood-limited {what} after repeated waits — try again later.")
+
+
+async def _download_part(client, msg, path):
+    """Download a message's file to `path`, resuming across Telegram flood-waits via chunked
+    iter_download — so FLOOD_PREMIUM_WAIT on a large non-premium download waits and continues from the
+    last byte instead of restarting the whole part from 0. Gives up only if it stops advancing."""
+    with open(path, "wb") as f:
+        offset, last, stuck = 0, 0, 0
+        while True:
+            try:
+                async for chunk in client.iter_download(msg.media, offset=offset, request_size=512 * 1024):
+                    f.write(chunk)
+                    offset += len(chunk)
+                return
+            except FloodError as e:
+                stuck = stuck + 1 if offset == last else 0
+                last = offset
+                if stuck > 30:
+                    raise UnpackError("Telegram flood-limited the download and it stopped advancing.")
+                secs = _flood_secs(e) + 1
+                log.warning("Unpack: flood-wait %ss on part download at %s bytes", secs, offset)
+                await asyncio.sleep(secs)
+                f.seek(offset)  # resume from the last written byte
 
 
 async def _download_and_concat(client, channel, db, item_id, workdir) -> str:
@@ -165,8 +193,7 @@ async def _download_and_concat(client, channel, db, item_id, workdir) -> str:
             if not msg or not msg.media:
                 raise UnpackError(f"Part message {channel_msg_id} is missing or has no file.")
             part_tmp = os.path.join(workdir, f"_part_{channel_msg_id}")
-            await _tg_retry(
-                lambda m=msg, p=part_tmp: client.download_media(m, file=p), f"part {channel_msg_id} download")
+            await _download_part(client, msg, part_tmp)
             # Blocking file IO off the event loop so uploads/progress keep running. Delete each part
             # right after appending → peak disk ≈ archive so far + one part.
             await asyncio.to_thread(_append_and_drop, part_tmp, out)
