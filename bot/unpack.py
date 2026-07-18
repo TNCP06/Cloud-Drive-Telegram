@@ -277,7 +277,7 @@ async def _process(client, channel, db, job):
         archive_path = await _download_and_concat(client, channel, db, item_id, workdir)
 
         await _set(db, jid, progress=50, message="extracting…")
-        _extract(archive_path, password, outdir)
+        await _extract(archive_path, password, outdir)
         password = None  # done with it
         os.remove(archive_path)  # free the concatenated archive before staging outputs
 
