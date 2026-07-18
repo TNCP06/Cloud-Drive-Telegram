@@ -294,9 +294,14 @@ def _speed_str(nbytes, secs):
     return (human_size(nbytes / secs).replace(" ", "") + "/s") if secs > 0 and nbytes >= 0 else ""
 
 
+# Permanent — the path/remote is wrong; retrying can never help → fail.
 _PERM_ERR_KEYS = ("not found in config", "unknown remote", "didn't find section", "no such remote",
-                  "401", "403", "unauthorized", "invalid_grant", "oauth",
                   "object not found", "directory not found", "doesn't exist")
+# Recoverable — the drive cookie expired or OpenList is down; the owner fixes it in the OpenList UI.
+# Pause and keep resuming (the partial + bytes_done survive) so it continues once re-authenticated.
+_RECOVER_ERR_KEYS = ("401", "403", "unauthorized", "invalid_grant", "oauth",
+                     "connection refused", "no such host", "dial tcp", "502", "503")
+RECOVER_BACKOFF_S = int(os.environ.get("DRIVE_RECOVER_BACKOFF_S", "300"))  # re-auth wait between retries
 
 
 async def _rclone_copy(bot, db, job, dst, state, drive):
@@ -363,11 +368,27 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
                 proc.kill(); await proc.wait()
         if proc.returncode == 0 and done >= size:
             break
-        # Transient interruption (throttle/timeout/short stream) → persist, classify, resume from `done`.
+        # Interruption → persist bytes_done, classify, and either fail, pause-for-re-auth, or resume.
         err = (await proc.stderr.read()).decode("utf-8", "replace")
         await _set(db, job["id"], bytes_done=done)
-        if any(k in err.lower() for k in _PERM_ERR_KEYS):
+        low = err.lower()
+        if any(k in low for k in _PERM_ERR_KEYS):
             raise PikpakError(_classify_rclone_error(err, job["remote_path"], drive))
+        if any(k in low for k in _RECOVER_ERR_KEYS):
+            # Auth expired / drive unreachable → pausable, not fatal. Keep the partial and wait for the
+            # owner to re-authenticate in OpenList (or the drive to return), then resume. The wait must
+            # NOT count as a no-progress stall, so reset the window after backing off.
+            await _safe_edit(
+                bot, job,
+                f"⚠️ {fname} paused at {human_size(done)}/{human_size(size)} — "
+                f"{drive.get('display', drive['remote'])} auth/unreachable. Re-authenticate the drive "
+                f"in OpenList; the download resumes on its own.", state, force=True)
+            await _set(db, job["id"], error="paused: drive auth expired / unreachable — re-auth in OpenList")
+            log.warning("PikPak job #%s paused (recoverable) at %s/%s — retrying in %ss",
+                        job["id"], done, size, RECOVER_BACKOFF_S)
+            await asyncio.sleep(RECOVER_BACKOFF_S)
+            win_bytes, win_t = done, time.monotonic()  # auth-wait is not a stall — reset the window
+            continue
         log.warning("PikPak job #%s resumable cat interrupted at %s/%s (rc=%s) — resuming",
                     job["id"], done, size, proc.returncode)
         await asyncio.sleep(3)  # brief backoff before resuming
