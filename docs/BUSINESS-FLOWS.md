@@ -158,9 +158,14 @@ on the VPS and its contents are re-stored as normal items — the video then str
    p7zip). `_claim` grabs the oldest queued job and **scrubs the password in the same statement**
    (CTE reads it, UPDATE nulls it → it never lingers in the DB beyond the seconds before claim).
 3. **Disk-guard** (`size × 3` must be free), then `_download_and_concat` Telethon-downloads every
-   part and concatenates them in part order → the archive (ordered concat reconstructs both 7z-native
-   multi-volumes and raw binary splits). `_extract` runs `7z x -p… -o…` (`-p` always passed so 7z
-   never blocks on a prompt; wrong/missing password → a clear `failed` message).
+   part (resuming across Telegram FLOOD_PREMIUM_WAIT) and concatenates them in part order → the
+   archive (ordered concat reconstructs both 7z-native multi-volumes and raw binary splits). The
+   concatenated archive is **cached** under `_unpack/_cache/<item_id>` so a wrong-password retry
+   re-extracts without re-downloading (deleted on success; swept after `UNPACK_CACHE_TTL_H`). `_extract`
+   runs `7z x -p… -o…` (`-p` always passed so 7z never blocks on a prompt). **Nested/disguised
+   archives**: when a password is given, `_deep_extract` peels inner archives that 7z detects by
+   content signature — e.g. a password-protected RAR hidden inside a `.jpg` — dropping the container,
+   up to `UNPACK_MAX_DEPTH`. Wrong/missing password → `BadPassword` → `failed` (cache kept for retry).
 4. **Re-store**: `_stage_outputs` moves each extracted file into its own staging dir and inserts an
    `upload_jobs` row (`origin='upload'`, `cleanup_source=1`; **media → streamable**, else document;
    title nests under `<archive> (unpacked)/…`). The existing watcher pipeline (Flow A2 step 4) uploads

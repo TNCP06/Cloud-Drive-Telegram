@@ -42,6 +42,13 @@ _MEDIA_EXTS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp3", ".m4a", ".flac", ".wav", ".ogg",
 }
 _CONCAT_CHUNK = 8 * 1024 * 1024
+# Nested extraction: some archives hide another (password-protected) archive inside a file disguised
+# as an image (e.g. a RAR appended to a .jpg). 7z detects archives by content signature, not
+# extension, so we can peel these layers automatically when a password is given, up to this depth.
+UNPACK_MAX_DEPTH = int(os.environ.get("UNPACK_MAX_DEPTH", "4"))
+# zip-based files that are really documents/apps — never recurse into these even if 7z can open them.
+_SKIP_RECURSE_EXTS = {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".apk", ".jar", ".epub",
+                      ".ipa", ".whl", ".crx", ".zipx"}
 
 
 class UnpackError(Exception):
@@ -238,6 +245,53 @@ async def _extract(archive_path, password, outdir) -> None:
             f"7z extraction failed (rc={proc.returncode}). {err.decode('utf-8', 'replace').strip()[:200]}")
 
 
+async def _is_archive(path, pw) -> bool:
+    """True if 7z can open `path` as an archive by content signature (so a RAR appended to a .jpg
+    counts). `7z l` returns rc 0 for an archive, rc 2 for a normal file."""
+    proc = await asyncio.create_subprocess_exec(
+        SEVENZIP, "l", "-p" + (pw or ""), "-y", path,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.wait()
+    return proc.returncode == 0
+
+
+async def _deep_extract(outdir, pw):
+    """Peel nested / disguised archives: repeatedly find extracted files that are themselves archives
+    (e.g. a password-protected RAR hidden inside a .jpg) and extract them in place, dropping the
+    container, up to UNPACK_MAX_DEPTH passes. A wrong password on an inner layer raises BadPassword so
+    the cached outer archive is kept for a retry; a file 7z opens but can't extract is left as a leaf."""
+    for _pass in range(UNPACK_MAX_DEPTH):
+        found = False
+        targets = [os.path.join(r, n) for r, _d, files in os.walk(outdir) for n in files]
+        for fpath in targets:
+            if not os.path.exists(fpath) or os.path.splitext(fpath)[1].lower() in _SKIP_RECURSE_EXTS:
+                continue
+            if not await _is_archive(fpath, pw):
+                continue
+            tmp = fpath + ".x"
+            try:
+                await _extract(fpath, pw, tmp)
+            except BadPassword:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
+            except UnpackError:
+                shutil.rmtree(tmp, ignore_errors=True)
+                continue
+            os.remove(fpath)  # drop the container / decoy image
+            parent = os.path.dirname(fpath)
+            for n2 in os.listdir(tmp):
+                dst = os.path.join(parent, n2)
+                if os.path.exists(dst):
+                    stem, ext = os.path.splitext(n2)
+                    dst = os.path.join(parent, f"{stem}_{_pass}{ext}")
+                shutil.move(os.path.join(tmp, n2), dst)
+            shutil.rmtree(tmp, ignore_errors=True)
+            found = True
+        if not found:
+            break
+
+
 async def _stage_outputs(db, outdir, unpacked_folder, jid) -> int:
     """Move each extracted file into its own staging dir and queue an upload_jobs row. Returns count."""
     staged = 0
@@ -302,6 +356,11 @@ async def _process(client, channel, db, job):
 
         await _set(db, jid, progress=50, message="extracting…")
         await _extract(archive_path, password, outdir)
+        # Peel any nested/disguised inner archive (e.g. a password-protected RAR hidden in a .jpg).
+        # Gated on a password: that's the signal the user wants the protected inner content.
+        if password:
+            await _set(db, jid, progress=70, message="extracting nested archive…")
+            await _deep_extract(outdir, password)
         password = None  # done with it
 
         await _set(db, jid, progress=85, message="storing extracted files…")
