@@ -54,9 +54,10 @@ POLL_INTERVAL = 3           # seconds between queue polls (per worker)
 EDIT_THROTTLE_S = 6         # min seconds between Telegram progress-message edits (rate-limit safe)
 DB_THROTTLE_S = 5           # min seconds between download_jobs progress writes (except on % change)
 # Give-up policy for a resumable download. Primary: a no-progress window — abort only if fewer than
-# STALL_MIN_BYTES arrive within STALL_WINDOW_S (a slow-but-advancing transfer is left to finish, however
-# long it takes). Backstop: an absolute ceiling so nothing runs truly forever.
-STALL_WINDOW_S = int(os.environ.get("DRIVE_STALL_WINDOW_S", str(30 * 60)))
+# STALL_MIN_BYTES arrive within STALL_WINDOW_S. The window is deliberately long (3h) so a hard Baidu
+# throttle blip never trips it — only a genuinely dead transfer (≈ <2 KB/s sustained for 3h) gives up;
+# anything advancing is left to finish. Backstop: an absolute ceiling so nothing runs truly forever.
+STALL_WINDOW_S = int(os.environ.get("DRIVE_STALL_WINDOW_S", str(3 * 3600)))
 STALL_MIN_BYTES = int(os.environ.get("DRIVE_STALL_MIN_MB", "20")) * 1048576
 MAX_DL_SECONDS = int(os.environ.get("DRIVE_MAX_DL_SECONDS", str(7 * 24 * 3600)))  # 7d — multi-day safe
 _PCT = re.compile(r"(\d+)%")
