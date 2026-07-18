@@ -352,7 +352,11 @@ export function UnpackModal({
           </p>
           <input
             className="input"
-            type="password"
+            type="text"
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
             style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--line-2)", borderRadius: "8px", background: "var(--card-2)", color: "var(--ink)" }}
             autoFocus
             placeholder="Password (leave blank if none)"

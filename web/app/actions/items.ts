@@ -170,6 +170,24 @@ export async function unpackArchive(
   return { ok: true };
 }
 
+// Latest unpack-job state for an item, for the drive's live progress pill. Returns null if never
+// unpacked. status ∈ queued|running|done|failed; progress 0..100; message is the current step/error.
+export async function getUnpackStatus(
+  itemId: number
+): Promise<{ status: string; progress: number; message: string } | null> {
+  const rs = await db.execute({
+    sql: "SELECT status, progress, message FROM unpack_jobs WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+    args: [itemId],
+  });
+  if (rs.rows.length === 0) return null;
+  const r = rs.rows[0];
+  return {
+    status: String(r.status),
+    progress: Number(r.progress ?? 0),
+    message: String(r.message ?? ""),
+  };
+}
+
 export async function bulkToggleFavorite(itemIds: number[], starred: boolean) {
   if (itemIds.length === 0) return;
   for (const itemId of itemIds) {

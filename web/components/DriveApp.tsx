@@ -60,6 +60,7 @@ import {
   purgeNow,
   updateMetadata,
   unpackArchive,
+  getUnpackStatus,
   createFolder,
   renameFolder,
   deleteFolder,
@@ -194,6 +195,10 @@ export function DriveApp({
   // whole selection). null = no move dialog open.
   const [moveTarget, setMoveTarget] = useState<{ itemIds: number[]; folderIds: number[] } | null>(null);
   const [unpackTarget, setUnpackTarget] = useState<DriveFile | null>(null);
+  // Live unpack progress pill: {itemId} drives polling; the rest is the latest status shown.
+  const [unpackTrack, setUnpackTrack] = useState<
+    { itemId: number; name: string; status: string; progress: number; message: string } | null
+  >(null);
   const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
   // Standalone folder details popup (Alt+Enter / kebab Detail / toolbar Details).
   const [folderDetail, setFolderDetail] = useState<Folder | null>(null);
@@ -398,14 +403,40 @@ export function DriveApp({
     });
   const doUnpack = (item: DriveFile, password: string) =>
     startTransition(async () => {
+      const name = item.version ? item.family : item.name;
       setUnpackTarget(null);
       const r = await unpackArchive(item.id, password);
-      setToast(
-        r.ok
-          ? "Unpacking started — extracted files will appear in your drive shortly."
-          : r.error ?? "Failed to start unpack."
-      );
+      if (r.ok) {
+        setUnpackTrack({ itemId: item.id, name, status: "queued", progress: 0, message: "queued…" });
+      } else {
+        setToast(r.error ?? "Failed to start unpack.");
+      }
     });
+  // Poll the active unpack job (stops once its status turns terminal — see dep on status).
+  useEffect(() => {
+    const id = unpackTrack?.itemId;
+    if (!id || unpackTrack.status === "done" || unpackTrack.status === "failed") return;
+    let alive = true;
+    const iv = setInterval(async () => {
+      const s = await getUnpackStatus(id);
+      if (!alive || !s) return;
+      setUnpackTrack((cur) => (cur && cur.itemId === id ? { ...cur, ...s } : cur));
+    }, 3000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, [unpackTrack?.itemId, unpackTrack?.status]);
+  // On a terminal unpack state: toast the outcome, then dismiss the pill.
+  useEffect(() => {
+    if (!unpackTrack) return;
+    if (unpackTrack.status === "done")
+      setToast(`“${unpackTrack.name}” unpacked — extracted files are appearing in your drive.`);
+    else if (unpackTrack.status === "failed") setToast(unpackTrack.message || "Unpack failed.");
+    else return;
+    const t = setTimeout(() => setUnpackTrack(null), 2500);
+    return () => clearTimeout(t);
+  }, [unpackTrack?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ---- counts ---- */
   const counts: Counts = useMemo(() => {
@@ -1956,6 +1987,13 @@ export function DriveApp({
         <div className="saving-pill">
           <span className="spinner" />
           Saving…
+        </div>
+      )}
+
+      {unpackTrack && unpackTrack.status !== "failed" && (
+        <div className="saving-pill">
+          <span className="spinner" />
+          Unpacking {unpackTrack.name}: {unpackTrack.progress}% — {unpackTrack.message || unpackTrack.status}
         </div>
       )}
 

@@ -23,6 +23,7 @@ import asyncio
 import os
 import re
 import shutil
+import time
 
 from telethon.errors import FloodError  # base class → catches FLOOD_WAIT and FLOOD_PREMIUM_WAIT alike
 
@@ -30,6 +31,11 @@ from bot_config import PIKPAK_STAGING_DIR, PIKPAK_MAX_BYTES, DRIVE_SPLIT_PART_MB
 
 SEVENZIP = os.environ.get("SEVENZIP_PATH", "7z")
 UNPACK_STAGING = os.path.join(os.path.dirname(PIKPAK_STAGING_DIR), "_unpack")  # /staging/_unpack
+# Concatenated archives are cached here keyed by item_id so a retry after a wrong password re-extracts
+# WITHOUT re-downloading all the parts. A cache entry is deleted on success and swept after CACHE_TTL_S
+# (default 48h) if you give up — so it never leaks disk indefinitely.
+UNPACK_CACHE = os.path.join(UNPACK_STAGING, "_cache")
+CACHE_TTL_S = int(os.environ.get("UNPACK_CACHE_TTL_H", "48")) * 3600
 POLL_INTERVAL = 4
 _MEDIA_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp",
@@ -40,6 +46,11 @@ _CONCAT_CHUNK = 8 * 1024 * 1024
 
 class UnpackError(Exception):
     """A user-facing failure (message is safe to store in unpack_jobs.message)."""
+
+
+class BadPassword(UnpackError):
+    """Extraction failed because the archive password was wrong/missing — the cached archive is kept
+    so a retry with the right password skips the re-download."""
 
 
 def _is_media(fname: str) -> bool:
@@ -166,8 +177,9 @@ async def _download_part(client, msg, path):
                 f.seek(offset)  # resume from the last written byte
 
 
-async def _download_and_concat(client, channel, db, item_id, workdir) -> str:
-    """Download every part of the item from Telegram and concat in part order → the archive path."""
+async def _download_and_concat(client, channel, db, jid, item_id, workdir) -> str:
+    """Download every part of the item from Telegram and concat in part order → the archive path.
+    Reports coarse progress (10→45%) across parts on unpack_jobs so the web shows movement."""
     # Let Telethon sleep through short flood-waits internally (resumes mid-download, no restart);
     # _tg_retry is the backstop for the premium variant if it isn't auto-handled.
     try:
@@ -180,6 +192,7 @@ async def _download_and_concat(client, channel, db, item_id, workdir) -> str:
     )
     if not rs.rows:
         raise UnpackError("Item has no parts to unpack.")
+    total = len(rs.rows)
     # Archive name = first part's name minus a trailing .NNN volume suffix, else a generic name.
     first_name = rs.rows[0][1] or "archive.7z"
     base = first_name
@@ -187,7 +200,9 @@ async def _download_and_concat(client, channel, db, item_id, workdir) -> str:
         base = base.rsplit(".", 1)[0]
     archive_path = os.path.join(workdir, os.path.basename(base) or "archive.bin")
     with open(archive_path, "wb") as out:
-        for channel_msg_id, _fname in rs.rows:
+        for i, (channel_msg_id, _fname) in enumerate(rs.rows, start=1):
+            await _set(db, jid, progress=10 + int(35 * (i - 1) / total),
+                       message=f"downloading part {i}/{total}…")
             msg = await _tg_retry(
                 lambda cid=channel_msg_id: client.get_messages(channel, ids=int(cid)), "message fetch")
             if not msg or not msg.media:
@@ -218,7 +233,7 @@ async def _extract(archive_path, password, outdir) -> None:
     if proc.returncode != 0:
         blob = (out.decode("utf-8", "replace") + err.decode("utf-8", "replace")).lower()
         if "wrong password" in blob or "encrypted" in blob or "data error" in blob:
-            raise UnpackError("Extraction failed — wrong or missing password for this archive.")
+            raise BadPassword("Extraction failed — wrong or missing password for this archive.")
         raise UnpackError(
             f"7z extraction failed (rc={proc.returncode}). {err.decode('utf-8', 'replace').strip()[:200]}")
 
@@ -255,44 +270,61 @@ async def _process(client, channel, db, job):
     password = job.pop("password", None)  # local only; already NULLed in the DB by _claim
     workdir = os.path.join(UNPACK_STAGING, str(jid), "_work")
     outdir = os.path.join(UNPACK_STAGING, str(jid), "_out")
+    cache_path = os.path.join(UNPACK_CACHE, str(item_id))  # concatenated archive, reused across retries
     try:
         rs = await db.execute("SELECT title, total_size FROM items WHERE id = ?", [item_id])
         if not rs.rows:
             raise UnpackError("Archive item not found.")
         title, total_size = rs.rows[0][0], int(rs.rows[0][1] or 0)
 
-        # Disk-guard: archive + extracted output + staging (~3× the stored size) must fit.
-        try:
-            os.makedirs(UNPACK_STAGING, exist_ok=True)
-            free = shutil.disk_usage(UNPACK_STAGING).free
-        except OSError:
-            free = None
-        if free is not None and total_size and free < total_size * 3:
-            raise UnpackError(
-                f"Not enough disk to unpack '{title}' (~{total_size * 3 // 1048576} MB needed, "
-                f"{free // 1048576} MB free). Free up space and retry.")
-
+        os.makedirs(UNPACK_CACHE, exist_ok=True)
         os.makedirs(workdir, exist_ok=True)
-        await _set(db, jid, progress=10, message="downloading parts…")
-        archive_path = await _download_and_concat(client, channel, db, item_id, workdir)
+        cached = os.path.exists(cache_path) and (not total_size or os.path.getsize(cache_path) == total_size)
+        if cached:
+            # A previous run already downloaded + concatenated this archive (e.g. a wrong-password
+            # retry) — re-extract straight from the cache, no re-download.
+            await _set(db, jid, progress=48, message="using cached archive…")
+            archive_path = cache_path
+        else:
+            # Disk-guard: archive + extracted output + staging (~3× the stored size) must fit.
+            try:
+                os.makedirs(UNPACK_STAGING, exist_ok=True)
+                free = shutil.disk_usage(UNPACK_STAGING).free
+            except OSError:
+                free = None
+            if free is not None and total_size and free < total_size * 3:
+                raise UnpackError(
+                    f"Not enough disk to unpack '{title}' (~{total_size * 3 // 1048576} MB needed, "
+                    f"{free // 1048576} MB free). Free up space and retry.")
+            tmp = await _download_and_concat(client, channel, db, jid, item_id, workdir)
+            shutil.move(tmp, cache_path)  # cache the concatenated archive for any retry
+            archive_path = cache_path
 
         await _set(db, jid, progress=50, message="extracting…")
         await _extract(archive_path, password, outdir)
         password = None  # done with it
-        os.remove(archive_path)  # free the concatenated archive before staging outputs
 
         await _set(db, jid, progress=85, message="storing extracted files…")
         n = await _stage_outputs(db, outdir, f"{title} (unpacked)", jid)
         if n == 0:
             raise UnpackError("Archive extracted but contained no files.")
 
+        _rm(cache_path)  # success → the cached archive is no longer needed
         await _set(db, jid, status="done", progress=100,
                    message=f"{n} file(s) extracted — uploading to the drive…")
         log.info("Unpack job #%s: item %s → %s file(s) queued for upload", jid, item_id, n)
+    except BadPassword as e:
+        # Keep the cached archive so a retry with the right password skips the re-download.
+        await _set(db, jid, status="failed",
+                   message=str(e) + " (archive cached — a retry won't re-download; it's auto-cleared in "
+                                    f"{CACHE_TTL_S // 3600}h if you give up).")
+        log.warning("Unpack job #%s: bad password (archive cached)", jid)
     except UnpackError as e:
+        _rm(cache_path)  # a non-password failure won't be helped by the cache
         await _set(db, jid, status="failed", message=str(e))
         log.warning("Unpack job #%s failed: %s", jid, e)
     except Exception as e:  # noqa: BLE001
+        _rm(cache_path)
         await _set(db, jid, status="failed", message=f"unexpected error: {str(e)[:200]}")
         log.exception("Unpack job #%s crashed", jid)
     finally:
@@ -300,6 +332,29 @@ async def _process(client, channel, db, job):
         # Remove work/extract temp dirs; the per-file staging dirs are cleaned by the watcher upload.
         shutil.rmtree(workdir, ignore_errors=True)
         shutil.rmtree(outdir, ignore_errors=True)
+
+
+def _rm(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _sweep_cache():
+    """Delete cached archives older than CACHE_TTL_S — abandoned password attempts don't leak disk."""
+    try:
+        entries = os.listdir(UNPACK_CACHE)
+    except OSError:
+        return
+    for n in entries:
+        p = os.path.join(UNPACK_CACHE, n)
+        try:
+            if os.path.isfile(p) and time.time() - os.path.getmtime(p) > CACHE_TTL_S:
+                os.remove(p)
+                log.info("Unpack: swept stale cached archive %s", n)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +368,7 @@ async def worker_loop(client, channel, db):
             if job:
                 await _process(client, channel, db, job)
             else:
+                _sweep_cache()  # opportunistic: clear abandoned cached archives while idle
                 await asyncio.sleep(POLL_INTERVAL)
         except asyncio.CancelledError:
             raise
