@@ -31,6 +31,9 @@ VIDEO_TRANSCODE_CONCURRENCY = int(os.environ.get("VIDEO_TRANSCODE_CONCURRENCY", 
 VIDEO_TRANSCODE_THREADS = int(os.environ.get("VIDEO_TRANSCODE_THREADS", "0"))
 # 0 = keep compressed copies forever (persistent). >0 = LRU-cap the compressed dir.
 COMPRESSED_MAX_BYTES = int(os.environ.get("COMPRESSED_MAX_SIZE_GB", "0")) * 1073741824
+# Free-disk floor shared with the streamer cache (same env knob): a transcode's output can approach
+# the source size, so refuse to start one that would push the shared 30 GB disk under the floor.
+FREE_FLOOR_BYTES = int(os.environ.get("CACHE_FREE_FLOOR_GB", "3")) * 1073741824
 
 # Background transcode bookkeeping
 _transcoding: set[int] = set()
@@ -162,6 +165,18 @@ async def _transcode_worker(part_id: int, src_path: str, on_success=None) -> Non
             if src_size < VIDEO_MIN_COMPRESS_BYTES:
                 return  # too small to bother
             COMPRESSED_DIR.mkdir(parents=True, exist_ok=True)
+            # Disk-guard: skip (no .skip marker → a later view retries) if writing an output of up
+            # to src_size would drop the shared disk below the free floor — e.g. while a big unpack
+            # or download is in flight.
+            try:
+                free = shutil.disk_usage(COMPRESSED_DIR).free
+            except OSError:
+                free = None
+            if free is not None and free < src_size + FREE_FLOOR_BYTES:
+                log.warning("Skipping transcode of part %d: low disk (%.1f GB free, ~%.1f GB needed) "
+                            "— will retry on a later view", part_id, free / 1073741824,
+                            (src_size + FREE_FLOOR_BYTES) / 1073741824)
+                return
             _safe_unlink(out_tmp)
             log.info("Transcoding part %d (%.1f MB) → H.264 CRF %s/%s …",
                      part_id, src_size / 1048576, VIDEO_CRF, VIDEO_PRESET)

@@ -181,10 +181,11 @@ async def _tg_retry(call, what):
     raise UnpackError(f"Telegram flood-limited {what} after repeated waits — try again later.")
 
 
-async def _download_part(client, msg, path):
+async def _download_part(client, msg, path, progress_cb=None):
     """Download a message's file to `path`, resuming across Telegram flood-waits via chunked
     iter_download — so FLOOD_PREMIUM_WAIT on a large non-premium download waits and continues from the
-    last byte instead of restarting the whole part from 0. Gives up only if it stops advancing."""
+    last byte instead of restarting the whole part from 0. Gives up only if it stops advancing.
+    `progress_cb(offset)` (async, self-throttled) lets the caller surface live byte progress."""
     with open(path, "wb") as f:
         offset, last, stuck = 0, 0, 0
         while True:
@@ -192,6 +193,8 @@ async def _download_part(client, msg, path):
                 async for chunk in client.iter_download(msg.media, offset=offset, request_size=512 * 1024):
                     f.write(chunk)
                     offset += len(chunk)
+                    if progress_cb:
+                        await progress_cb(offset)
                 return
             except FloodError as e:
                 stuck = stuck + 1 if offset == last else 0
@@ -226,6 +229,7 @@ async def _download_and_concat(client, channel, db, jid, item_id, workdir) -> st
     if base.rsplit(".", 1)[-1].isdigit():
         base = base.rsplit(".", 1)[0]
     archive_path = os.path.join(workdir, os.path.basename(base) or "archive.bin")
+    last_write = {"t": 0.0}
     with open(archive_path, "wb") as out:
         for i, (channel_msg_id, _fname) in enumerate(rs.rows, start=1):
             await _set(db, jid, progress=10 + int(35 * (i - 1) / total),
@@ -234,8 +238,22 @@ async def _download_and_concat(client, channel, db, jid, item_id, workdir) -> st
                 lambda cid=channel_msg_id: client.get_messages(channel, ids=int(cid)), "message fetch")
             if not msg or not msg.media:
                 raise UnpackError(f"Part message {channel_msg_id} is missing or has no file.")
+            part_size = int(getattr(msg.file, "size", 0) or 0)
+
+            # Live byte progress (throttled ≤ 1 write / 5 s): a 1.9 GB part takes minutes, so
+            # without this the pill sits frozen on "downloading part 1/4…" and looks stuck.
+            async def _prog(off, i=i, part_size=part_size):
+                now = time.monotonic()
+                if now - last_write["t"] < 5:
+                    return
+                last_write["t"] = now
+                frac = (i - 1 + (off / part_size if part_size else 0)) / total
+                await _set(db, jid, progress=10 + int(35 * frac),
+                           message=f"downloading part {i}/{total} — "
+                                   f"{off // 1048576}/{part_size // 1048576} MB")
+
             part_tmp = os.path.join(workdir, f"_part_{channel_msg_id}")
-            await _download_part(client, msg, part_tmp)
+            await _download_part(client, msg, part_tmp, _prog)
             # Blocking file IO off the event loop so uploads/progress keep running. Delete each part
             # right after appending → peak disk ≈ archive so far + one part.
             await asyncio.to_thread(_append_and_drop, part_tmp, out)
@@ -493,8 +511,30 @@ def _sweep_cache():
 # ---------------------------------------------------------------------------
 # Worker loop (spawned from watcher.main)
 # ---------------------------------------------------------------------------
+def _sweep_stale_workdirs():
+    """Boot cleanup: after a restart every previously-running job is already marked failed, so any
+    leftover <jid>/_work and <jid>/_out temp dirs (possibly GBs of half-downloaded parts) are dead —
+    delete them, then drop the <jid> shell if it's empty. Numbered upload-staging subdirs inside
+    <jid>/ (sources of still-pending upload_jobs) are untouched, as are _cache/_keep."""
+    try:
+        names = os.listdir(UNPACK_STAGING)
+    except OSError:
+        return
+    for n in names:
+        p = os.path.join(UNPACK_STAGING, n)
+        if not n.isdigit() or not os.path.isdir(p):
+            continue
+        shutil.rmtree(os.path.join(p, "_work"), ignore_errors=True)
+        shutil.rmtree(os.path.join(p, "_out"), ignore_errors=True)
+        try:
+            os.rmdir(p)  # only succeeds if empty
+        except OSError:
+            pass
+
+
 async def worker_loop(client, channel, db):
     log.info("Unpack worker started")
+    _sweep_stale_workdirs()
     while True:
         try:
             job = await _claim(db)

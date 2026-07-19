@@ -1200,7 +1200,10 @@ button { font-family: inherit; }
 @keyframes spin { to { transform: rotate(360deg); } }
 /* overlay "menyimpan…" saat server action berjalan */
 .saving-pill {
-  position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 350;
+  /* Bottom-RIGHT corner: the centered .selection-toolbar owns bottom-center, and a long-running
+     pill (unpack progress / kept-files) must never cover it. */
+  position: fixed; bottom: 22px; right: 22px; z-index: 350;
+  border: 0; cursor: default;
   display: flex; align-items: center; gap: 9px;
   background: var(--ink); color: var(--paper); padding: 9px 15px;
   border-radius: 99px; box-shadow: var(--sh-3); font-size: 13px;

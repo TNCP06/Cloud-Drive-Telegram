@@ -151,7 +151,9 @@ and streams local file if active, else chunk-streams via Telethon).
 **Background video compression** (local Bot API mode) lives in **`stream_compress.py`**: `_transcode_worker`
 (ffmpeg → smaller H.264 MP4 in the **persistent** `COMPRESSED_DIR`, keeps same resolution; drops the result +
 writes a `.skip` marker if it isn't ≥5% smaller; runs under `nice -n 19` + optional `VIDEO_TRANSCODE_THREADS`
-cap, preset default `veryfast`, so it never starves streaming/STT on the small VPS),
+cap, preset default `veryfast`, so it never starves streaming/STT on the small VPS; **disk-guard**:
+skipped (retried on a later view, no `.skip`) if free disk < src size + `CACHE_FREE_FLOOR_GB` — a
+transcode can't collide with a big unpack/download on the shared 30 GB disk),
 `_schedule_transcode` (fire-and-forget, dedup'd),
 `_serve_local_file_range`/`_parse_range` (byte-range serve from any local file), `_compressed_path`,
 `_evict_compressed_if_needed` (optional LRU cap), `init_semaphore` (called from streamer's lifespan).

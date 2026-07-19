@@ -172,7 +172,9 @@ on the VPS and its contents are re-stored as normal items — the video then str
    (CTE reads it, UPDATE nulls it → it never lingers in the DB beyond the seconds before claim).
 3. **Disk-guard** (`size × 2.3` must be free — archive + extracted output; nothing is copied
    twice since > 2 GB outputs are renamed into `_keep`), then `_download_and_concat` Telethon-downloads every
-   part (resuming across Telegram FLOOD_PREMIUM_WAIT) and concatenates them in part order → the
+   part (resuming across Telegram FLOOD_PREMIUM_WAIT, with **live byte progress** — "downloading
+   part 2/4 — 962/1900 MB", throttled ≤ 1 DB write / 5 s — so a multi-minute part never looks
+   frozen) and concatenates them in part order → the
    archive (ordered concat reconstructs both 7z-native multi-volumes and raw binary splits). The
    concatenated archive is **cached** under `_unpack/_cache/<item_id>` so a wrong-password retry
    re-extracts without re-downloading (deleted on success; swept after `UNPACK_CACHE_TTL_H`). `_extract`
