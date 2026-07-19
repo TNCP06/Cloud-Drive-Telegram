@@ -200,8 +200,14 @@ on the VPS and its contents are re-stored as normal items — the video then str
    parts again, so they are **kept on the VPS** instead: moved to `_unpack/_keep/<jid>/…` and
    recorded in **`unpack_kept`** (`rel_path`, `size`, `expires_at` = now + `UNPACK_KEEP_TTL_H`,
    default 72 h). The web dashboard shows a *"N file(s) kept on server"* pill → a modal listing them
-   with **Play** (kept videos open in the same Plyr player as drive videos, fed by `/api/kept/[id]` —
-   Range-capable so seeking works), **Download**, **Keep for…** (`extendKeptFile` — +3/7/30 days or a
+   with **Play** (kept videos open in the same full-screen Plyr viewer as drive videos, fed by
+   `/api/kept/[id]` — Range-capable so seeking works; the viewer has **Download / Add subtitle /
+   Fullscreen / Close**, Esc/F keys). **Subtitles**: an *Add subtitle* button uploads an SRT/VTT
+   file (`/api/kept/[id]/subtitles/manual`, converted to WebVTT and written as a sibling
+   `<file>.<lang>.vtt` on the shared `/staging` volume — the streamer can't help here, it never
+   mounts staging). Siblings are cleaned with the kept file (delete-now + expiry sweep) and moved
+   on compress-rename. No STT/from-drive/softsub-extract for kept files (those are part-keyed).
+   Other controls: **Download**, **Keep for…** (`extendKeptFile` — +3/7/30 days or a
    `9999-12-31` sentinel = permanent until manually deleted), **Compress…** (`compressKeptFile` →
    `kept_compress_jobs`; the unpack worker re-encodes the VPS copy with ffmpeg at the chosen CRF
    20/23/26/28, `veryfast`, live % in `message`, replacing the file only when smaller) and

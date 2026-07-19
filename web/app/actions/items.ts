@@ -299,6 +299,17 @@ export async function deleteKeptFile(id: number): Promise<{ ok: boolean; error?:
     return { ok: false, error: "Invalid path." };
   }
   await fs.rm(full, { force: true });
+  // Drop any uploaded subtitle siblings (`<file>.<lang>.vtt`) so they don't orphan on disk.
+  try {
+    const prefix = path.basename(full) + ".";
+    for (const n of await fs.readdir(path.dirname(full))) {
+      if (n.startsWith(prefix) && n.endsWith(".vtt")) {
+        await fs.rm(path.join(path.dirname(full), n), { force: true });
+      }
+    }
+  } catch {
+    // best-effort — the file itself is already gone
+  }
   await db.execute({ sql: "DELETE FROM unpack_kept WHERE id = ?", args: [id] });
   refresh();
   return { ok: true };

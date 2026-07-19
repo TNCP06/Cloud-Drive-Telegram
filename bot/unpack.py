@@ -480,6 +480,22 @@ def _rm(path):
         pass
 
 
+def _sub_siblings(full):
+    """Uploaded subtitle siblings of a kept file: `<file>.<lang>.vtt` (written by the web)."""
+    d = os.path.dirname(full)
+    prefix = os.path.basename(full) + "."
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return []
+    return [os.path.join(d, n) for n in names if n.startswith(prefix) and n.endswith(".vtt")]
+
+
+def _rm_sub_siblings(full):
+    for p in _sub_siblings(full):
+        _rm(p)
+
+
 _last_keep_sweep = 0.0
 
 
@@ -497,6 +513,7 @@ async def _sweep_keep(db):
     for kid, rel in rs.rows:
         full = os.path.join(UNPACK_KEEP, *str(rel).split("/"))
         _rm(full)
+        _rm_sub_siblings(full)
         d = os.path.dirname(full)
         while os.path.abspath(d) != os.path.abspath(UNPACK_KEEP):
             try:
@@ -638,6 +655,13 @@ async def _process_compress(db, job):
     dst = os.path.join(UNPACK_KEEP, *new_rel.split("/"))
     os.replace(tmp, dst)
     if dst != src:
+        # Carry any uploaded subtitle siblings over to the new name (`<file>.<lang>.vtt`) so a
+        # re-encode doesn't orphan them; then drop the old original.
+        for sp in _sub_siblings(src):
+            try:
+                os.replace(sp, dst + sp[len(src):])
+            except OSError:
+                pass
         _rm(src)
     await db.execute(
         "UPDATE unpack_kept SET file_name=?, rel_path=?, size=? WHERE id=?",

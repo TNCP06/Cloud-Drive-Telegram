@@ -115,10 +115,14 @@ export function VideoPlayer({
   src,
   poster,
   partId,
+  subtitleBase,
 }: {
   src: string;
   poster?: string;
   partId?: number;
+  // Base URL for the subtitle API (list at `${base}`, one track at `${base}/${lang}`). Defaults to
+  // the part-keyed streamer routes; kept-on-server files pass their own /api/kept/<id>/subtitles.
+  subtitleBase?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const posterDims = useRef<{ w: number; h: number } | null>(null);
@@ -152,6 +156,9 @@ export function VideoPlayer({
     let destroyed = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+    // Where to load subtitles from: an explicit base (kept files) or the part-keyed streamer routes.
+    const subBase = subtitleBase ?? (partId != null ? `/api/subtitles/${partId}` : undefined);
+
     (async () => {
       const PlyrCtor = (await import("plyr")).default;
       if (destroyed || !videoRef.current) return;
@@ -171,7 +178,7 @@ export function VideoPlayer({
           track.kind = "captions";
           track.label = langLabel(lang);
           track.srclang = lang;
-          track.src = `/api/subtitles/${partId}/${lang}`;
+          track.src = `${subBase}/${lang}`;
           vid.appendChild(track);
           captionLangs.push(lang);
           added = true;
@@ -181,9 +188,9 @@ export function VideoPlayer({
 
       // Initial load (before Plyr init so the first set shows in the CC menu immediately).
       let subtitlesDone = false;
-      if (partId) {
+      if (subBase) {
         try {
-          const res = await fetch(`/api/subtitles/${partId}`);
+          const res = await fetch(subBase);
           if (!destroyed && res.ok) {
             const data = await res.json();
             subtitlesDone = data?.done === true;
@@ -307,7 +314,7 @@ export function VideoPlayer({
       // streamer (it jumps the backfill queue — see _enqueue_priority_subtitle). Poll until the
       // part is finalised (`done`) or a safety cap, injecting new tracks live as they land — so
       // the user doesn't have to reopen the video for subtitles to appear.
-      if (partId && !subtitlesDone) {
+      if (subBase && !subtitlesDone) {
         let polls = 0;
         const MAX_POLLS = 75; // ~10 min at 8s — generation of a prioritised video is far quicker
         pollTimer = setInterval(async () => {
@@ -315,7 +322,7 @@ export function VideoPlayer({
           polls += 1;
           let stop = polls >= MAX_POLLS;
           try {
-            const res = await fetch(`/api/subtitles/${partId}`);
+            const res = await fetch(subBase);
             if (!destroyed && res.ok) {
               const data = await res.json();
               if (data?.done === true) stop = true;
@@ -357,7 +364,7 @@ export function VideoPlayer({
         player?.destroy();
       } catch {}
     };
-  }, [src, partId]);
+  }, [src, partId, subtitleBase]);
 
   const handleClick = (e: React.MouseEvent) => {
     // The player sits inside .viewer-stage (whose click closes the viewer); stop

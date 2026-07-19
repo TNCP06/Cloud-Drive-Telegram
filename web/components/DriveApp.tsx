@@ -32,6 +32,7 @@ import {
 import { fileTypeFor } from "@/lib/fileType";
 import { PreviewDrawer } from "./PreviewDrawer";
 import { VideoPlayer } from "./VideoPlayer";
+import { SubtitleDialog } from "./SubtitleDialog";
 import { TagManager } from "./TagManager";
 import { ThemeToggle } from "./ThemeToggle";
 import { ViewMenu } from "./ViewMenu";
@@ -227,6 +228,9 @@ export function DriveApp({
   // Kept video playing in the Plyr modal (same player as drive videos, src = /api/kept/<id>).
   const [keptPlay, setKeptPlay] = useState<{ id: number; name: string } | null>(null);
   const keptViewerRef = useRef<HTMLDivElement>(null);
+  // "Add subtitle" dialog for the kept player + a bump that remounts VideoPlayer so a new track shows.
+  const [keptSubsOpen, setKeptSubsOpen] = useState(false);
+  const [keptSubsBump, setKeptSubsBump] = useState(0);
   const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
   // Standalone folder details popup (Alt+Enter / kebab Detail / toolbar Details).
   const [folderDetail, setFolderDetail] = useState<Folder | null>(null);
@@ -488,7 +492,7 @@ export function DriveApp({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-        else setKeptPlay(null);
+        else { setKeptPlay(null); setKeptSubsOpen(false); }
       } else if (e.key === "f" || e.key === "F") {
         const el = keptViewerRef.current;
         if (!el) return;
@@ -2128,7 +2132,11 @@ export function DriveApp({
           <div className="viewer-scrim" style={{ zIndex: 340 }} />
           <div ref={keptViewerRef} className="viewer has-video-stage" style={{ zIndex: 341 }}>
             <div className="viewer-stage">
-              <VideoPlayer src={`/api/kept/${keptPlay.id}`} />
+              <VideoPlayer
+                key={`${keptPlay.id}:${keptSubsBump}`}
+                src={`/api/kept/${keptPlay.id}`}
+                subtitleBase={`/api/kept/${keptPlay.id}/subtitles`}
+              />
             </div>
             <div className="viewer-top">
               <span className="viewer-name">{keptPlay.name}</span>
@@ -2136,6 +2144,9 @@ export function DriveApp({
                 <a className="viewer-iconbtn" href={`/api/kept/${keptPlay.id}`} download={keptPlay.name} title="Download">
                   <Icon name="download" size={17} />
                 </a>
+                <button className="viewer-iconbtn" onClick={() => setKeptSubsOpen(true)} title="Add subtitle">
+                  <Icon name="subtitles" size={17} />
+                </button>
                 <button
                   className="viewer-iconbtn"
                   onClick={() => {
@@ -2149,12 +2160,21 @@ export function DriveApp({
                   <Icon name="expand" size={17} />
                 </button>
                 <span className="viewer-sep" />
-                <button className="viewer-iconbtn" onClick={() => setKeptPlay(null)} title="Close (Esc)">
+                <button className="viewer-iconbtn" onClick={() => { setKeptPlay(null); setKeptSubsOpen(false); }} title="Close (Esc)">
                   <Icon name="close" size={17} />
                 </button>
               </div>
             </div>
           </div>
+          {keptSubsOpen && (
+            <SubtitleDialog
+              partId={0}
+              subtitleBase={`/api/kept/${keptPlay.id}/subtitles`}
+              localOnly
+              onClose={() => setKeptSubsOpen(false)}
+              onAdded={() => setKeptSubsBump((b) => b + 1)}
+            />
+          )}
         </>
       )}
 

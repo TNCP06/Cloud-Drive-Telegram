@@ -388,6 +388,13 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `api/kept/[id]/route.ts` (`nodejs` runtime) — downloads a **kept unpack output** (`unpack_kept`)
   straight off the shared staging volume (`/staging/_unpack/_keep/<rel_path>`); own cookie-auth check
   (same pattern as `/api/stream`), single-Range support so a multi-GB download can resume.
+- `api/kept/[id]/subtitles/` (`nodejs`) — subtitle upload/list/serve for kept files, backed by
+  `lib/keptSubs.ts` (auth + kept-path resolve + `<file>.<lang>.vtt` sibling paths + in-process
+  SRT/VTT→WebVTT `toVtt`; NO ffmpeg/streamer — the streamer never mounts staging). `route.ts` GET
+  lists langs (`done:true`), `manual/route.ts` POST converts+writes a sibling, `[lang]/route.ts` GET
+  serves one VTT. `VideoPlayer`/`SubtitleDialog` take a `subtitleBase` prop so the kept full-screen
+  viewer reuses the same track-loading + upload UI as drive videos (`localOnly` hides from-drive/
+  extract). Siblings are cleaned by `deleteKeptFile` + the bot's `_sweep_keep`, moved on compress.
 - `api/thumb/[itemId]/route.ts` (`nodejs` runtime) — serves an item's **cover thumbnail** bytes
   (first part by `channel_msg_id`) with `Cache-Control: public, max-age=600, stale-while-revalidate`.
   Keeps the cover out of the main page payload so the grid stays light at any scale; auth is enforced
