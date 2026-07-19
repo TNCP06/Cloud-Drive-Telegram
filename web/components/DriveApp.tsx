@@ -31,6 +31,7 @@ import {
 } from "./FileViews";
 import { fileTypeFor } from "@/lib/fileType";
 import { PreviewDrawer } from "./PreviewDrawer";
+import { VideoPlayer } from "./VideoPlayer";
 import { TagManager } from "./TagManager";
 import { ThemeToggle } from "./ThemeToggle";
 import { ViewMenu } from "./ViewMenu";
@@ -66,6 +67,7 @@ import {
   listKeptFiles,
   deleteKeptFile,
   extendKeptFile,
+  compressKeptFile,
   createFolder,
   renameFolder,
   deleteFolder,
@@ -222,6 +224,8 @@ export function DriveApp({
   // Unpack outputs > 2 GB kept on the VPS (unpack_kept): pill → modal with download/delete-now.
   const [keptFiles, setKeptFiles] = useState<KeptFile[]>([]);
   const [showKept, setShowKept] = useState(false);
+  // Kept video playing in the Plyr modal (same player as drive videos, src = /api/kept/<id>).
+  const [keptPlay, setKeptPlay] = useState<{ id: number; name: string } | null>(null);
   const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
   // Standalone folder details popup (Alt+Enter / kebab Detail / toolbar Details).
   const [folderDetail, setFolderDetail] = useState<Folder | null>(null);
@@ -466,6 +470,24 @@ export function DriveApp({
   useEffect(() => {
     listKeptFiles().then(setKeptFiles).catch(() => {});
   }, [unpackTrack?.status]);
+
+  // While the kept-files modal is open and a compress job is active, poll for its progress.
+  useEffect(() => {
+    if (!showKept || !keptFiles.some((f) => f.compress && ["queued", "running"].includes(f.compress.status)))
+      return;
+    const t = setInterval(() => {
+      listKeptFiles().then(setKeptFiles).catch(() => {});
+    }, 4000);
+    return () => clearInterval(t);
+  }, [showKept, keptFiles]);
+
+  // Esc closes the kept-video player.
+  useEffect(() => {
+    if (!keptPlay) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setKeptPlay(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [keptPlay]);
 
   // Resume the unpack pill after a navigation: the job runs server-side, but pill state is
   // client-local and dies when DriveApp unmounts (e.g. a visit to /upload).
@@ -2076,7 +2098,31 @@ export function DriveApp({
               setKeptFiles(await listKeptFiles());
             })
           }
+          onPlay={(f) => setKeptPlay(f)}
+          onCompress={(id, crf) =>
+            startTransition(async () => {
+              const r = await compressKeptFile(id, crf);
+              if (!r.ok) setToast(r.error ?? "Failed to queue the compression.");
+              setKeptFiles(await listKeptFiles());
+            })
+          }
         />
+      )}
+
+      {/* Kept-video player — same Plyr player as drive videos, fed by /api/kept (Range-capable). */}
+      {keptPlay && (
+        <>
+          <div className="viewer-scrim" style={{ zIndex: 340 }} onClick={() => setKeptPlay(null)} />
+          <div className="kept-player">
+            <div className="kp-head">
+              <span className="kp-name" title={keptPlay.name}>{keptPlay.name}</span>
+              <button className="btn subtle" onClick={() => setKeptPlay(null)} aria-label="Close player">
+                <Icon name="close" size={16} />
+              </button>
+            </div>
+            <VideoPlayer src={`/api/kept/${keptPlay.id}`} />
+          </div>
+        </>
       )}
 
     </div>

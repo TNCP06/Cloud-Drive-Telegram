@@ -128,10 +128,14 @@ password in the same statement** — a CTE reads it before the UPDATE nulls it),
 staging dir + an `upload_jobs` row so the existing pipeline uploads + the bot indexes it; title nests
 under `<archive> (unpacked)/…`; **files > 2 GB are kept on the VPS instead**: moved to
 `_unpack/_keep/<jid>/…` + an `unpack_kept` row with `expires_at` = now + `UNPACK_KEEP_TTL_H` (72 h) —
-the web lists them with download/delete-now, `_sweep_keep` auto-deletes them at expiry from the idle
-loop), `_process` (disk-guard `size×2.3` → download → extract → stage →
-cleanup; **keeps the original archive**), `ensure_schema` (also creates `unpack_kept`),
-`worker_loop`. Password: never logged, passed to 7z via `-p` (argv, single-user VPS).
+the web lists them with play/download/keep-longer/compress/delete-now, `_sweep_keep` auto-deletes
+them at expiry from the idle loop), `_process` (disk-guard `size×2.3` → download → extract → stage →
+cleanup; **keeps the original archive**), **manual kept-file compression** (`_claim_compress`/
+`_process_compress` — polls `kept_compress_jobs` from the idle loop, ffmpeg H.264 at the job's CRF +
+`veryfast` under `nice -19`, live % into `message` via `-progress pipe:1`, replaces the kept file in
+place only when ≥5% smaller and updates `unpack_kept` name/size), `ensure_schema` (also creates
+`unpack_kept` + `kept_compress_jobs`), `worker_loop`. Password: never logged, passed to 7z via `-p`
+(argv, single-user VPS).
 
 ### `worker.py` — standalone upload CLI (Telethon, **laptop**)
 Same upload logic as the watcher but argparse-driven (`archive` / `media` subcommands).

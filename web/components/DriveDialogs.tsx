@@ -379,19 +379,35 @@ export function UnpackModal({
   );
 }
 
-// Unpack outputs > 2 GB are kept on the VPS instead of re-uploaded to Telegram. This lists them
-// with a download link (/api/kept/[id]) and a delete-now button; the unpack worker auto-deletes
-// each file at its expiry anyway.
+// Unpack outputs over the Telegram cap are kept on the VPS instead of re-uploaded. This lists
+// them with play (Plyr modal) / download / keep-longer / manual-compress / delete-now controls;
+// the unpack worker auto-deletes each file at its expiry.
+const KEPT_VIDEO_RE = /\.(mp4|m4v|webm|mkv|mov)$/i;
+const KEPT_IMAGE_RE = /\.(jpe?g|png|gif|webp)$/i;
+const COMPRESS_PRESETS: { crf: number; label: string; desc: string }[] = [
+  { crf: 20, label: "CRF 20 — archive quality", desc: "visually identical to the original; saves ~20–40%" },
+  { crf: 23, label: "CRF 23 — balanced (recommended)", desc: "differences are near-impossible to spot in normal viewing; saves ~40–60%" },
+  { crf: 26, label: "CRF 26 — small", desc: "fine detail (skin, grain, grass) softens slightly; saves ~55–70%" },
+  { crf: 28, label: "CRF 28 — smallest", desc: "visibly softer, may block up in fast motion; saves ~65–80%" },
+];
+
 export function KeptFilesModal({
   files,
   onClose,
   onDelete,
   onExtend,
+  onPlay,
+  onCompress,
 }: {
-  files: { id: number; name: string; size: number; expiresAt: string }[];
+  files: {
+    id: number; name: string; size: number; expiresAt: string;
+    compress: { status: string; message: string; crf: number } | null;
+  }[];
   onClose: () => void;
   onDelete: (id: number) => void;
   onExtend: (id: number, hours: number | null) => void;
+  onPlay: (f: { id: number; name: string }) => void;
+  onCompress: (id: number, crf: number) => void;
 }) {
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -407,62 +423,105 @@ export function KeptFilesModal({
           {files.length === 0 && (
             <p style={{ margin: 0, fontSize: 13, color: "var(--faint)" }}>Nothing kept right now.</p>
           )}
-          {files.map((f) => (
-            <div
-              key={f.id}
-              style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line-2)" }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.name}>
-                  {f.name}
+          {files.map((f) => {
+            const busy = f.compress && ["queued", "running"].includes(f.compress.status);
+            return (
+              <div key={f.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--line-2)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.name}>
+                      {f.name}
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--faint)" }}>
+                      {fmtSize(f.size)} ·{" "}
+                      {f.expiresAt.startsWith("9999")
+                        ? "kept until you delete it"
+                        : `expires ${f.expiresAt} UTC`}
+                    </div>
+                  </div>
+                  <select
+                    className="input"
+                    style={{ width: 104, padding: "4px 6px", fontSize: 12 }}
+                    value=""
+                    title="Keep this file longer"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      e.target.value = "";
+                      if (v) onExtend(f.id, v === "inf" ? null : Number(v));
+                    }}
+                  >
+                    <option value="">Keep for…</option>
+                    <option value="72">3 more days</option>
+                    <option value="168">7 more days</option>
+                    <option value="720">30 more days</option>
+                    <option value="inf">Until I delete it</option>
+                  </select>
+                  {KEPT_VIDEO_RE.test(f.name) && (
+                    <button className="btn subtle" title="Play" onClick={() => onPlay(f)}>
+                      <Icon name="video" size={15} />
+                    </button>
+                  )}
+                  {KEPT_IMAGE_RE.test(f.name) && (
+                    <a className="btn subtle" title="Open" href={`/api/kept/${f.id}`} target="_blank" rel="noopener noreferrer">
+                      <Icon name="video" size={15} />
+                    </a>
+                  )}
+                  <a className="btn subtle" title="Download" href={`/api/kept/${f.id}`} download={f.name}>
+                    <Icon name="download" size={15} />
+                  </a>
+                  <button className="btn subtle" title="Delete from server now" onClick={() => onDelete(f.id)}>
+                    <Icon name="trash" size={15} />
+                  </button>
                 </div>
-                <div style={{ fontSize: 12, color: "var(--faint)" }}>
-                  {fmtSize(f.size)} ·{" "}
-                  {f.expiresAt.startsWith("9999")
-                    ? "kept until you delete it"
-                    : `expires ${f.expiresAt} UTC`}
-                </div>
+                {KEPT_VIDEO_RE.test(f.name) && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+                    {busy ? (
+                      <span style={{ fontSize: 12, color: "var(--accent)" }}>
+                        <span className="spinner sm" style={{ verticalAlign: -2, marginRight: 6 }} />
+                        {f.compress?.message || "compressing…"}
+                      </span>
+                    ) : (
+                      <>
+                        <select
+                          className="input"
+                          style={{ width: 230, padding: "4px 6px", fontSize: 12 }}
+                          value=""
+                          title="Re-encode this file on the server to shrink it"
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            e.target.value = "";
+                            if (v) onCompress(f.id, Number(v));
+                          }}
+                        >
+                          <option value="">Compress…</option>
+                          {COMPRESS_PRESETS.map((p) => (
+                            <option key={p.crf} value={p.crf}>{p.label}</option>
+                          ))}
+                        </select>
+                        {f.compress && (
+                          <span style={{ fontSize: 12, color: f.compress.status === "failed" ? "var(--red, #d03b3b)" : "var(--faint)" }}>
+                            {f.compress.message}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
-              <select
-                className="input"
-                style={{ width: 110, padding: "4px 6px", fontSize: 12 }}
-                value=""
-                title="Keep this file longer"
-                onChange={(e) => {
-                  const v = e.target.value;
-                  e.target.value = "";
-                  if (v) onExtend(f.id, v === "inf" ? null : Number(v));
-                }}
-              >
-                <option value="">Keep for…</option>
-                <option value="72">3 more days</option>
-                <option value="168">7 more days</option>
-                <option value="720">30 more days</option>
-                <option value="inf">Until I delete it</option>
-              </select>
-              {/\.(mp4|m4v|webm|mkv|mov|mp3|m4a|ogg|flac|wav|jpe?g|png|gif|webp)$/i.test(f.name) && (
-                <a
-                  className="btn subtle"
-                  title="Play in a new tab"
-                  href={`/api/kept/${f.id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <Icon name="video" size={15} />
-                </a>
-              )}
-              <a className="btn subtle" title="Download" href={`/api/kept/${f.id}`} download={f.name}>
-                <Icon name="download" size={15} />
-              </a>
-              <button
-                className="btn subtle"
-                title="Delete from server now"
-                onClick={() => onDelete(f.id)}
-              >
-                <Icon name="trash" size={15} />
-              </button>
-            </div>
-          ))}
+            );
+          })}
+          <details style={{ marginTop: 12, fontSize: 12, color: "var(--faint)" }}>
+            <summary style={{ cursor: "pointer" }}>What do the compress presets mean?</summary>
+            <ul style={{ margin: "8px 0 0", paddingLeft: 18, lineHeight: 1.6 }}>
+              {COMPRESS_PRESETS.map((p) => (
+                <li key={p.crf}><b>{p.label}</b>: {p.desc}</li>
+              ))}
+            </ul>
+            <p style={{ margin: "8px 0 0" }}>
+              Compression runs on the server CPU (roughly 0.5–1× the video&apos;s duration), replaces
+              the file in place, and keeps the original only if the result isn&apos;t smaller.
+            </p>
+          </details>
         </div>
         <div className="dfoot">
           <button className="btn subtle" onClick={onClose}>

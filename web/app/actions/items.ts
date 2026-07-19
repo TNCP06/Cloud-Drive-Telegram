@@ -225,14 +225,42 @@ const KEEP_ROOT = path.join(process.env.UPLOAD_STAGING_DIR || "/staging", "_unpa
 
 export async function listKeptFiles(): Promise<KeptFile[]> {
   const rs = await db.execute(
-    "SELECT id, file_name, size, expires_at FROM unpack_kept ORDER BY id DESC"
+    "SELECT k.id, k.file_name, k.size, k.expires_at, c.status AS cstatus, " +
+      "c.message AS cmessage, c.crf AS ccrf " +
+      "FROM unpack_kept k LEFT JOIN LATERAL (" +
+      "  SELECT status, message, crf FROM kept_compress_jobs " +
+      "  WHERE kept_id = k.id ORDER BY id DESC LIMIT 1) c ON true " +
+      "ORDER BY k.id DESC"
   );
   return rs.rows.map((r) => ({
     id: Number(r.id),
     name: String(r.file_name),
     size: Number(r.size ?? 0),
     expiresAt: String(r.expires_at),
+    compress: r.cstatus
+      ? { status: String(r.cstatus), message: String(r.cmessage ?? ""), crf: Number(r.ccrf ?? 23) }
+      : null,
   }));
+}
+
+// Queue a manual re-encode of a kept file (H.264 at the chosen CRF; the unpack worker runs
+// ffmpeg on the VPS copy and replaces it in place only if the result is smaller).
+export async function compressKeptFile(
+  id: number,
+  crf: number
+): Promise<{ ok: boolean; error?: string }> {
+  if (![20, 23, 26, 28].includes(crf)) return { ok: false, error: "Invalid preset." };
+  const active = await db.execute({
+    sql: "SELECT 1 FROM kept_compress_jobs WHERE kept_id = ? AND status IN ('queued','running')",
+    args: [id],
+  });
+  if (active.rows.length) return { ok: false, error: "This file is already being compressed." };
+  await db.execute({
+    sql: "INSERT INTO kept_compress_jobs (kept_id, crf) VALUES (?, ?)",
+    args: [id, crf],
+  });
+  refresh();
+  return { ok: true };
 }
 
 // Far-future sentinel = "permanent" (no schema change; the worker's sweep compares
