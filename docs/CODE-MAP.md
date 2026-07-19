@@ -371,6 +371,10 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   (first part by `channel_msg_id`) with `Cache-Control: public, max-age=600, stale-while-revalidate`.
   Keeps the cover out of the main page payload so the grid stays light at any scale; auth is enforced
   by middleware (path not excluded). The grid `<img>` lazy-loads → only on-screen covers are fetched.
+- `stats/page.tsx` — **live system-map + stats page** (`/stats`, force-dynamic server component,
+  gated by the global middleware like every route): storage totals from `parts`, items by kind,
+  top tags, job counters (download/upload/unpack incl. `paused`), kept files, VPS disk via
+  `statfsSync` on the staging volume, and a compact data-flow map (Store / Pull / Unpack / Watch).
 - `page.tsx` (main grid), `private/page.tsx` (**PIN-gated Private space**: renders `PrivateLock` until the
   unlock cookie is present, then `DriveApp space="private"` with `getDriveData("private")`),
   `trash/page.tsx`, `upload/page.tsx`, `upload-bot/page.tsx`,
