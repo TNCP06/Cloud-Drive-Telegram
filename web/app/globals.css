@@ -742,13 +742,9 @@ button { font-family: inherit; }
 
 /* Plyr shifts captions UP (transform) whenever it thinks controls are visible — and mouse
    movement toggles .plyr--hide-controls, so subtitles bounce up/down on every cursor move even
-   though our control bar is opacity-hidden. Pin them at one fixed spot (cleared of the control
-   bar) so they never move. */
-.viewer-video .plyr__captions,
-.viewer-video .plyr:not(.plyr--hide-controls) .plyr__captions {
-  transform: none !important;
-  padding-bottom: 46px;
-}
+   though our control bar is opacity-hidden. Pin them (the !important beats Plyr's higher-specificity
+   transform rule) so they never move. */
+.viewer-video .plyr__captions { transform: none !important; }
 
 /* Seek-preview thumbnail popup (Plyr's previewThumbnails) — polished look */
 .viewer-video .plyr__preview-thumb {
