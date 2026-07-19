@@ -11,6 +11,7 @@ import { getCachedGallery, loadGallery } from "@/lib/gallery-cache";
 import { TagPicker } from "./TagPicker";
 import { VideoPlayer } from "./VideoPlayer";
 import { DocPreview } from "./DocPreview";
+import { SubtitleDialog } from "./SubtitleDialog";
 import { reharvestThumbnail, uploadThumbnail } from "@/app/actions";
 import type { DriveFile, GalleryPart, Kind, Tag } from "@/lib/types";
 
@@ -172,6 +173,10 @@ export function PreviewDrawer({
   const pendingPartRef = useRef<{ id: number; idx: number } | null>(null);
   // Detail panel is hidden behind the kebab button; photos show full-screen.
   const [showDetails, setShowDetails] = useState(initialEditing || initialShowDetails);
+  // "Add subtitle" dialog (videos only). `subsBump` remounts the player after a track
+  // is added so the new language appears in the CC menu without reopening the video.
+  const [subsOpen, setSubsOpen] = useState(false);
+  const [subsBump, setSubsBump] = useState(0);
 
   // Reset form when the opened item changes (or when leaving edit mode).
   useEffect(() => {
@@ -409,6 +414,7 @@ export function PreviewDrawer({
   // Uses capture phase so Shift+arrows are intercepted before Plyr's global handler.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (subsOpen) return; // the subtitle dialog owns the keyboard (incl. its own Esc)
       if (e.key === "Escape") {
         if (document.fullscreenElement) return; // let Plyr exit fullscreen first
         // Consume the Esc here (capture phase) so it never reaches the grid's
@@ -476,7 +482,7 @@ export function PreviewDrawer({
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose, showDetails, editing, go, item.kind, activePart, detailsOnly, isDocStage]);
+  }, [onClose, showDetails, editing, go, item.kind, activePart, detailsOnly, isDocStage, subsOpen]);
 
   const save = () => {
     if (!title.trim()) return;
@@ -494,7 +500,7 @@ export function PreviewDrawer({
             <div className="viewer-stage">
               {isVideoStage ? (
                 <VideoPlayer
-                  key={activePart!.partId}
+                  key={`${activePart!.partId}:${subsBump}`}
                   src={`/api/stream/${activePart!.partId}`}
                   poster={activePart!.thumb || undefined}
                   partId={activePart!.partId}
@@ -532,6 +538,15 @@ export function PreviewDrawer({
                     title={item.starred ? "Remove from favorites" : "Add to favorites"}
                   >
                     <Icon name="star" size={17} fill={item.starred} />
+                  </button>
+                )}
+                {isVideoStage && (
+                  <button
+                    className="viewer-iconbtn"
+                    onClick={() => setSubsOpen(true)}
+                    title="Add subtitle"
+                  >
+                    <Icon name="subtitles" size={17} />
                   </button>
                 )}
                 <button
@@ -659,6 +674,15 @@ export function PreviewDrawer({
               </div>
             )}
           </div>
+
+          {/* "Add subtitle" dialog — local upload / from Telegram storage / softsub extract. */}
+          {subsOpen && activePart?.partId ? (
+            <SubtitleDialog
+              partId={activePart.partId}
+              onClose={() => setSubsOpen(false)}
+              onAdded={() => setSubsBump((b) => b + 1)}
+            />
+          ) : null}
         </>
       )}
 

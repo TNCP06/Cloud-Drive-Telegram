@@ -215,7 +215,15 @@ off the shared STT semaphore), but watching a video **`_enqueue_priority_subtitl
 FRONT of the backfill queue and **wakes the idle loop** (`_subtitle_wake` event) so a just-opened/just-uploaded
 video is subtitled next — still by the single serialized worker, never a parallel job. `streamer.py` exposes
 `GET /subtitles/{part_id}` (returns `{langs, done}` — `done` lets the web player poll and load tracks **live**
-until finalised) and `GET /subtitles/{part_id}/{lang}` (VTT), and runs the
+until finalised) and `GET /subtitles/{part_id}/{lang}` (VTT), plus the **manual-subtitle endpoints**:
+`POST /subtitles/{id}/manual` (raw SRT/VTT/ASS body → ffmpeg-converted to VTT via
+`convert_to_vtt`/`save_subtitle_track` in `stream_subtitles.py`; saving a manual track writes the `.done`
+marker so STT never overwrites it), `POST /subtitles/{id}/from-part/{src}` (Telethon-downloads a subtitle
+file stored on the drive and attaches it), and `POST /subtitles/{id}/extract` +
+`GET /subtitles/{id}/extract/status` (background softsub extraction: `_run_extract_job` reuses a cached
+original or re-downloads it via the shared `_download_part_original` helper — the compressed copy has no
+subtitle streams — then `extract_embedded_tracks` ffprobes and converts every embedded **text** stream;
+bitmap PGS/DVD streams are reported as needing OCR). It also runs the
 **backfill** (`_subtitle_backfill_loop`/`_next_backfill_part`/`_fetch_part_row`/`_backfill_one`): one
 already-indexed video at a time (priority/viewed first → `.partial` repairs → oldest un-subtitled; back-to-back
 by default, `SUBTITLE_BACKFILL_INTERVAL_S` adds optional pace), downloads → subtitles → deletes the download; **both** download **and** transcription failures are recorded
@@ -318,8 +326,8 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 
 ### `web/app/` — routes & server actions
 - `actions.ts` — re-export **barrel** for the server actions, now split by domain under
-  `app/actions/` (`items.ts`, `tags.ts`, `folders.ts`, `uploads.ts`, `thumbnails.ts`, `private.ts`, plus
-  `_shared.ts` for `refresh`/`resolveTagId`). `@/app/actions` imports are unchanged. Inventory:
+  `app/actions/` (`items.ts`, `tags.ts`, `folders.ts`, `uploads.ts`, `thumbnails.ts`, `private.ts`,
+  `subtitles.ts`, plus `_shared.ts` for `refresh`/`resolveTagId`). `@/app/actions` imports are unchanged. Inventory:
   Item (`items.ts`): `toggleFavorite`,
   `softDelete`, `restore`, `purgeNow` (on-demand permanent delete of a trashed item — Telegram
   `deleteMessage` + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
@@ -349,6 +357,8 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `getFile`, stores in `thumbnails`, deletes forward. Fixes thumbnails missed at index time.
   `uploadThumbnail(itemId, mime, dataB64)` — manually sets a base64 thumbnail image for all
   parts of an item (fallback when Telegram never generated one, e.g. unsupported codec).
+  Subtitles (`subtitles.ts`): `listDriveSubtitleFiles` — non-private, non-deleted parts with a
+  subtitle extension (.srt/.vtt/.ass/.ssa/.sub), for the SubtitleDialog's "from Telegram storage" picker.
 - `fs-actions.ts` — `listDir()`: reads the **laptop's real disk** for the upload file picker
   (shortcuts, drive letters, symlink/junction resolution, 3000-entry cap). Localhost-only by
   design — do not expose publicly.
@@ -368,7 +378,11 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `http://streamer:8080`). Pipes the 206 response body straight back to the browser's `<video>` element.
 - `api/subtitles/[partId]/route.ts` (lang list) + `api/subtitles/[partId]/[lang]/route.ts` (one WebVTT
   track) — cookie-auth proxies to the streamer's `/subtitles/...` endpoints; the player loads these as
-  `<track>`s.
+  `<track>`s. Manual-subtitle proxies (same auth pattern): `api/subtitles/[partId]/manual/route.ts`
+  (POST raw SRT/VTT/ASS body + `?lang=&ext=`), `api/subtitles/[partId]/from-part/route.ts` (POST
+  `{srcPartId, lang}` — attach a subtitle file stored on the drive), and
+  `api/subtitles/[partId]/extract/route.ts` (POST starts the softsub-extraction job, GET polls its
+  status).
 - `api/seek-preview/[partId]/route.ts` and `api/seek-preview/[partId]/sprite/route.ts` — cookie-auth proxies to
   the streamer's `/seek-preview/...` endpoints (VTT with rewritten sprite URLs + JPEG sprite sheet).
 - `api/kept/[id]/route.ts` (`nodejs` runtime) — downloads a **kept unpack output** (`unpack_kept`)
@@ -499,7 +513,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   helper that emits nothing on the server + first client paint and the real string after
   mount — they depend on the viewer's clock/timezone, so rendering them during SSR caused
   React hydration error #418.
-- `PreviewDrawer.tsx` — item detail + on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders **`VideoPlayer.tsx`** (a **Plyr** player) sourced from `/api/stream/{partId}`. The drawer keeps only `Esc` (close) and `Shift+←/→` (jump between parts/files) — Plyr owns the media shortcuts (←/→ seek 5s via `seekTime`, `f` fullscreen, `m` mute, space play); the document keydown is capture-phase so `Shift+arrows` are intercepted before Plyr's global handler. All action buttons are removed from this drawer's top bar (delegated entirely to the external card/row kebab menus). Supports `detailsOnly` mode to render the metadata/edit panel as a standalone popup without the full-screen photo/video stage layer. For non-media single-part files whose `fileTypeFor().preview` is `pdf|text|word|sheet`, the stage renders **`DocPreview.tsx`** instead of the static cover/icon. `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
+- `PreviewDrawer.tsx` — item detail + on-demand gallery (`getGallery`) + **video streaming**: `isPartStreamableVideo()` detects if the active media part has a browser-playable extension (.mp4/.webm/.m4v/.mov) and renders **`VideoPlayer.tsx`** (a **Plyr** player) sourced from `/api/stream/{partId}`. The drawer keeps only `Esc` (close) and `Shift+←/→` (jump between parts/files) — Plyr owns the media shortcuts (←/→ seek 5s via `seekTime`, `f` fullscreen, `m` mute, space play); the document keydown is capture-phase so `Shift+arrows` are intercepted before Plyr's global handler. All action buttons are removed from this drawer's top bar (delegated entirely to the external card/row kebab menus). Supports `detailsOnly` mode to render the metadata/edit panel as a standalone popup without the full-screen photo/video stage layer. For non-media single-part files whose `fileTypeFor().preview` is `pdf|text|word|sheet`, the stage renders **`DocPreview.tsx`** instead of the static cover/icon. On the video stage the top bar has an **"Add subtitle"** button (CC icon) opening **`SubtitleDialog.tsx`** — three sources: upload a local SRT/VTT/ASS file (`/api/subtitles/{id}/manual`), attach a subtitle file already stored on the drive (`listDriveSubtitleFiles` server action in `actions/subtitles.ts` + `/api/subtitles/{id}/from-part`), or extract the video's embedded softsub streams (`/api/subtitles/{id}/extract`, polled every 3 s). The language comes from a dropdown but a `Movie.id.srt`-style file name overrides it (`guessLang`); on success the dialog bumps `subsBump` (part of the `VideoPlayer` key) to remount the player so the new track shows in the CC menu immediately. `FsBrowser.tsx` — laptop folder picker (drives `listDir`).
 - `DocPreview.tsx` — inline document preview on the viewer stage. **PDF** → native `<iframe>`
   pointed at `/api/stream/{partId}` (needs `application/pdf` from the streamer). **Text/code/markdown**
   → fetched as text into a `<pre>`. **Word (.docx)** → `mammoth` (dynamically imported browser build

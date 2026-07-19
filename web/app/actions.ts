@@ -6,3 +6,4 @@ export * from "./actions/folders";
 export * from "./actions/uploads";
 export * from "./actions/thumbnails";
 export * from "./actions/private";
+export * from "./actions/subtitles";

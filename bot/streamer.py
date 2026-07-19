@@ -76,6 +76,11 @@ from stream_subtitles import (
     available_langs,
     subtitle_path,
     stt_available,
+    MANUAL_SUB_EXTS,
+    sanitize_lang,
+    convert_to_vtt,
+    save_subtitle_track,
+    extract_embedded_tracks,
 )
 
 # Seek-preview sprite-sheet generation (ffmpeg thumbnails for Plyr progress-bar hover).
@@ -959,33 +964,45 @@ async def _next_backfill_part() -> dict | None:
     return None
 
 
-async def _backfill_one(part: dict) -> None:
-    """Download one video, generate its subtitles, then delete the download to reclaim disk."""
+async def _download_part_original(part: dict) -> str:
+    """Download a part's ORIGINAL file from Telegram, returning its local path. Local Bot API
+    mode (with file_id resolution + one fresh-resolve retry) when configured, else Telethon.
+    Raises on failure."""
     part_id = part["part_id"]
     channel_msg_id = part["channel_msg_id"]
     file_id = part.get("file_id")
-    path: str | None = None
 
     async with _part_locks[(part_id, -1)]:
-        if not file_id:
-            try:
+        if TELEGRAM_API_URL:
+            if not file_id:
                 file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
+            _evict_local_api_cache_if_needed(0)
+            try:
+                return await download_via_local_bot_api(file_id)
             except Exception as e:  # noqa: BLE001
-                log.warning("Backfill: cannot resolve file_id for part %d: %s", part_id, e)
-                _backfill_failed.add(part_id)
-                return
-        _evict_local_api_cache_if_needed(0)
-        try:
-            path = await download_via_local_bot_api(file_id)
-        except Exception as e:  # noqa: BLE001
-            log.warning("Backfill: download failed for part %d (%s) — retrying with fresh file_id", part_id, e)
-            try:
+                log.warning("Download failed for part %d (%s) — retrying with fresh file_id", part_id, e)
                 file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
-                path = await download_via_local_bot_api(file_id)
-            except Exception as e2:  # noqa: BLE001
-                log.warning("Backfill: download failed for part %d: %s", part_id, e2)
-                _backfill_failed.add(part_id)
-                return
+                return await download_via_local_bot_api(file_id)
+        # No local Bot API → Telethon download into the cache dir.
+        msg = await _get_tg_message(channel_msg_id)
+        if not msg or not msg.media:
+            raise ValueError(f"Message {channel_msg_id} has no media")
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = await tg_client.download_media(msg, file=str(CACHE_DIR / f"orig_{part_id}"))
+        if not path:
+            raise RuntimeError(f"Telethon download failed for part {part_id}")
+        return path
+
+
+async def _backfill_one(part: dict) -> None:
+    """Download one video, generate its subtitles, then delete the download to reclaim disk."""
+    part_id = part["part_id"]
+    try:
+        path = await _download_part_original(part)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Backfill: download failed for part %d: %s", part_id, e)
+        _backfill_failed.add(part_id)
+        return
 
     try:
         await run_subtitle_job(db, part_id, path)
@@ -1204,6 +1221,124 @@ async def get_subtitle(part_id: int, lang: str):
         media_type="text/vtt",
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Manual subtitles: upload / copy-from-drive / extract embedded (softsub)
+# ---------------------------------------------------------------------------
+MAX_SUB_BYTES = 10 * 1048576  # subtitle files are tiny; 10 MB is already generous
+
+
+@app.post("/subtitles/{part_id}/manual")
+async def upload_manual_subtitle(part_id: int, request: Request, lang: str = "id", ext: str = "srt"):
+    """Save a user-uploaded subtitle file (raw body: SRT/VTT/ASS/…) as a WebVTT track."""
+    if not await _fetch_part_row(part_id):
+        raise HTTPException(status_code=404, detail="Part not found or not a video")
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty body")
+    if len(data) > MAX_SUB_BYTES:
+        raise HTTPException(status_code=413, detail="Subtitle file too large")
+    lang = sanitize_lang(lang, "id")
+    try:
+        vtt = await convert_to_vtt(data, "." + ext.lstrip(".").lower())
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f"Cannot convert subtitle: {e}")
+    await save_subtitle_track(db, part_id, lang, vtt)
+    log.info("Manual subtitle saved: part %d lang %s (%d bytes)", part_id, lang, len(data))
+    return {"ok": True, "lang": lang}
+
+
+@app.post("/subtitles/{part_id}/from-part/{src_part_id}")
+async def subtitle_from_drive_part(part_id: int, src_part_id: int, lang: str = "id"):
+    """Attach a subtitle file already stored on the drive (another part) to a video."""
+    if not await _fetch_part_row(part_id):
+        raise HTTPException(status_code=404, detail="Part not found or not a video")
+    rs = await db.execute(
+        "SELECT p.channel_msg_id, p.file_name, p.file_size FROM parts p "
+        "JOIN items i ON i.id = p.item_id WHERE p.id = ? AND i.deleted_at IS NULL",
+        [src_part_id],
+    )
+    if not rs.rows:
+        raise HTTPException(status_code=404, detail="Subtitle file not found")
+    channel_msg_id, file_name, file_size = int(rs.rows[0][0]), rs.rows[0][1] or "", int(rs.rows[0][2] or 0)
+    src_ext = os.path.splitext(file_name)[1].lower()
+    if src_ext not in MANUAL_SUB_EXTS:
+        raise HTTPException(status_code=400, detail="Source file is not a subtitle file")
+    if file_size > MAX_SUB_BYTES:
+        raise HTTPException(status_code=413, detail="Subtitle file too large")
+    msg = await _get_tg_message(channel_msg_id)
+    if not msg or not msg.media:
+        raise HTTPException(status_code=404, detail="Telegram message has no media")
+    data = await tg_client.download_media(msg, file=bytes)
+    if not data:
+        raise HTTPException(status_code=502, detail="Download from Telegram failed")
+    lang = sanitize_lang(lang, "id")
+    try:
+        vtt = await convert_to_vtt(data, src_ext)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f"Cannot convert subtitle: {e}")
+    await save_subtitle_track(db, part_id, lang, vtt)
+    log.info("Drive subtitle attached: part %d ← part %d (%s) lang %s", part_id, src_part_id, file_name, lang)
+    return {"ok": True, "lang": lang}
+
+
+# Softsub extraction jobs (one per part; the video download can take a while).
+_extract_jobs: dict[int, dict] = {}
+
+
+async def _run_extract_job(part: dict) -> None:
+    part_id = part["part_id"]
+    job = _extract_jobs[part_id]
+    path: str | None = None
+    fresh = False
+    try:
+        # Reuse a still-cached original; else re-download it (the compressed copy the
+        # streamer may serve instead has its subtitle streams stripped by the transcode).
+        path = _local_file_paths.get(part_id)
+        if not path or not os.path.exists(path):
+            job["message"] = "Downloading video from Telegram…"
+            path = await _download_part_original(part)
+            fresh = True
+        job["message"] = "Extracting embedded subtitle streams…"
+        res = await extract_embedded_tracks(db, part_id, path)
+        if res["extracted"]:
+            job.update(status="done", langs=res["extracted"],
+                       message="Extracted: " + ", ".join(res["extracted"]))
+        elif res["bitmap"]:
+            job.update(status="error", message=(
+                f"Only bitmap subtitle stream(s) found ({res['bitmap']}) — they need OCR, "
+                "which is not supported on the server."))
+        else:
+            job.update(status="error", message="No embedded subtitle streams in this video.")
+    except Exception as e:  # noqa: BLE001
+        log.exception("Subtitle extract job failed for part %d", part_id)
+        job.update(status="error", message=str(e))
+    finally:
+        if fresh and path and os.path.exists(path) and path not in _local_file_paths.values():
+            try:
+                os.remove(path)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+@app.post("/subtitles/{part_id}/extract")
+async def start_subtitle_extract(part_id: int):
+    """Kick off (or report) a background softsub-extraction job for a video part."""
+    part = await _fetch_part_row(part_id)
+    if not part:
+        raise HTTPException(status_code=404, detail="Part not found or not a video")
+    job = _extract_jobs.get(part_id)
+    if job and job.get("status") == "running":
+        return job
+    _extract_jobs[part_id] = {"status": "running", "message": "Starting…"}
+    asyncio.create_task(_run_extract_job(part))
+    return _extract_jobs[part_id]
+
+
+@app.get("/subtitles/{part_id}/extract/status")
+async def subtitle_extract_status(part_id: int):
+    return _extract_jobs.get(part_id) or {"status": "idle", "message": ""}
 
 
 # Active seek-preview generation tasks (fire-and-forget, dedup'd by part_id)

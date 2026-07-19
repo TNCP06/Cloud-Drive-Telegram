@@ -359,6 +359,136 @@ def _parse_vtt(path: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Manual subtitles + embedded (softsub) extraction
+# ---------------------------------------------------------------------------
+# Extensions we accept as manual subtitle uploads (converted to WebVTT via ffmpeg).
+MANUAL_SUB_EXTS = {".srt", ".vtt", ".ass", ".ssa", ".sub"}
+# ffprobe codec names that hold TEXT subtitles (mirrors subx.py's TEXT_CODECS).
+# Bitmap codecs (hdmv_pgs_subtitle, dvd_subtitle, …) need OCR and are skipped.
+_TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
+# ffprobe stream language tags are ISO 639-2 (3-letter) — map the common ones to
+# the 2-letter codes the player/track routes use.
+_ISO3_TO_ISO2 = {
+    "eng": "en", "ind": "id", "may": "ms", "msa": "ms", "jpn": "ja", "kor": "ko",
+    "chi": "zh", "zho": "zh", "spa": "es", "fre": "fr", "fra": "fr", "ger": "de",
+    "deu": "de", "por": "pt", "rus": "ru", "ara": "ar", "hin": "hi", "tha": "th",
+    "vie": "vi", "ita": "it", "dut": "nl", "nld": "nl", "tur": "tr", "tgl": "tl",
+    "fil": "tl",
+}
+
+
+def sanitize_lang(lang: str | None, fallback: str = "orig") -> str:
+    """Normalise a language code to what the web routes accept: 2–8 lowercase letters."""
+    lang = (lang or "").strip().lower()
+    lang = _ISO3_TO_ISO2.get(lang, lang)
+    if re.fullmatch(r"[a-z]{2,8}", lang) and lang != "und":
+        return lang
+    return fallback
+
+
+def _unique_lang(part_id: int, lang: str) -> str:
+    """Avoid clobbering an existing track when extracting several streams with the same
+    (or missing) language tag: en, enb, enc, … (letters only — the routes reject digits)."""
+    if not subtitle_path(part_id, lang).exists():
+        return lang
+    for suffix in "bcdefgh":
+        cand = (lang + suffix)[:8]
+        if not subtitle_path(part_id, cand).exists():
+            return cand
+    return lang  # all taken → overwrite the base track
+
+
+async def _run_ffmpeg(cmd: list[str]) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        tail = stderr[-400:].decode("utf-8", "ignore") if stderr else ""
+        raise RuntimeError(f"ffmpeg failed (rc={proc.returncode}): {tail}")
+
+
+async def convert_to_vtt(data: bytes, ext: str) -> str:
+    """Convert an uploaded subtitle file (SRT/ASS/SSA/VTT/…) to WebVTT text via ffmpeg,
+    which handles encodings and format quirks far better than hand parsing."""
+    ext = ext.lower() if ext.lower() in MANUAL_SUB_EXTS else ".srt"
+    tmp = Path(tempfile.mkdtemp(prefix="subman_"))
+    try:
+        src = tmp / f"in{ext}"
+        out = tmp / "out.vtt"
+        src.write_bytes(data)
+        await _run_ffmpeg(["ffmpeg", "-y", "-i", str(src), "-f", "webvtt", str(out)])
+        text = out.read_text(encoding="utf-8", errors="replace")
+        if "-->" not in text:
+            raise ValueError("No cues found in the subtitle file")
+        return text
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def save_subtitle_track(db, part_id: int, lang: str, vtt_text: str) -> None:
+    """Write one WebVTT track to the persistent store + record it in the subtitles table.
+    Also finalises the part (`.done`) so the STT backfill never overwrites a user-provided
+    track with an auto-generated one."""
+    SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
+    subtitle_path(part_id, lang).write_text(vtt_text, encoding="utf-8")
+    await _record_subtitle(db, part_id, lang)
+    if not _done_marker(part_id).exists():
+        _done_marker(part_id).write_text("manual", encoding="utf-8")
+        _cleanup_chunk_state(part_id)
+
+
+async def probe_subtitle_streams(video_path: str) -> list[dict]:
+    """ffprobe the embedded subtitle streams (mirrors `subx.py list`)."""
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams",
+        "-select_streams", "s", video_path,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffprobe failed (rc={proc.returncode})")
+    try:
+        return json.loads(stdout.decode("utf-8", "ignore")).get("streams", [])
+    except json.JSONDecodeError:
+        return []
+
+
+async def extract_embedded_tracks(db, part_id: int, video_path: str) -> dict:
+    """Extract every embedded TEXT subtitle stream of a video to WebVTT tracks
+    (the `subx.py soft` flow, all streams at once). Bitmap streams (PGS/DVD) are
+    counted but skipped — they'd need OCR. Returns {extracted: [langs], bitmap: n}."""
+    streams = await probe_subtitle_streams(video_path)
+    extracted: list[str] = []
+    bitmap = 0
+    tmp = Path(tempfile.mkdtemp(prefix="subext_"))
+    try:
+        for s in streams:
+            codec = s.get("codec_name") or ""
+            if codec not in _TEXT_SUB_CODECS:
+                bitmap += 1
+                continue
+            lang = _unique_lang(part_id, sanitize_lang((s.get("tags") or {}).get("language")))
+            out = tmp / f"s{s['index']}.vtt"
+            try:
+                await _run_ffmpeg(["ffmpeg", "-y", "-i", video_path,
+                                   "-map", f"0:{s['index']}", "-f", "webvtt", str(out)])
+            except RuntimeError as e:
+                log.warning("Subtitle extract: part %d stream %s failed: %s", part_id, s.get("index"), e)
+                continue
+            text = out.read_text(encoding="utf-8", errors="replace")
+            if "-->" not in text:
+                continue  # stream exists but holds no cues
+            await save_subtitle_track(db, part_id, lang, text)
+            extracted.append(lang)
+        log.info("Subtitle extract: part %d → %s (%d bitmap skipped)",
+                 part_id, ", ".join(extracted) or "none", bitmap)
+        return {"extracted": extracted, "bitmap": bitmap}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Audio extraction (ffmpeg) — one pass into time-sliced FLAC chunks
 # ---------------------------------------------------------------------------
 async def _extract_audio_chunks(src_path: str, out_dir: Path) -> list[Path]:

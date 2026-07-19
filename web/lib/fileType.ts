@@ -118,6 +118,14 @@ const SPECS: Spec[] = [
     exts: ["mp4", "webm", "m4v", "mov", "mkv", "avi", "flv", "3gp", "ts", "wmv"],
   },
   {
+    id: "subtitle",
+    label: "Subtitle",
+    icon: "subtitles",
+    tint: "#3C7A74",
+    preview: "text",
+    exts: ["srt", "vtt", "ass", "ssa"],
+  },
+  {
     id: "audio",
     label: "Audio",
     icon: "fileText",

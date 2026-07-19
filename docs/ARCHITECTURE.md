@@ -147,7 +147,10 @@ These are load-bearing — break them and indexing/downloads break:
   the client only ever sees a `SHA-256` unlock cookie.
 - **Subtitles are kept while the video is indexed.** Generated WebVTT tracks live on the persistent
   `/subtitles` volume with one `subtitles(part_id, lang)` row each; they are never auto-evicted (only a
-  hard-delete/purge of the item should remove them).
+  hard-delete/purge of the item should remove them). Besides STT generation, tracks can be added
+  **manually** (device upload / a subtitle file stored on the drive / softsub extraction from the video's
+  embedded streams — see BUSINESS-FLOWS E4b); a manual track writes the part's `.done` marker so the
+  STT backfill never overwrites it.
 - **Thumbnails are per-part** (`thumbnails.part_id`). An item's cover = thumbnail of the part
   with the smallest `channel_msg_id`. `getDriveData()` only ships **whether** a cover exists
   (`thumb` = `/api/thumb/{itemId}` URL, or `null`) — the bytes are served lazily & HTTP-cached by

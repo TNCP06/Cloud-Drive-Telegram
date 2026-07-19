@@ -395,6 +395,32 @@ rate limits and each video's own processing time provides natural spacing; set t
 extra pace if needed. A failed part is skipped for the rest of the session (retried after a restart) so one
 bad file can't block the queue. Toggle with `SUBTITLE_BACKFILL`.
 
+## E4b. Manual subtitles (upload / from drive / softsub extraction)
+
+Besides the automatic STT flow, a video's viewer has an **"Add subtitle"** button (CC icon,
+`SubtitleDialog.tsx`) with three sources — all landing as WebVTT tracks on the same persistent
+`/subtitles` volume (+ a `subtitles` row), so the player treats them exactly like generated ones:
+
+1. **Upload from the device:** an SRT/VTT/ASS/SSA/SUB file is POSTed raw to
+   `/api/subtitles/{partId}/manual?lang=&ext=` → streamer `POST /subtitles/{id}/manual`, which
+   converts it to WebVTT **via ffmpeg** (handles encodings/format quirks) and saves it.
+2. **From Telegram storage:** the dialog lists subtitle files already stored on the drive
+   (`listDriveSubtitleFiles` server action; non-private, non-deleted parts with a subtitle
+   extension). Picking one calls streamer `POST /subtitles/{id}/from-part/{srcPartId}?lang=`,
+   which downloads the small file from the channel via Telethon, converts, saves.
+3. **Extract embedded (softsub):** streamer `POST /subtitles/{id}/extract` starts a background
+   job (status via `GET /subtitles/{id}/extract/status`, polled by the dialog): it reuses a
+   still-cached original or **re-downloads the original from Telegram** (the compressed copy has
+   its subtitle streams stripped by the transcode), ffprobes the subtitle streams, and extracts
+   every **text** stream (`subrip/ass/mov_text/webvtt/…`) to a track named after its language tag
+   (ISO-639-2 → 2-letter; collisions get a letter suffix). **Bitmap** streams (PGS/DVD) are
+   reported as unsupported — they'd need OCR.
+
+The language comes from a dialog dropdown, but a file named like `Movie.id.srt` overrides it.
+Saving any manual track writes the part's **`.done` marker** (`"manual"`), so the STT backfill
+never overwrites a user-provided track with a generated one. After a track lands, the dialog
+remounts the player (`subsBump` key) so the new language appears in the CC menu immediately.
+
 ## E5. Private space (PIN-gated hiding)
 
 A parallel drive distinguished by `items.is_private` / `folders.is_private` (default 0 = Main):
