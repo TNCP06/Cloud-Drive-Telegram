@@ -418,7 +418,18 @@ export function KeptFilesModal({
                   {fmtSize(f.size)} · expires {f.expiresAt} UTC
                 </div>
               </div>
-              <a className="btn subtle" href={`/api/kept/${f.id}`} download={f.name}>
+              {/\.(mp4|m4v|webm|mkv|mov|mp3|m4a|ogg|flac|wav|jpe?g|png|gif|webp)$/i.test(f.name) && (
+                <a
+                  className="btn subtle"
+                  title="Play in a new tab"
+                  href={`/api/kept/${f.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icon name="video" size={15} />
+                </a>
+              )}
+              <a className="btn subtle" title="Download" href={`/api/kept/${f.id}`} download={f.name}>
                 <Icon name="download" size={15} />
               </a>
               <button

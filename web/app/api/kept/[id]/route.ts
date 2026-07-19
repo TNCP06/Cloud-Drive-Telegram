@@ -54,10 +54,22 @@ export async function GET(
   }
 
   const fileName = String(rs.rows[0].file_name || "download.bin");
+  // Playable types get their real mime + inline disposition, so opening the URL in a tab streams
+  // it in the browser's native player (Range support above gives seeking). The modal's Download
+  // button uses the <a download> attribute, which forces a download regardless of disposition.
+  const MIME: Record<string, string> = {
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg",
+    ".flac": "audio/flac", ".wav": "audio/wav", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
+  };
+  const ext = path.extname(fileName).toLowerCase();
+  const mime = MIME[ext];
   const headers = new Headers({
-    "content-type": "application/octet-stream",
+    "content-type": mime || "application/octet-stream",
     "accept-ranges": "bytes",
-    "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    "content-disposition":
+      `${mime ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
   });
 
   let start = 0;
