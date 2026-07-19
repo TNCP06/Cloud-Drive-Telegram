@@ -226,6 +226,7 @@ export function DriveApp({
   const [showKept, setShowKept] = useState(false);
   // Kept video playing in the Plyr modal (same player as drive videos, src = /api/kept/<id>).
   const [keptPlay, setKeptPlay] = useState<{ id: number; name: string } | null>(null);
+  const keptViewerRef = useRef<HTMLDivElement>(null);
   const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
   // Standalone folder details popup (Alt+Enter / kebab Detail / toolbar Details).
   const [folderDetail, setFolderDetail] = useState<Folder | null>(null);
@@ -481,10 +482,20 @@ export function DriveApp({
     return () => clearInterval(t);
   }, [showKept, keptFiles]);
 
-  // Esc closes the kept-video player.
+  // Esc closes the kept-video player; F toggles fullscreen (same keys as the drive-video viewer).
   useEffect(() => {
     if (!keptPlay) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setKeptPlay(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        else setKeptPlay(null);
+      } else if (e.key === "f" || e.key === "F") {
+        const el = keptViewerRef.current;
+        if (!el) return;
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        else el.requestFullscreen?.().catch(() => {});
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [keptPlay]);
@@ -2109,18 +2120,40 @@ export function DriveApp({
         />
       )}
 
-      {/* Kept-video player — same Plyr player as drive videos, fed by /api/kept (Range-capable). */}
+      {/* Kept-video player — the same full-screen immersive viewer as drive videos (top bar,
+          fullscreen, Esc/F keys), fed by /api/kept (Range-capable). No filmstrip/subtitles/
+          seek-preview: a kept file isn't a Telegram part, so it has no partId to key those off. */}
       {keptPlay && (
         <>
-          <div className="viewer-scrim" style={{ zIndex: 340 }} onClick={() => setKeptPlay(null)} />
-          <div className="kept-player">
-            <div className="kp-head">
-              <span className="kp-name" title={keptPlay.name}>{keptPlay.name}</span>
-              <button className="btn subtle" onClick={() => setKeptPlay(null)} aria-label="Close player">
-                <Icon name="close" size={16} />
-              </button>
+          <div className="viewer-scrim" style={{ zIndex: 340 }} />
+          <div ref={keptViewerRef} className="viewer has-video-stage" style={{ zIndex: 341 }}>
+            <div className="viewer-stage">
+              <VideoPlayer src={`/api/kept/${keptPlay.id}`} />
             </div>
-            <VideoPlayer src={`/api/kept/${keptPlay.id}`} />
+            <div className="viewer-top">
+              <span className="viewer-name">{keptPlay.name}</span>
+              <div className="viewer-tools">
+                <a className="viewer-iconbtn" href={`/api/kept/${keptPlay.id}`} download={keptPlay.name} title="Download">
+                  <Icon name="download" size={17} />
+                </a>
+                <button
+                  className="viewer-iconbtn"
+                  onClick={() => {
+                    const el = keptViewerRef.current;
+                    if (!el) return;
+                    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+                    else el.requestFullscreen?.().catch(() => {});
+                  }}
+                  title="Fullscreen (F)"
+                >
+                  <Icon name="expand" size={17} />
+                </button>
+                <span className="viewer-sep" />
+                <button className="viewer-iconbtn" onClick={() => setKeptPlay(null)} title="Close (Esc)">
+                  <Icon name="close" size={17} />
+                </button>
+              </div>
+            </div>
           </div>
         </>
       )}
