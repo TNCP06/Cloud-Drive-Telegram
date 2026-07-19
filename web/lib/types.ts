@@ -70,6 +70,15 @@ export interface UploadJob {
   updatedAt: number;
 }
 
+// Unpack output kept on the VPS instead of re-uploaded to Telegram (> 2 GB).
+// Auto-deleted by the unpack worker at expiresAt; delete-now via deleteKeptFile.
+export interface KeptFile {
+  id: number;
+  name: string;
+  size: number;       // bytes
+  expiresAt: string;  // "YYYY-MM-DD HH:MM:SS" UTC
+}
+
 export interface BotStatus {
   online: boolean;
   lastSeen: number | null;

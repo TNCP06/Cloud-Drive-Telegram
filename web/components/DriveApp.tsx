@@ -6,7 +6,7 @@ import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { Icon } from "@/lib/icons";
 import { fmtSize } from "@/lib/format";
 import { TAG_COLORS } from "@/lib/kinds";
-import type { DriveFile, Tag, Folder } from "@/lib/types";
+import type { DriveFile, Tag, Folder, KeptFile } from "@/lib/types";
 import {
   type GroupKey,
   GROUP_OPTIONS,
@@ -49,6 +49,7 @@ import {
   RenameFolderModal,
   MoveToFolderModal,
   UnpackModal,
+  KeptFilesModal,
   FolderDetailsModal,
   EmptyState,
   ConfirmEmptyTrash,
@@ -61,6 +62,8 @@ import {
   updateMetadata,
   unpackArchive,
   getUnpackStatus,
+  listKeptFiles,
+  deleteKeptFile,
   createFolder,
   renameFolder,
   deleteFolder,
@@ -199,6 +202,9 @@ export function DriveApp({
   const [unpackTrack, setUnpackTrack] = useState<
     { itemId: number; name: string; status: string; progress: number; message: string } | null
   >(null);
+  // Unpack outputs > 2 GB kept on the VPS (unpack_kept): pill → modal with download/delete-now.
+  const [keptFiles, setKeptFiles] = useState<KeptFile[]>([]);
+  const [showKept, setShowKept] = useState(false);
   const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
   // Standalone folder details popup (Alt+Enter / kebab Detail / toolbar Details).
   const [folderDetail, setFolderDetail] = useState<Folder | null>(null);
@@ -437,6 +443,12 @@ export function DriveApp({
     const t = setTimeout(() => setUnpackTrack(null), 2500);
     return () => clearTimeout(t);
   }, [unpackTrack?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Kept-on-server unpack outputs (> 2 GB): load on mount, reload when an unpack reaches a
+  // terminal state (its big files may have just been kept).
+  useEffect(() => {
+    listKeptFiles().then(setKeptFiles).catch(() => {});
+  }, [unpackTrack?.status]);
 
   /* ---- counts ---- */
   const counts: Counts = useMemo(() => {
@@ -1995,6 +2007,28 @@ export function DriveApp({
           <span className="spinner" />
           Unpacking {unpackTrack.name}: {unpackTrack.progress}% — {unpackTrack.message || unpackTrack.status}
         </div>
+      )}
+
+      {/* Unpack outputs > 2 GB kept on the VPS — pill opens the download/delete-now list. */}
+      {keptFiles.length > 0 && !unpackTrack && (
+        <button className="saving-pill" style={{ cursor: "pointer" }} onClick={() => setShowKept(true)}>
+          <Icon name="archive" size={15} />
+          {keptFiles.length} file{keptFiles.length > 1 ? "s" : ""} kept on server
+        </button>
+      )}
+
+      {showKept && (
+        <KeptFilesModal
+          files={keptFiles}
+          onClose={() => setShowKept(false)}
+          onDelete={(id) =>
+            startTransition(async () => {
+              const r = await deleteKeptFile(id);
+              if (!r.ok) setToast(r.error ?? "Failed to delete the kept file.");
+              setKeptFiles(await listKeptFiles());
+            })
+          }
+        />
       )}
 
       {toast && (

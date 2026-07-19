@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/lib/icons";
+import { fmtSize } from "@/lib/format";
 import type { DriveFile, Folder } from "@/lib/types";
 import type { FolderStat } from "./DriveApp";
 
@@ -371,6 +372,68 @@ export function UnpackModal({
           </button>
           <button className="btn primary" onClick={() => onUnpack(password)}>
             Unpack
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Unpack outputs > 2 GB are kept on the VPS instead of re-uploaded to Telegram. This lists them
+// with a download link (/api/kept/[id]) and a delete-now button; the unpack worker auto-deletes
+// each file at its expiry anyway.
+export function KeptFilesModal({
+  files,
+  onClose,
+  onDelete,
+}: {
+  files: { id: number; name: string; size: number; expiresAt: string }[];
+  onClose: () => void;
+  onDelete: (id: number) => void;
+}) {
+  return (
+    <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="dialog" style={{ maxWidth: 480 }}>
+        <div className="dhead">
+          <h2>Files kept on server</h2>
+        </div>
+        <div className="dbody">
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--ink-2)" }}>
+            Unpacked files over 2 GB are too big for Telegram, so they stay on the server until they
+            expire. Download them before then, or delete them now to free disk space.
+          </p>
+          {files.length === 0 && (
+            <p style={{ margin: 0, fontSize: 13, color: "var(--faint)" }}>Nothing kept right now.</p>
+          )}
+          {files.map((f) => (
+            <div
+              key={f.id}
+              style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line-2)" }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.name}>
+                  {f.name}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--faint)" }}>
+                  {fmtSize(f.size)} · expires {f.expiresAt} UTC
+                </div>
+              </div>
+              <a className="btn subtle" href={`/api/kept/${f.id}`} download={f.name}>
+                <Icon name="download" size={15} />
+              </a>
+              <button
+                className="btn subtle"
+                title="Delete from server now"
+                onClick={() => onDelete(f.id)}
+              >
+                <Icon name="trash" size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onClose}>
+            Close
           </button>
         </div>
       </div>

@@ -66,10 +66,18 @@ Worker: `start_workers` (spawn `PIKPAK_MAX_CONCURRENT` `_worker_loop` tasks in `
 `_claim_next` (atomic `UPDATE … FOR UPDATE SKIP LOCKED`, returns `source`), `_process` (resolve
 drive → `_rclone_copy` with retry+backoff + slow-transfer flags → parse `--stats-one-line` `%` →
 throttled edit → hand off to `upload_jobs`, choosing `part_size = DRIVE_SPLIT_PART_MB` for oversized
-non-media so the watcher splits it, else `4096`; staging wiped on failure). `_classify_rclone_error`
+non-media so the watcher splits it, else `4096`; staging wiped on failure). Progress writes carry
+speed **and an ETA** (`_fmt_eta`, session-average rate) into `download_jobs.speed` + the message.
+**Pause/Resume/Cancel buttons** on the progress message: `pause_download` (`dlp` → status `paused`;
+worker raises `DownloadPaused` at its next throttled check and releases the job, keeping the
+partial + `bytes_done`), `resume_download` (`dlr` → re-queue, resumes from the last byte),
+`cancel_confirm`/`cancel_dismiss`/`cancel_download` (`dlx` → confirmation reply → `dlxy:<msg_id>`
+sets `failed`/'cancelled by user', partial deleted; refused after the upload handoff).
+`_classify_rclone_error`
 distinguishes native (`rclone config`) from WebDAV (OpenList unreachable vs expired cookie → OpenList
 UI). `_drive_title` files items under the drive's `folder`, mirroring remote subdirs. `ensure_schema`
-(idempotent table+trigger migration + requeue jobs stranded mid-download). Needs **rclone in the bot
+(idempotent table+trigger migration incl. widening the status CHECK with `'paused'` + requeue jobs
+stranded mid-download; `paused` survives restarts). Needs **rclone in the bot
 image** + host `rclone.conf` bind-mounted; downloads land in the shared `staging` volume. **Env:**
 `PIKPAK_*`, `DRIVES_JSON`, `DRIVE_SPLIT_PART_MB`, `RCLONE_BIN`. OpenList infra + runbook:
 [`infra/openlist/`](../infra/openlist/README.md). One-check: `test_pikpak.py`.
@@ -104,9 +112,12 @@ password in the same statement** — a CTE reads it before the UPDATE nulls it),
 (Telethon-download every part → ordered binary concat → the archive), `_extract` (async `7z x -p…`;
 `-p` always passed so it never blocks on a prompt), `_stage_outputs` (each extracted file → own
 staging dir + an `upload_jobs` row so the existing pipeline uploads + the bot indexes it; title nests
-under `<archive> (unpacked)/…`), `_process` (disk-guard `size×3` → download → extract → stage →
-cleanup; **keeps the original archive**), `ensure_schema`, `worker_loop`. Password: never logged,
-passed to 7z via `-p` (argv, single-user VPS).
+under `<archive> (unpacked)/…`; **files > 2 GB are kept on the VPS instead**: moved to
+`_unpack/_keep/<jid>/…` + an `unpack_kept` row with `expires_at` = now + `UNPACK_KEEP_TTL_H` (72 h) —
+the web lists them with download/delete-now, `_sweep_keep` auto-deletes them at expiry from the idle
+loop), `_process` (disk-guard `size×2.3` → download → extract → stage →
+cleanup; **keeps the original archive**), `ensure_schema` (also creates `unpack_kept`),
+`worker_loop`. Password: never logged, passed to 7z via `-p` (argv, single-user VPS).
 
 ### `worker.py` — standalone upload CLI (Telethon, **laptop**)
 Same upload logic as the watcher but argparse-driven (`archive` / `media` subcommands).
@@ -292,7 +303,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   Item (`items.ts`): `toggleFavorite`,
   `softDelete`, `restore`, `purgeNow` (on-demand permanent delete of a trashed item — Telegram
   `deleteMessage` + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
-  intentionally NOT changed on rename).
+  intentionally NOT changed on rename), `unpackArchive`/`getUnpackStatus` (queue/poll `unpack_jobs`),
+  `listKeptFiles`/`deleteKeptFile` (unpack outputs > 2 GB kept on the VPS in `unpack_kept` —
+  list them / delete file + row now; the web shares the `staging` volume).
   Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`,
   `moveFolderToFolder` (reparent; rejects cycles into self/descendants).
   Bulk ops: `bulkToggleFavorite`, `bulkSoftDelete`, `bulkRestore`, `bulkPurgeNow`.
@@ -335,6 +348,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `<track>`s.
 - `api/seek-preview/[partId]/route.ts` and `api/seek-preview/[partId]/sprite/route.ts` — cookie-auth proxies to
   the streamer's `/seek-preview/...` endpoints (VTT with rewritten sprite URLs + JPEG sprite sheet).
+- `api/kept/[id]/route.ts` (`nodejs` runtime) — downloads a **kept unpack output** (`unpack_kept`)
+  straight off the shared staging volume (`/staging/_unpack/_keep/<rel_path>`); own cookie-auth check
+  (same pattern as `/api/stream`), single-Range support so a multi-GB download can resume.
 - `api/thumb/[itemId]/route.ts` (`nodejs` runtime) — serves an item's **cover thumbnail** bytes
   (first part by `channel_msg_id`) with `Cache-Control: public, max-age=600, stale-while-revalidate`.
   Keeps the cover out of the main page payload so the grid stays light at any scale; auth is enforced
@@ -414,7 +430,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   mobile via CSS). Folders render in their own compact `.grid.folders` above the file grid. Its modals +
   empty state were extracted to `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete` — folder-aware
   message, `CreateFolderModal`, `RenameFolderModal`, `MoveToFolderModal`, `FolderDetailsModal` — the
-  standalone folder "Properties" popup, `EmptyState`). `MoveToFolderModal` takes `moveItemIds` +
+  standalone folder "Properties" popup, `EmptyState`, `KeptFilesModal` — the "files kept on server"
+  list (unpack outputs > 2 GB): download via `/api/kept/[id]` + delete-now, opened from a pill in
+  `DriveApp` when `listKeptFiles()` is non-empty). `MoveToFolderModal` takes `moveItemIds` +
   `moveFolderIds` so one dialog moves any mix of items + folders (excluding each moving folder's own
   subtree as a target) and offers a cross-space destination (Move to Private / Move to Main drive). `PrivateLock.tsx` —
   the phone-style PIN keypad (also keyboard-typable); fixed **6-digit** PIN that **auto-submits** the

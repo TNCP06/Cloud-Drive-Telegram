@@ -66,7 +66,7 @@ _SPEED = re.compile(r"([\d.]+\s*[KMGTP]?i?B/s)")   # rclone one-line speed field
 _LOG_PREFIX = re.compile(r"^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\s+\S+\s*:\s*")
 _STATUS_ICON = {
     "queued": "🕒", "downloading": "⬇️", "downloaded": "📦",
-    "uploading": "⬆️", "done": "✅", "failed": "❌",
+    "uploading": "⬆️", "done": "✅", "failed": "❌", "paused": "⏸",
 }
 # media kind → watcher uploads whole as media (streamable video / photo → thumbnail + preview);
 # everything else → document. The watcher normalises awkward photo formats (e.g. AVIF saved as
@@ -79,6 +79,28 @@ _MEDIA_EXTS = {
 
 class PikpakError(Exception):
     """A user-facing rclone/PikPak failure (message is safe to send to Telegram)."""
+
+
+class DownloadCancelled(Exception):
+    """The user confirmed Cancel — the worker stops and cleans up staging."""
+
+
+class DownloadPaused(Exception):
+    """The user tapped Pause — the worker releases the job (status='paused'), KEEPING the partial
+    file + bytes_done. Resume re-queues it and the normal resumable download continues from the
+    last byte. Because the worker session ends, the no-progress stall timer stops with it."""
+
+
+# Buttons on the progress message. callback_data is constant: handlers find the job by the
+# (chat_id, message_id) of the message the button sits on (cancel-confirm carries the message id).
+_CANCEL_KB = InlineKeyboardMarkup([[
+    InlineKeyboardButton("⏸ Pause", callback_data="dlp"),
+    InlineKeyboardButton("✖️ Cancel", callback_data="dlx"),
+]])
+_PAUSED_KB = InlineKeyboardMarkup([[
+    InlineKeyboardButton("▶️ Resume", callback_data="dlr"),
+    InlineKeyboardButton("✖️ Cancel", callback_data="dlx"),
+]])
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +116,15 @@ def human_size(n) -> str:
 
 def _is_media(fname: str) -> bool:
     return os.path.splitext(fname)[1].lower() in _MEDIA_EXTS
+
+
+def _fmt_eta(secs: float) -> str:
+    secs = int(secs)
+    if secs >= 3600:
+        return f"{secs // 3600}h {secs % 3600 // 60}m"
+    if secs >= 60:
+        return f"{secs // 60}m {secs % 60}s"
+    return f"{secs}s"
 
 
 def _drive_title(remote_path: str, fname: str, drive: dict) -> str:
@@ -205,7 +236,8 @@ async def _reclaim_orphan_staging(db) -> int:
     except OSError:
         return 0
     rs = await db.execute(
-        "SELECT id FROM download_jobs WHERE status IN ('queued','downloading','downloaded','uploading')")
+        "SELECT id FROM download_jobs "
+        "WHERE status IN ('queued','downloading','downloaded','uploading','paused')")
     active = {str(r[0]) for r in rs.rows}
     freed = 0
     for n in names:
@@ -262,7 +294,7 @@ async def _claim_next(db):
 # ---------------------------------------------------------------------------
 # Progress-message editing (throttled)
 # ---------------------------------------------------------------------------
-async def _safe_edit(bot, job, text, state, force=False):
+async def _safe_edit(bot, job, text, state, force=False, kb=None):
     now = time.monotonic()
     if not force and now - state["last_edit"] < EDIT_THROTTLE_S:
         return
@@ -270,7 +302,8 @@ async def _safe_edit(bot, job, text, state, force=False):
     if not job.get("chat_id") or not job.get("message_id"):
         return
     try:
-        await bot.edit_message_text(chat_id=job["chat_id"], message_id=job["message_id"], text=text)
+        await bot.edit_message_text(chat_id=job["chat_id"], message_id=job["message_id"], text=text,
+                                    reply_markup=kb)
     except Exception:  # noqa: BLE001  (message unchanged / deleted / rate-limited — non-fatal)
         pass
 
@@ -321,6 +354,7 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
     done = min(int(job.get("bytes_done") or 0), size)
     now = time.monotonic()
     state["spd_bytes"], state["spd_t"] = done, now
+    state["done0"], state["t0"] = done, now  # session anchor for the ETA's average rate
     win_bytes, win_t = done, now  # no-progress window anchor
 
     while done < size:
@@ -359,10 +393,27 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
                     if now - state["last_db"] >= DB_THROTTLE_S:
                         pct = min(99, int(done / size * 100)) if size else 0
                         spd = _speed_str(done - state["spd_bytes"], now - state["spd_t"])
+                        # ETA from the session-average rate — steadier than the 5 s window when the
+                        # drive throttles. Skipped for the first ~15 s (too little data to be honest).
+                        avg = ((done - state["done0"]) / (now - state["t0"])
+                               if now - state["t0"] > 15 else 0)
+                        eta = (f" · ETA {_fmt_eta((size - done) / avg)}"
+                               if avg > 0 and size > done else "")
                         state["spd_bytes"], state["spd_t"], state["last_db"] = done, now, now
-                        await _set(db, job["id"], progress=pct, speed=spd, bytes_done=done)
+                        # Cancel/pause check: the buttons flip status to 'failed'/'paused'
+                        # (see cancel_download / pause_download).
+                        rs = await db.execute(
+                            "SELECT status FROM download_jobs WHERE id=?", [job["id"]])
+                        st = rs.rows[0][0] if rs.rows else None
+                        if st in ("failed", "paused"):
+                            proc.kill(); await proc.wait()
+                            await _set(db, job["id"], bytes_done=done)
+                            raise DownloadCancelled() if st == "failed" else DownloadPaused()
+                        await _set(db, job["id"], progress=pct, speed=spd + eta, bytes_done=done)
                         await _safe_edit(
-                            bot, job, f"⬇️ {fname}\n{human_size(done)} / {human_size(size)} ({pct}%, {spd})", state)
+                            bot, job,
+                            f"⬇️ {fname}\n{human_size(done)} / {human_size(size)} ({pct}%, {spd}{eta})",
+                            state, kb=_CANCEL_KB)
             await proc.wait()
         finally:
             if proc.returncode is None:
@@ -389,6 +440,7 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
                         job["id"], done, size, RECOVER_BACKOFF_S)
             await asyncio.sleep(RECOVER_BACKOFF_S)
             win_bytes, win_t = done, time.monotonic()  # auth-wait is not a stall — reset the window
+            state["done0"], state["t0"] = done, win_t   # …and not part of the ETA's average either
             continue
         log.warning("PikPak job #%s resumable cat interrupted at %s/%s (rc=%s) — resuming",
                     job["id"], done, size, proc.returncode)
@@ -401,7 +453,8 @@ async def _process(bot, db, job):
     drive = resolve_drive(job.get("source")) or resolve_drive("pikpak")
     dst = os.path.join(PIKPAK_STAGING_DIR, str(jid))
     state = {"last_edit": 0.0, "last_pct": -1, "last_db": 0.0, "start": time.monotonic()}
-    await _safe_edit(bot, job, f"⬇️ Downloading {fname} ({human_size(size)}) …", state, force=True)
+    await _safe_edit(bot, job, f"⬇️ Downloading {fname} ({human_size(size)}) …", state,
+                     force=True, kb=_CANCEL_KB)
     try:
         os.makedirs(dst, exist_ok=True)
         # Run-time disk verify before the download reserves the full size: reclaim orphaned staging,
@@ -445,6 +498,18 @@ async def _process(bot, db, job):
         # updates status + is a defensive backstop.)
         if upload_id:
             asyncio.create_task(_track_upload(bot, db, dict(job), upload_id, dst))
+    except DownloadCancelled:
+        # Status/error were already set by cancel_download; just clean up and confirm.
+        shutil.rmtree(dst, ignore_errors=True)
+        await _safe_edit(bot, job, f"✖️ Download cancelled: {fname}", state, force=True)
+        log.info("PikPak job #%s cancelled mid-download", jid)
+    except DownloadPaused:
+        # KEEP the partial + reserved file — Resume re-queues the job and the resumable download
+        # continues from bytes_done. The stall timer died with this session, so pause never
+        # counts as no-progress time.
+        await _safe_edit(bot, job, f"⏸ Paused: {fname} — progress kept; tap Resume to continue.",
+                         state, force=True, kb=_PAUSED_KB)
+        log.info("PikPak job #%s paused by user", jid)
     except Exception as e:  # noqa: BLE001
         shutil.rmtree(dst, ignore_errors=True)  # clean up staging on failure
         await _set(db, jid, status="failed", error=str(e)[:400])
@@ -518,7 +583,7 @@ async def ensure_schema(db):
             filename    TEXT NOT NULL,
             size        BIGINT NOT NULL DEFAULT 0,
             status      TEXT NOT NULL DEFAULT 'queued'
-                          CHECK (status IN ('queued','downloading','downloaded','uploading','done','failed')),
+                          CHECK (status IN ('queued','downloading','downloaded','uploading','done','failed','paused')),
             progress    INTEGER NOT NULL DEFAULT 0,
             speed       TEXT,
             bytes_done  BIGINT NOT NULL DEFAULT 0,
@@ -532,6 +597,11 @@ async def ensure_schema(db):
     await db.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status)")
     await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS speed TEXT")            # existing DBs
     await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS bytes_done BIGINT NOT NULL DEFAULT 0")
+    # Existing DBs: widen the status CHECK to allow 'paused' (drop + re-add is idempotent).
+    await db.execute("ALTER TABLE download_jobs DROP CONSTRAINT IF EXISTS download_jobs_status_check")
+    await db.execute(
+        "ALTER TABLE download_jobs ADD CONSTRAINT download_jobs_status_check CHECK "
+        "(status IN ('queued','downloading','downloaded','uploading','done','failed','paused'))")
     await db.execute(
         "CREATE OR REPLACE FUNCTION notify_pikpak_change() RETURNS trigger "
         "LANGUAGE plpgsql AS $func$ BEGIN "
@@ -630,7 +700,9 @@ async def start_download(message, db, remote_path, drive_key="pikpak"):
             f"Delete some stored files or clear the video cache on the server, then retry.")
         return
     split_note = " (will be uploaded in parts)" if size > PIKPAK_MAX_BYTES else ""
-    sent = await message.reply_text(f"🗂 Queued {fname} ({human_size(size)}){split_note} for download…")
+    sent = await message.reply_text(
+        f"🗂 Queued {fname} ({human_size(size)}){split_note} for download…",
+        reply_markup=_CANCEL_KB)
     rs = await db.execute(
         "INSERT INTO download_jobs (source, remote_path, filename, size, status, chat_id, message_id) "
         "VALUES (?, ?, ?, ?, 'queued', ?, ?) RETURNING id",
@@ -663,6 +735,115 @@ async def do_ls(message, folder, drive_key="pikpak"):
     header = f"📁 {loc}  ({len(names)} entries)\n\n"
     # Plain text (no parse_mode): filenames can contain markdown/HTML-breaking chars.
     await message.reply_text(header + "\n".join(shown) + more)
+
+
+async def cancel_confirm(query):
+    """First tap on ✖️ Cancel ('dlx') → ask for confirmation in a small reply, so a mis-tap can't
+    kill a long download. The Yes button carries the progress message's id (dlxy:<msg_id>)."""
+    msg = query.message
+    if msg is None:
+        return
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes, cancel it", callback_data=f"dlxy:{msg.message_id}"),
+        InlineKeyboardButton("↩️ No, keep it", callback_data="dlxn"),
+    ]])
+    await msg.reply_text("❓ Cancel this download? Progress will be lost.", reply_markup=kb)
+
+
+async def cancel_dismiss(query):
+    """'No' on the cancel confirmation ('dlxn') → just remove the confirmation message."""
+    try:
+        await query.message.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def cancel_download(query, db, progress_msg_id):
+    """Confirmed cancel ('dlxy:<msg_id>'). Allowed while queued/downloading/paused — once the file
+    is handed to the upload pipeline (downloaded/uploading) it's too late, which is what keeps
+    cancel from ever colliding with the Telegram-channel upload.
+    ponytail: reuses status='failed' — a dedicated 'cancelled' status adds nothing."""
+    msg = query.message  # the confirmation reply
+    if msg is None:
+        return
+    try:
+        pmid = int(progress_msg_id)
+    except (TypeError, ValueError):
+        return
+    rs = await db.execute(
+        "SELECT id, filename, status FROM download_jobs WHERE chat_id=? AND message_id=?",
+        [msg.chat_id, pmid],
+    )
+    row = rs.rows[0] if rs.rows else None
+    try:
+        await msg.delete()  # the confirmation prompt is done either way
+    except Exception:  # noqa: BLE001
+        pass
+    if not row or row[2] not in ("queued", "downloading", "paused"):
+        await msg.get_bot().send_message(
+            msg.chat_id, "⚠️ Too late to cancel — this download already finished or is uploading.")
+        return
+    jid, fname, prev = row
+    await db.execute(
+        "UPDATE download_jobs SET status='failed', error='cancelled by user', updated_at=now_text() "
+        "WHERE id=? AND status IN ('queued','downloading','paused')", [jid])
+    if prev != "downloading":
+        # No worker holds a queued/paused job → delete the partial here; a downloading job's worker
+        # notices the flip within ~5 s and cleans up itself.
+        shutil.rmtree(os.path.join(PIKPAK_STAGING_DIR, str(jid)), ignore_errors=True)
+        try:
+            await msg.get_bot().edit_message_text(
+                chat_id=msg.chat_id, message_id=pmid, text=f"✖️ Download cancelled: {fname}")
+        except Exception:  # noqa: BLE001
+            pass
+    log.info("Download job #%s cancelled by user (was %s)", jid, prev)
+
+
+async def pause_download(query, db):
+    """⏸ Pause ('dlp'): flip the job to 'paused'. A queued job simply won't be claimed; a
+    downloading job's worker releases it at its next throttled check (≤ ~5 s), keeping the partial
+    file and bytes_done. The stall/give-up timers stop with the worker session."""
+    msg = query.message
+    if msg is None:
+        return
+    rs = await db.execute(
+        "UPDATE download_jobs SET status='paused', updated_at=now_text() "
+        "WHERE chat_id=? AND message_id=? AND status IN ('queued','downloading') "
+        "RETURNING id, filename",
+        [msg.chat_id, msg.message_id],
+    )
+    if not rs.rows:
+        await msg.reply_text("⚠️ Can't pause — this download already finished or is uploading.")
+        return
+    jid, fname = rs.rows[0]
+    try:
+        await msg.edit_text(f"⏸ Paused: {fname} — progress kept; tap Resume to continue.",
+                            reply_markup=_PAUSED_KB)
+    except Exception:  # noqa: BLE001
+        pass
+    log.info("Download job #%s paused by user", jid)
+
+
+async def resume_download(query, db):
+    """▶️ Resume ('dlr'): re-queue a paused job — a worker re-claims it and the resumable download
+    continues from bytes_done."""
+    msg = query.message
+    if msg is None:
+        return
+    rs = await db.execute(
+        "UPDATE download_jobs SET status='queued', error=NULL, updated_at=now_text() "
+        "WHERE chat_id=? AND message_id=? AND status='paused' RETURNING id, filename",
+        [msg.chat_id, msg.message_id],
+    )
+    if not rs.rows:
+        await msg.reply_text("⚠️ Nothing to resume here.")
+        return
+    jid, fname = rs.rows[0]
+    try:
+        await msg.edit_text(f"🕒 Resuming {fname}…", reply_markup=_CANCEL_KB)
+    except Exception:  # noqa: BLE001
+        pass
+    log.info("Download job #%s resumed by user", jid)
 
 
 async def jobs_text(db) -> str:

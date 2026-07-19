@@ -116,10 +116,23 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    `rclone cat <remote:path> --offset <bytes_done>` streams from the last saved byte. Progress persists
    in `download_jobs.bytes_done`, so a deploy/restart (ensure_schema requeues `downloading`→`queued`),
    a transient error, or a throttle **resumes from where it left off instead of restarting at 0**.
-   Speed is computed from the byte rate; `download_jobs.progress`/`speed` are written throttled
-   (`pikpak_changed` NOTIFY, shown in `/pikpak_jobs`) and the Telegram message edited live (≤ 1 / ~6 s).
+   Speed is computed from the byte rate, and an **ETA** from the session-average rate (steadier than
+   the instantaneous window on a throttly drive; skipped for the first ~15 s) — both go into
+   `download_jobs.speed` (e.g. `5.12MB/s · ETA 23m`), written throttled (`pikpak_changed` NOTIFY,
+   shown in `/pikpak_jobs`) and into the Telegram message edited live (≤ 1 / ~6 s).
+   **Pause/Cancel buttons**: the progress message carries **⏸ Pause** (`dlp`) + **✖️ Cancel** (`dlx`)
+   while the job is `queued`/`downloading`. *Pause* flips the row to `paused`: the worker releases it
+   at its next throttled check (≤ ~5 s), **keeping** the partial file + `bytes_done`; because the
+   worker session ends, the no-progress stall timer stops too. The message switches to
+   **▶️ Resume** (`dlr`) + Cancel; Resume re-queues the job and the resumable download continues from
+   the last byte. `paused` survives restarts (only `downloading` is requeued on boot) and its staging
+   is protected from the orphan-reclaim. *Cancel* first asks for **confirmation** (a reply with
+   `dlxy:<msg_id>` / `dlxn` buttons — mis-tap safe); confirmed, `cancel_download` sets `failed` /
+   `error='cancelled by user'` and the partial is deleted (by the worker for a running job, directly
+   for queued/paused). Once the file is handed to the upload pipeline (`downloaded`/`uploading`) both
+   are **refused** — so cancel can never collide with the Telegram-channel upload.
    **Give-up policy**: abort only on a genuine no-progress stall (< `DRIVE_STALL_MIN_MB` in
-   `DRIVE_STALL_WINDOW_S`, default 20 MB / 30 min) or the absolute backstop `DRIVE_MAX_DL_SECONDS`
+   `DRIVE_STALL_WINDOW_S`, default 20 MB / 3 h) or the absolute backstop `DRIVE_MAX_DL_SECONDS`
    (default 7 days — multi-day transfers are fine) — a slow-but-advancing transfer is left to finish.
    A permanent error
    (auth/not-found) or give-up → job `failed`, **staging wiped**.
@@ -157,7 +170,8 @@ on the VPS and its contents are re-stored as normal items — the video then str
 2. **Worker** (`unpack.worker_loop`, inside the **watcher** process — it has the Telethon client +
    p7zip). `_claim` grabs the oldest queued job and **scrubs the password in the same statement**
    (CTE reads it, UPDATE nulls it → it never lingers in the DB beyond the seconds before claim).
-3. **Disk-guard** (`size × 3` must be free), then `_download_and_concat` Telethon-downloads every
+3. **Disk-guard** (`size × 2.3` must be free — archive + extracted output; nothing is copied
+   twice since > 2 GB outputs are renamed into `_keep`), then `_download_and_concat` Telethon-downloads every
    part (resuming across Telegram FLOOD_PREMIUM_WAIT) and concatenates them in part order → the
    archive (ordered concat reconstructs both 7z-native multi-volumes and raw binary splits). The
    concatenated archive is **cached** under `_unpack/_cache/<item_id>` so a wrong-password retry
@@ -170,6 +184,13 @@ on the VPS and its contents are re-stored as normal items — the video then str
    `upload_jobs` row (`origin='upload'`, `cleanup_source=1`; **media → streamable**, else document;
    title nests under `<archive> (unpacked)/…`). The existing watcher pipeline (Flow A2 step 4) uploads
    them and the **bot** indexes them (Flow C) — the video appears in the drive, streamable (Flow E2).
+   **Exception — files > 2 GB** (`PIKPAK_MAX_BYTES`): re-uploading would only raw-split them into
+   parts again, so they are **kept on the VPS** instead: moved to `_unpack/_keep/<jid>/…` and
+   recorded in **`unpack_kept`** (`rel_path`, `size`, `expires_at` = now + `UNPACK_KEEP_TTL_H`,
+   default 72 h). The web dashboard shows a *"N file(s) kept on server"* pill → a modal listing them
+   with **Download** (`/api/kept/[id]`, Range-resumable, streams off the shared staging volume) and
+   **Delete now** (`deleteKeptFile` — removes file + row immediately). The worker's idle sweep
+   (`_sweep_keep`, every ~10 min) deletes any file past its expiry.
 5. **Original archive is kept** (never deleted). The worker cleans its own temp dirs; per-file staging
    dirs are cleaned by the watcher after upload. Progress/errors on `unpack_jobs` (`unpack_changed`
    NOTIFY). Password: never logged, passed to 7z via `-p` (argv, single-user VPS).

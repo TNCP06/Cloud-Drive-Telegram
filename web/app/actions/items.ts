@@ -1,7 +1,9 @@
 "use server";
 
+import { promises as fs } from "fs";
+import path from "path";
 import { db } from "@/lib/db";
-import type { Kind } from "@/lib/types";
+import type { Kind, KeptFile } from "@/lib/types";
 import { refresh, resolveTagId } from "./_shared";
 
 // Item server actions for Turso metadata (instant, without touching Telegram).
@@ -186,6 +188,40 @@ export async function getUnpackStatus(
     progress: Number(r.progress ?? 0),
     message: String(r.message ?? ""),
   };
+}
+
+// --- Kept files (unpack outputs > 2 GB, stored on the VPS instead of Telegram) ---------------
+// The unpack worker writes them under /staging/_unpack/_keep + an unpack_kept row with an expiry;
+// the worker's sweep auto-deletes them at expiry. These actions list them and delete one NOW
+// (the web shares the `staging` volume, so it removes the file directly).
+const KEEP_ROOT = path.join(process.env.UPLOAD_STAGING_DIR || "/staging", "_unpack", "_keep");
+
+export async function listKeptFiles(): Promise<KeptFile[]> {
+  const rs = await db.execute(
+    "SELECT id, file_name, size, expires_at FROM unpack_kept ORDER BY id DESC"
+  );
+  return rs.rows.map((r) => ({
+    id: Number(r.id),
+    name: String(r.file_name),
+    size: Number(r.size ?? 0),
+    expiresAt: String(r.expires_at),
+  }));
+}
+
+export async function deleteKeptFile(id: number): Promise<{ ok: boolean; error?: string }> {
+  const rs = await db.execute({
+    sql: "SELECT rel_path FROM unpack_kept WHERE id = ?",
+    args: [id],
+  });
+  if (!rs.rows.length) return { ok: false, error: "File not found." };
+  const full = path.resolve(KEEP_ROOT, String(rs.rows[0].rel_path));
+  if (!full.startsWith(path.resolve(KEEP_ROOT) + path.sep)) {
+    return { ok: false, error: "Invalid path." };
+  }
+  await fs.rm(full, { force: true });
+  await db.execute({ sql: "DELETE FROM unpack_kept WHERE id = ?", args: [id] });
+  refresh();
+  return { ok: true };
 }
 
 export async function bulkToggleFavorite(itemIds: number[], starred: boolean) {

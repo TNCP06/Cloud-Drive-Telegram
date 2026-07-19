@@ -86,6 +86,11 @@ from pikpak import (  # noqa: F401  (remote-download feature: PikPak + WebDAV dr
     start_download as pikpak_start_download,
     do_ls as pikpak_do_ls,
     jobs_text as pikpak_jobs_text,
+    cancel_confirm as pikpak_cancel_confirm,
+    cancel_dismiss as pikpak_cancel_dismiss,
+    cancel_download as pikpak_cancel_download,
+    pause_download as pikpak_pause_download,
+    resume_download as pikpak_resume_download,
     render_browser as pikpak_render_browser,
     browse_navigate as pikpak_browse_navigate,
     ensure_schema as ensure_pikpak_schema,
@@ -764,6 +769,15 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Not a media/document message
         return
 
+    # A file arriving means the user moved on from any pending drive-path prompt. Clear it, or
+    # on_private_text (where the prompt takes priority) would swallow the upload questionnaire's
+    # typed Title as a drive path.
+    if context.user_data.pop("pikpak_await", None):
+        context.user_data.pop("pikpak_drive", None)
+        stale_prompt = context.user_data.pop("pikpak_prompt_id", None)
+        if stale_prompt:
+            await _delete_messages(context, message.chat_id, [stale_prompt])
+
     file_name, file_size = get_file_meta(message)
     auto_meta, _ = derive_media_meta(message)
 
@@ -1137,6 +1151,23 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # PikPak interactive browser navigation (pk:up / pk:cd:N / pk:dl:N).
     if data.startswith("pk:"):
         await pikpak_browse_navigate(query, context, data, db)
+        return
+
+    # Download progress-message buttons (any drive): pause / resume / cancel (with confirmation).
+    if data == "dlp":
+        await pikpak_pause_download(query, db)
+        return
+    if data == "dlr":
+        await pikpak_resume_download(query, db)
+        return
+    if data == "dlx":
+        await pikpak_cancel_confirm(query)
+        return
+    if data == "dlxn":
+        await pikpak_cancel_dismiss(query)
+        return
+    if data.startswith("dlxy:"):
+        await pikpak_cancel_download(query, db, data.split(":", 1)[1])
         return
 
     if data == "upload:cancel":
