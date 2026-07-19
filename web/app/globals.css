@@ -740,18 +740,23 @@ button { font-family: inherit; }
   opacity: 1 !important;
 }
 
-/* Subtitles: stop them bouncing on mouse move WITHOUT touching the control strip.
-   Plyr toggles a translateY(-40px) on .plyr__captions whenever it thinks controls are visible
-   (mouse move flips .plyr--hide-controls) → subtitles jump up/down. We kill that transform so they
-   never move, and lift the whole box with `bottom` so it sits clear ABOVE the seek bar (a previous
-   `padding-bottom` attempt failed because it grew the box upward while its bottom edge stayed at 0,
-   so the box still overlapped — and intercepted — the control strip). pointer-events:none is the
-   guarantee: captions can never swallow a hover/click on the seek bar or steal focus from keyboard
-   shortcuts (mute/M), whatever the exact geometry. */
+/* Subtitles: they must move ONLY when the seek bar is actually shown — not on every mouse move.
+   Plyr's own lift is wrong here: it toggles a translateY on .plyr__captions from the mouse-move
+   `.plyr--hide-controls` root class, but our seek bar only appears on `.plyr__controls:hover /
+   :focus-within` (see above). So a mere mouse move lifted the subtitles while NO seek bar showed.
+   Kill Plyr's transform and pin captions low by default; then lift with `bottom` only when the
+   control strip is actually visible, gated by `:has()` on the exact same hover/focus signal that
+   reveals the seek bar. pointer-events:none keeps captions from ever swallowing a hover/click on
+   the seek bar or stealing keyboard-shortcut focus. */
 .viewer-video .plyr__captions {
   transform: none !important;
-  bottom: 56px;
+  bottom: 16px;
   pointer-events: none;
+  transition: bottom .25s ease;
+}
+.viewer-video .plyr:has(.plyr__controls:hover) .plyr__captions,
+.viewer-video .plyr:has(.plyr__controls:focus-within) .plyr__captions {
+  bottom: 56px;
 }
 
 /* Seek-preview thumbnail popup (Plyr's previewThumbnails) — polished look */
