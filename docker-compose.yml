@@ -65,6 +65,10 @@ services:
       TELEGRAM_LOCAL: "true"
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+      # Same path as the watcher mounts it: the watcher's fast upload path sends
+      # `file:///staging/...` (bot/tg_botapi_upload.py) and the server reads it directly —
+      # bot-account upload = no FLOOD_PREMIUM_WAIT, no bytes over HTTP.
+      - staging:/staging
     ports:
       - "8081:8081"
     restart: unless-stopped
@@ -97,6 +101,8 @@ services:
     env_file: .env
     environment:
       WORKER_OUT_DIR: /staging/_parts
+      # Enables the fast upload path (local Bot API, bot account → no FLOOD_PREMIUM_WAIT).
+      TELEGRAM_API_URL: http://telegram-bot-api:8081
     volumes:
       - staging:/staging
       - ./bot/worker.session:/app/worker.session

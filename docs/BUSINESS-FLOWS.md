@@ -68,14 +68,22 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
    `upload_jobs` row: `origin='upload'`, `cleanup_source=1`, `status='queued'`.
 3. User clicks Start → `status='pending'` (same as Flow A).
 4. **Watcher** `claim_next()` → `process()`: `resolve_staged_file()` finds the file. archive size >
-   part size → **raw streaming split** (`write_window` copies one <2 GB window → `send_file`
-   force_document → delete the part → `set_parts_done(i)`), capping disk at ~1 part; media/small
-   → whole file. Caption `Title | i/total | tags` unchanged.
+   part size → **raw streaming split** (`write_window` copies one <2 GB window → send → delete the
+   part → `set_parts_done(i)`), capping disk at ~1 part; media/small → whole file. Caption
+   `Title | i/total | tags` unchanged. **Transport** (`_send_part`): the fast path posts each part
+   through the **local Bot API server** (`bot/tg_botapi_upload.py`, `file:///staging/…` — the
+   server reads the shared staging volume directly and uploads as the **bot** account, which is
+   NOT subject to the non-premium `FLOOD_PREMIUM_WAIT` throttle that capped Telethon uploads at
+   ~5 MB/s). Telethon (user account) remains the fallback for laptop runs, files outside
+   `/staging`, or any Bot API error.
 5. On success: each part already deleted, the **whole staging dir is removed**, row → `done`.
    On failure: row → `error`; **Retry** (`retryUpload`) resumes from `parts_done` (skips parts
    already on Telegram), not from zero.
-6. **Bot** indexes each new `channel_post` (Flow C). Download reassembly for these items is a
-   plain concat (`copy /b a+b out` / `cat a b > out`), not `7z x`.
+6. **Indexing**: Telethon-sent parts are indexed by the **bot** on each `channel_post` (Flow C).
+   Bot-API-sent parts get **no** channel_post update (Telegram never echoes a bot its own posts),
+   so the watcher indexes them **inline** (`tg_botapi_upload.index_uploaded` — same `db_ops`
+   upserts, same slug rules). Download reassembly for these items is a plain concat
+   (`copy /b a+b out` / `cat a b > out`), not `7z x`.
 
 ---
 

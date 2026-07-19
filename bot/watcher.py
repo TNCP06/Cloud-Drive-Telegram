@@ -46,6 +46,7 @@ from telethon import TelegramClient
 from pg_db import create_client
 
 from worker import normalize_tags, build_caption, safe_name, collect_parts
+import tg_botapi_upload as botapi
 import unpack
 
 load_dotenv()
@@ -246,6 +247,33 @@ def write_window(src: str, offset: int, length: int, dst: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Part send — fast path via local Bot API, Telethon fallback
+# ---------------------------------------------------------------------------
+async def _send_part(client, channel, db, path, caption, as_document, thumb, cb,
+                     *, title, tags, part_no, total, kind) -> int:
+    """Send one part and return its channel message id.
+
+    Fast path: the local telegram-bot-api server (bot account → no FLOOD_PREMIUM_WAIT,
+    reads the file straight off the shared staging volume). The bot never sees its own
+    posts as channel_post updates, so the part is indexed inline here. Any failure — or
+    a file the API server can't see (laptop paths) — falls back to the original Telethon
+    send, which the bot indexes via channel_post as before.
+    """
+    if botapi.available(path):
+        try:
+            msg_id, file_id, _ = await botapi.send_part(
+                path, caption, as_document, STORAGE_CHANNEL_ID)
+            await botapi.index_uploaded(
+                db, title, tags, part_no, total, kind, msg_id,
+                os.path.basename(path), os.path.getsize(path), file_id)
+            return msg_id
+        except Exception as e:  # noqa: BLE001
+            print(f"  [botapi] fast path failed ({e}); falling back to Telethon")
+    msg = await _send_file_smart(client, channel, path, caption, as_document, thumb, cb)
+    return msg.id
+
+
+# ---------------------------------------------------------------------------
 # Media send with graceful photo fallback
 # ---------------------------------------------------------------------------
 async def _send_file_smart(client, channel, path, caption, as_document, thumb, cb):
@@ -418,11 +446,12 @@ async def process(client, db, channel, job):
                     write_window(stream_src, offset, length, part_path)
                     caption = build_caption(title, i, total, tags)
                     print(f"  [{i}/{total}] {os.path.basename(part_path)} ({length} B)")
-                    msg = await client.send_file(
-                        channel, part_path, caption=caption,
-                        force_document=True, progress_callback=make_cb(i),
+                    msg_id = await _send_part(
+                        client, channel, db, part_path, caption, True, None, make_cb(i),
+                        title=title, tags=tags, part_no=i, total=total, kind=kind,
                     )
-                    uploaded_msg_ids.append(msg.id)
+                    uploaded_msg_ids.append(msg_id)
+                    state["pct"] = min(99, int(i / total * 100))
                     try:
                         os.remove(part_path)   # free disk immediately
                     except OSError:
@@ -440,10 +469,13 @@ async def process(client, db, channel, job):
                     part_no = _volume_no(p) or i
                     caption = build_caption(title, part_no, max(total, part_no), tags)
                     print(f"  [{part_no}/{max(total, part_no)}] {os.path.basename(p)}")
-                    msg = await _send_file_smart(
-                        client, channel, p, caption, as_document, thumb_path, make_cb(i)
+                    msg_id = await _send_part(
+                        client, channel, db, p, caption, as_document, thumb_path, make_cb(i),
+                        title=title, tags=tags, part_no=part_no,
+                        total=max(total, part_no), kind=kind,
                     )
-                    uploaded_msg_ids.append(msg.id)
+                    uploaded_msg_ids.append(msg_id)
+                    state["pct"] = min(99, int(i / total * 100))
                     await set_parts_done(db, jid, i)
         finally:
             if thumb_path:

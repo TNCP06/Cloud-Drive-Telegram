@@ -94,6 +94,10 @@ Handles two job origins (`upload_jobs.origin`):
 
 `claim_next` (oldest `pending` → `running`; **preserves `parts_done`** so retries resume),
 `set_progress`/`set_status`, `set_parts_done` (per-part checkpoint), `split_archive` (local 7-Zip),
+`_send_part` (per-part transport: **local Bot API fast path** via `tg_botapi_upload.py` — bot
+account, no FLOOD_PREMIUM_WAIT, `file:///staging/…` read directly by the server, part indexed
+inline via `index_uploaded` because a bot gets no channel_post for its own posts; Telethon
+fallback for laptop paths / API errors),
 `resolve_staged_file` (the single file inside an upload's staging dir), `write_window` (raw byte
 window copy, 8 MB buffer), `make_video_thumbnail` (ffmpeg frame at 1 s → temp JPEG),
 `_store_thumbnails` (background: poll `parts` ~70 s, `INSERT OR IGNORE` thumbnail),
@@ -105,6 +109,13 @@ parts + staging dir on success), `resolve_channel`, `main` (poll loop, 5 s).
 Writes `watcher.pid`. **`ffmpeg`** for media thumbnails; **7-Zip only for `local` archives**.
 Imports `normalize_tags, build_caption, safe_name, collect_parts` from `worker.py`. Also
 `import unpack` → spawns `unpack.worker_loop` in `main` (shares this process's Telethon client + 7z).
+
+### `tg_botapi_upload.py` — fast upload transport (local Bot API, used by the watcher)
+`available(path)` (config + `/staging` visibility gate), `send_part` (sendVideo/Photo/Document with
+a `file://` path — the telegram-bot-api container mounts the staging volume, so the server reads
+the bytes directly and uploads as the bot account → no FLOOD_PREMIUM_WAIT), `index_uploaded`
+(inline `db_ops` indexing — a bot receives no channel_post update for its own posts). **Env:**
+`TELEGRAM_API_URL`, `BOT_TOKEN`, `UPLOAD_VIA_BOT_API` (default on), `BOT_API_VISIBLE_PREFIXES`.
 
 ### `unpack.py` — archive-unpack worker (in the **watcher** process, Telethon + p7zip)
 Extracts a stored multi-part archive item and re-stores its contents as normal (streamable) items,
