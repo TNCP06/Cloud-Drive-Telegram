@@ -3,14 +3,22 @@
 import { db } from "@/lib/db";
 import { revalidatePath, revalidateTag } from "next/cache";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 
-// Slug rules mirror bot/bot.py slugify(): NFKD-fold, drop non-word chars, lower,
+// Slug rules mirror bot/tg_helpers.py slugify(): NFKD-fold, drop non-word chars, lower,
 // collapse whitespace/hyphens. Media items get a "-<msgId>" suffix so titles may repeat.
+// Non-ASCII titles (e.g. CJK) get a stable md5-8 suffix of the ORIGINAL title — otherwise
+// distinct titles strip to the same stub and collide into one item (must stay in sync with
+// the Python twin).
 function slugify(text: string): string {
   // Strip combining diacritical marks (U+0300–U+036F) left over after NFKD folding.
   const folded = text.normalize("NFKD").replace(/[̀-ͯ]/g, "");
   let s = folded.replace(/[^\w\s-]/g, "").trim().toLowerCase();
   s = s.replace(/[-\s]+/g, "-");
+  if (/[^\x00-\x7F]/.test(text)) {
+    const digest = createHash("md5").update(text, "utf8").digest("hex").slice(0, 8);
+    s = s ? `${s}-${digest}` : digest;
+  }
   return s || "untitled";
 }
 

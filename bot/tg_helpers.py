@@ -1,6 +1,7 @@
 """Pure helpers (no I/O): caption parsing, message inspection, thumbnail encoding."""
 
 import base64
+import hashlib
 import io
 import os
 import re
@@ -13,10 +14,22 @@ CAPTION_RE = re.compile(
 
 
 def slugify(text: str) -> str:
-    """Convert a title to a URL-safe, stable slug (unique item key)."""
+    """Convert a title to a URL-safe, stable slug (unique item key).
+
+    Non-ASCII titles (e.g. CJK) would otherwise strip down to nothing or to a shared stub
+    ('偶像歌手 (unpacked)/【介绍】' → 'unpacked'), colliding DISTINCT items into one and breaking
+    indexing on the (item_id, part_number) unique key. A stable hash of the original title keeps
+    distinct titles distinct while identical titles still group (multi-part). Existing items keep
+    their stored slug — slugs are immutable; this only shapes NEW items. Must stay in sync with
+    the TS twin in web/app/upload-bot/actions.ts.
+    """
+    orig = text
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
     text = re.sub(r"[^\w\s-]", "", text).strip().lower()
     text = re.sub(r"[-\s]+", "-", text)
+    if not orig.isascii():
+        digest = hashlib.md5(orig.encode("utf-8")).hexdigest()[:8]
+        text = f"{text}-{digest}" if text else digest
     return text or "untitled"
 
 

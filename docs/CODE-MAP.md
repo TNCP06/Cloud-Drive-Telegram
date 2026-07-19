@@ -19,7 +19,9 @@ approximate and will drift — treat function names as the stable anchor.
 > `stream_compress.py` and seek-preview sprite generation in `stream_seekpreview.py`.
 
 ### `bot.py` (+ `bot_config` / `tg_helpers` / `db_ops` / `indexing`) — indexer + download server + purge
-Pure helpers (`tg_helpers.py`, no I/O): `slugify`, `parse_caption` (the contract regex), `detect_kind`
+Pure helpers (`tg_helpers.py`, no I/O): `slugify` (non-ASCII titles get a stable md5-8 suffix of the
+original title — CJK titles otherwise strip to a shared stub and collide distinct items into one;
+kept in sync with the TS twin in `web/app/upload-bot/actions.ts`), `parse_caption` (the contract regex), `detect_kind`
 (`media` vs `archive`), `get_file_meta` (returns `(file_name, file_size)` — videos/animations
 that lack a `file_name` get a **synthetic name** (`video.mp4`/`animation.mp4`) so the web's
 extension-based type detection can distinguish them from photos, which legitimately have no
