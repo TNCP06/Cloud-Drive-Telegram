@@ -386,10 +386,12 @@ export function KeptFilesModal({
   files,
   onClose,
   onDelete,
+  onExtend,
 }: {
   files: { id: number; name: string; size: number; expiresAt: string }[];
   onClose: () => void;
   onDelete: (id: number) => void;
+  onExtend: (id: number, hours: number | null) => void;
 }) {
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -415,9 +417,29 @@ export function KeptFilesModal({
                   {f.name}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--faint)" }}>
-                  {fmtSize(f.size)} · expires {f.expiresAt} UTC
+                  {fmtSize(f.size)} ·{" "}
+                  {f.expiresAt.startsWith("9999")
+                    ? "kept until you delete it"
+                    : `expires ${f.expiresAt} UTC`}
                 </div>
               </div>
+              <select
+                className="input"
+                style={{ width: 110, padding: "4px 6px", fontSize: 12 }}
+                value=""
+                title="Keep this file longer"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  e.target.value = "";
+                  if (v) onExtend(f.id, v === "inf" ? null : Number(v));
+                }}
+              >
+                <option value="">Keep for…</option>
+                <option value="72">3 more days</option>
+                <option value="168">7 more days</option>
+                <option value="720">30 more days</option>
+                <option value="inf">Until I delete it</option>
+              </select>
               {/\.(mp4|m4v|webm|mkv|mov|mp3|m4a|ogg|flac|wav|jpe?g|png|gif|webp)$/i.test(f.name) && (
                 <a
                   className="btn subtle"

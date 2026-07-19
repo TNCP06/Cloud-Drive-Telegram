@@ -235,6 +235,31 @@ export async function listKeptFiles(): Promise<KeptFile[]> {
   }));
 }
 
+// Far-future sentinel = "permanent" (no schema change; the worker's sweep compares
+// expires_at < now_text() as text, so this never fires).
+const KEPT_PERMANENT = "9999-12-31 00:00:00";
+
+export async function extendKeptFile(
+  id: number,
+  hours: number | null
+): Promise<{ ok: boolean; error?: string }> {
+  if (hours === null) {
+    await db.execute({
+      sql: "UPDATE unpack_kept SET expires_at = ? WHERE id = ?",
+      args: [KEPT_PERMANENT, id],
+    });
+  } else {
+    await db.execute({
+      sql:
+        "UPDATE unpack_kept SET expires_at = to_char((now() AT TIME ZONE 'UTC') " +
+        "+ make_interval(hours => ?), 'YYYY-MM-DD HH24:MI:SS') WHERE id = ?",
+      args: [hours, id],
+    });
+  }
+  refresh();
+  return { ok: true };
+}
+
 export async function deleteKeptFile(id: number): Promise<{ ok: boolean; error?: string }> {
   const rs = await db.execute({
     sql: "SELECT rel_path FROM unpack_kept WHERE id = ?",

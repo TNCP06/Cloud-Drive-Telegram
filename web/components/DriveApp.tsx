@@ -65,6 +65,7 @@ import {
   getActiveUnpack,
   listKeptFiles,
   deleteKeptFile,
+  extendKeptFile,
   createFolder,
   renameFolder,
   deleteFolder,
@@ -2065,6 +2066,13 @@ export function DriveApp({
             startTransition(async () => {
               const r = await deleteKeptFile(id);
               if (!r.ok) setToast(r.error ?? "Failed to delete the kept file.");
+              setKeptFiles(await listKeptFiles());
+            })
+          }
+          onExtend={(id, hours) =>
+            startTransition(async () => {
+              const r = await extendKeptFile(id, hours);
+              if (!r.ok) setToast(r.error ?? "Failed to update the keep time.");
               setKeptFiles(await listKeptFiles());
             })
           }
