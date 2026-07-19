@@ -59,6 +59,9 @@ export interface UploadDefaults {
   // media) instead of using `kind`. Used by the one-click Upload button, which fills
   // everything automatically with no form.
   autoKind?: boolean;
+  // Folder path ("A/B/C") the upload should land in — prefixed onto each title so the
+  // server's folder resolution files the item there (titles split on "/").
+  folderPath?: string;
 }
 
 interface UploadContextValue {
@@ -219,11 +222,12 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
       if (!files.length) return;
       const additions: LocalItem[] = files.map((f) => {
         const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
-        const itTitle = folder
+        let itTitle = folder
           ? stripExt(rel)
           : files.length === 1 && defaults.title.trim()
           ? defaults.title.trim()
           : stripExt(f.name);
+        if (defaults.folderPath) itTitle = `${defaults.folderPath}/${itTitle}`;
         // Auto mode: split big files (archive) and keep the rest as media; otherwise use
         // the form's chosen kind. Tag by the real file type (Image/Video) regardless, so
         // a large video routed to the split pipeline isn't mislabelled "Archive".

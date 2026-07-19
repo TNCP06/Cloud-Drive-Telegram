@@ -20,7 +20,10 @@ TELEGRAM_API_URL = os.environ.get("TELEGRAM_API_URL")
 # rclone pulls a file from the configured remote onto the VPS, then hands it to the
 # existing upload_jobs → watcher pipeline. Oversized files are rejected up front.
 PIKPAK_REMOTE = os.environ.get("PIKPAK_REMOTE", "pikpak")            # rclone remote name
-PIKPAK_MAX_BYTES = int(os.environ.get("PIKPAK_MAX_BYTES", 2 * 1024 * 1024 * 1024))  # 2 GB (MTProto user cap)
+# Telegram's REAL single-file cap: 4000 × 512 KiB upload parts = 2000 MiB, NOT 2 GiB. A file in
+# the 2000 MiB–2 GiB gap fails with "The number of file parts is invalid", so the threshold that
+# decides reject/split/keep must sit at 2000 MiB (matches web SPLIT_THRESHOLD_BYTES).
+PIKPAK_MAX_BYTES = int(os.environ.get("PIKPAK_MAX_BYTES", 2000 * 1024 * 1024))
 PIKPAK_STAGING_DIR = os.environ.get("PIKPAK_STAGING_DIR", "/staging/_pikpak")  # on the shared staging volume
 PIKPAK_MAX_CONCURRENT = int(os.environ.get("PIKPAK_MAX_CONCURRENT", 1))  # active downloads
 PIKPAK_RETRIES = int(os.environ.get("PIKPAK_RETRIES", 3))           # rclone retries before failing

@@ -182,6 +182,20 @@ export function DriveApp({
   const [uploadMenu, setUploadMenu] = useState<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  // Path of the folder currently open ("A/B/C"), so a one-click upload lands where the user
+  // stands — the title prefix routes it through the server's folder resolution (upsert_item
+  // splits titles on "/"), the same mechanism drive downloads use.
+  const folderPathOf = (id: number | null): string => {
+    const segs: string[] = [];
+    let cur = id;
+    while (cur != null) {
+      const f = folders.find((x) => x.id === cur);
+      if (!f) break;
+      segs.unshift(f.name);
+      cur = f.parentId;
+    }
+    return segs.join("/");
+  };
   const startUploadFiles = (list: FileList | null, folder: boolean) => {
     const picked = Array.from(list ?? []);
     if (!picked.length) return;
@@ -191,6 +205,7 @@ export function DriveApp({
       tags: "",
       partSize: DEFAULT_PART_MB,
       autoKind: true,
+      folderPath: folderPathOf(currentFolderId),
     });
     runQueue();
   };
