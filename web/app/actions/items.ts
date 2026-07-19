@@ -172,6 +172,33 @@ export async function unpackArchive(
   return { ok: true };
 }
 
+// Latest ACTIVE (queued/running) unpack job, if any — lets the drive resume its progress pill
+// after a page navigation (the pill's state is client-local and dies on unmount, but the job
+// keeps running server-side).
+export async function getActiveUnpack(): Promise<{
+  itemId: number;
+  name: string;
+  status: string;
+  progress: number;
+  message: string;
+} | null> {
+  const rs = await db.execute(
+    "SELECT u.item_id, i.title, u.status, u.progress, u.message FROM unpack_jobs u " +
+      "JOIN items i ON i.id = u.item_id WHERE u.status IN ('queued','running') " +
+      "ORDER BY u.id DESC LIMIT 1"
+  );
+  if (!rs.rows.length) return null;
+  const r = rs.rows[0];
+  const title = String(r.title);
+  return {
+    itemId: Number(r.item_id),
+    name: title.split("/").pop() || title,
+    status: String(r.status),
+    progress: Number(r.progress ?? 0),
+    message: String(r.message ?? ""),
+  };
+}
+
 // Latest unpack-job state for an item, for the drive's live progress pill. Returns null if never
 // unpacked. status ∈ queued|running|done|failed; progress 0..100; message is the current step/error.
 export async function getUnpackStatus(

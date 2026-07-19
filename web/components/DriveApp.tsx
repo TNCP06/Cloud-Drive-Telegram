@@ -62,6 +62,7 @@ import {
   updateMetadata,
   unpackArchive,
   getUnpackStatus,
+  getActiveUnpack,
   listKeptFiles,
   deleteKeptFile,
   createFolder,
@@ -449,6 +450,20 @@ export function DriveApp({
   useEffect(() => {
     listKeptFiles().then(setKeptFiles).catch(() => {});
   }, [unpackTrack?.status]);
+
+  // Resume the unpack pill after a navigation: the job runs server-side, but pill state is
+  // client-local and dies when DriveApp unmounts (e.g. a visit to /upload).
+  useEffect(() => {
+    getActiveUnpack()
+      .then((a) => {
+        if (a)
+          setUnpackTrack((cur) => cur ?? {
+            itemId: a.itemId, name: a.name, status: a.status,
+            progress: a.progress, message: a.message,
+          });
+      })
+      .catch(() => {});
+  }, []);
 
   /* ---- counts ---- */
   const counts: Counts = useMemo(() => {

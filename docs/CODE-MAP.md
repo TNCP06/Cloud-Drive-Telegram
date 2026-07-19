@@ -306,6 +306,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `softDelete`, `restore`, `purgeNow` (on-demand permanent delete of a trashed item — Telegram
   `deleteMessage` + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
   intentionally NOT changed on rename), `unpackArchive`/`getUnpackStatus` (queue/poll `unpack_jobs`),
+`getActiveUnpack` (latest queued/running job — resumes the progress pill after a navigation),
   `listKeptFiles`/`deleteKeptFile` (unpack outputs > 2 GB kept on the VPS in `unpack_kept` —
   list them / delete file + row now; the web shares the `staging` volume).
   Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`,
