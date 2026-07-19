@@ -12,7 +12,8 @@ import { useUpload, type LocalItem } from "@/components/UploadProvider";
 // app's card/popup surfaces.
 export function FloatingUploadPanel() {
   const pathname = usePathname();
-  const { items, speed, runQueue, removeLocal, clearDone } = useUpload();
+  const { items, speed, runQueue, pauseRun, cancelRun, removeLocal, clearDone, running, readyCount, uploadingNow } =
+    useUpload();
   const [open, setOpen] = useState(true);
   // Two tabs: "process" (in-flight + queued + failed) and "done" (handed off to Telegram).
   const [tab, setTab] = useState<"process" | "done">("process");
@@ -90,6 +91,24 @@ export function FloatingUploadPanel() {
 
       {open && (
         <>
+          {/* Pause aborts the in-flight chunk (item back to Queued; resume continues from the
+              server's offset). Stop ends the whole run; queued items stay listed for removal. */}
+          {(uploadingNow || (!running && readyCount > 0)) && (
+            <div className="fup-actions">
+              {uploadingNow ? (
+                <>
+                  <button className="btn subtle sm" onClick={pauseRun}>Pause</button>
+                  <button className="btn subtle sm" onClick={cancelRun}>
+                    <Icon name="close" size={13} /> Stop
+                  </button>
+                </>
+              ) : (
+                <button className="btn primary sm" onClick={() => runQueue()}>
+                  <Icon name="play" size={13} /> Resume ({readyCount})
+                </button>
+              )}
+            </div>
+          )}
           <div className="fup-tabs">
             <button
               className={"fup-tab" + (effectiveTab === "process" ? " on" : "")}
@@ -173,8 +192,8 @@ function FloatingRow({
           <Icon name="upload" size={14} />
         </button>
       )}
-      {(item.stage === "error" || item.stage === "done") && (
-        <button className="fup-row-btn" onClick={onRemove} title="Remove">
+      {(item.stage === "error" || item.stage === "done" || item.stage === "ready") && (
+        <button className="fup-row-btn" onClick={onRemove} title={item.stage === "ready" ? "Cancel (remove from queue)" : "Remove"}>
           <Icon name="close" size={14} />
         </button>
       )}

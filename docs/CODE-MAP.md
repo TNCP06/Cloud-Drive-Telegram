@@ -502,9 +502,12 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   hidden on `/upload` (the full manager is there) and when the queue is empty. Reads `useUpload()` to
   show overall progress + speed on any page; **expand/collapse** reveals two **tabs** — **Process**
   (in-flight + queued + failed) and **Completed** (handed off to Telegram) — each listing files with
-  per-item stage (uploading %/queued/done/failed), retry/remove, and a "Clear completed" action on the
-  Completed tab (auto-falls back to the tab that has rows). Styled with the app's `--card`/`--sh-3`
-  surface (`.fup*` classes in `globals.css`).
+  per-item stage (uploading %/queued/done/failed), retry/remove (queued items removable = cancel), and
+  a "Clear completed" action on the Completed tab (auto-falls back to the tab that has rows). A
+  **Pause/Stop (or Resume)** strip drives `pauseRun`/`cancelRun`/`runQueue` while uploading. Styled with
+  the app's `--card`/`--sh-3` surface (`.fup*` classes in `globals.css`). Floating-layer layout rules:
+  transient pills live in a top-right `.pill-stack`, `.fup` owns bottom-right, the selection toolbar
+  bottom-center, and `body:has(.viewer)` hides pills + panel under a full-screen preview.
 - `UploadManager.tsx` — **unified, queue-first** upload UI on `/upload`; now **consumes `UploadProvider`**
   via `useUpload()` for the queue + runner (the local queue state/runner moved out of this component).
   Live job progress arrives by **SSE, not polling** via the shared `useLiveRefresh("upload")` hook: it

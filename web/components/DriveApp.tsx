@@ -2010,27 +2010,37 @@ export function DriveApp({
         />
       )}
 
-      {showSaving && (
-        <div className="saving-pill">
-          <span className="spinner" />
-          Saving…
-        </div>
-      )}
+      {/* All transient pills share one top-right stack (see .pill-stack in globals.css). */}
+      <div className="pill-stack">
+        {showSaving && (
+          <div className="saving-pill">
+            <span className="spinner" />
+            Saving…
+          </div>
+        )}
 
-      {unpackTrack && unpackTrack.status !== "failed" && (
-        <div className="saving-pill">
-          <span className="spinner" />
-          Unpacking {unpackTrack.name}: {unpackTrack.progress}% — {unpackTrack.message || unpackTrack.status}
-        </div>
-      )}
+        {unpackTrack && unpackTrack.status !== "failed" && (
+          <div className="saving-pill">
+            <span className="spinner" />
+            Unpacking {unpackTrack.name}: {unpackTrack.progress}% — {unpackTrack.message || unpackTrack.status}
+          </div>
+        )}
 
-      {/* Unpack outputs > 2 GB kept on the VPS — pill opens the download/delete-now list. */}
-      {keptFiles.length > 0 && !unpackTrack && (
-        <button className="saving-pill" style={{ cursor: "pointer" }} onClick={() => setShowKept(true)}>
-          <Icon name="archive" size={15} />
-          {keptFiles.length} file{keptFiles.length > 1 ? "s" : ""} kept on server
-        </button>
-      )}
+        {/* Unpack outputs > 2 GB kept on the VPS — pill opens the download/delete-now list. */}
+        {keptFiles.length > 0 && !unpackTrack && (
+          <button className="saving-pill" style={{ cursor: "pointer" }} onClick={() => setShowKept(true)}>
+            <Icon name="archive" size={15} />
+            {keptFiles.length} file{keptFiles.length > 1 ? "s" : ""} kept on server
+          </button>
+        )}
+
+        {toast && (
+          <div className="saving-pill err" role="alert" onClick={() => setToast(null)}>
+            <Icon name="trash" size={15} />
+            {toast}
+          </div>
+        )}
+      </div>
 
       {showKept && (
         <KeptFilesModal
@@ -2046,12 +2056,6 @@ export function DriveApp({
         />
       )}
 
-      {toast && (
-        <div className="saving-pill err" role="alert" onClick={() => setToast(null)}>
-          <Icon name="trash" size={15} />
-          {toast}
-        </div>
-      )}
     </div>
   );
 }
