@@ -748,14 +748,17 @@ button { font-family: inherit; }
    control strip is actually visible, gated by `:has()` on the exact same hover/focus signal that
    reveals the seek bar. pointer-events:none keeps captions from ever swallowing a hover/click on
    the seek bar or stealing keyboard-shortcut focus. */
-.viewer-video .plyr__captions {
+.viewer-video .plyr__captions,
+.viewer-video .plyr:not(.plyr--hide-controls) .plyr__controls:not(:empty) ~ .plyr__captions {
   transform: none !important;
   bottom: 16px;
   pointer-events: none;
   transition: bottom .25s ease;
 }
-.viewer-video .plyr:has(.plyr__controls:hover) .plyr__captions,
-.viewer-video .plyr:has(.plyr__controls:focus-within) .plyr__captions {
+/* Lift ONLY while the seek bar is actually visible — the SAME `:hover` signal that reveals it.
+   Deliberately NOT `:focus-within`: after clicking play, the strip keeps focus, which would stick
+   the subtitles up long after the cursor left — read by the user as "moving on its own". */
+.viewer-video .plyr:has(.plyr__controls:hover) .plyr__captions {
   bottom: 56px;
 }
 
