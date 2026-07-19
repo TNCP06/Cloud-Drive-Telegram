@@ -96,8 +96,9 @@ Handles two job origins (`upload_jobs.origin`):
 `set_progress`/`set_status`, `set_parts_done` (per-part checkpoint), `split_archive` (local 7-Zip),
 `_send_part` (per-part transport: **local Bot API fast path** via `tg_botapi_upload.py` — bot
 account, no FLOOD_PREMIUM_WAIT, `file:///staging/…` read directly by the server, part indexed
-inline via `index_uploaded` because a bot gets no channel_post for its own posts; Telethon
-fallback for laptop paths / API errors),
+inline via `index_uploaded` because a bot gets no channel_post for its own posts; progress is
+**estimated** by a ticker from a measured-throughput EMA since the server gives no byte callback;
+Telethon fallback for laptop paths / API errors),
 `resolve_staged_file` (the single file inside an upload's staging dir), `write_window` (raw byte
 window copy, 8 MB buffer), `make_video_thumbnail` (ffmpeg frame at 1 s → temp JPEG),
 `_store_thumbnails` (background: poll `parts` ~70 s, `INSERT OR IGNORE` thumbnail),

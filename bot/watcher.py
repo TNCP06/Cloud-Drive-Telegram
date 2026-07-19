@@ -38,6 +38,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 
 _VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp"}
 
@@ -249,6 +250,10 @@ def write_window(src: str, offset: int, length: int, dst: str) -> None:
 # ---------------------------------------------------------------------------
 # Part send — fast path via local Bot API, Telethon fallback
 # ---------------------------------------------------------------------------
+# EMA of the measured bot-api upload throughput — seeds the estimated progress ticker below.
+_botapi_bps = {"v": 30 * 1024 * 1024}
+
+
 async def _send_part(client, channel, db, path, caption, as_document, thumb, cb,
                      *, title, tags, part_no, total, kind) -> int:
     """Send one part and return its channel message id.
@@ -258,17 +263,35 @@ async def _send_part(client, channel, db, path, caption, as_document, thumb, cb,
     posts as channel_post updates, so the part is indexed inline here. Any failure — or
     a file the API server can't see (laptop paths) — falls back to the original Telethon
     send, which the bot indexes via channel_post as before.
+
+    The server does the actual upload, so there is no per-byte callback — instead a
+    ticker advances `cb` with ESTIMATED bytes (measured-throughput EMA, capped at 97%)
+    so the web progress bar keeps moving instead of jumping 0 → done.
     """
     if botapi.available(path):
+        size = os.path.getsize(path)
+        start = time.monotonic()
+
+        async def _tick():
+            while True:
+                await asyncio.sleep(1)
+                cb(min(size * 0.97, (time.monotonic() - start) * _botapi_bps["v"]), size)
+
+        ticker = asyncio.create_task(_tick())
         try:
             msg_id, file_id, _ = await botapi.send_part(
                 path, caption, as_document, STORAGE_CHANNEL_ID)
+            elapsed = max(time.monotonic() - start, 0.001)
+            _botapi_bps["v"] = 0.5 * _botapi_bps["v"] + 0.5 * (size / elapsed)
             await botapi.index_uploaded(
                 db, title, tags, part_no, total, kind, msg_id,
-                os.path.basename(path), os.path.getsize(path), file_id)
+                os.path.basename(path), size, file_id)
+            cb(size, size)
             return msg_id
         except Exception as e:  # noqa: BLE001
             print(f"  [botapi] fast path failed ({e}); falling back to Telethon")
+        finally:
+            ticker.cancel()
     msg = await _send_file_smart(client, channel, path, caption, as_document, thumb, cb)
     return msg.id
 

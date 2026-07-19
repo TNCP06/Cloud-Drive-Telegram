@@ -17,9 +17,10 @@ channel_post update for it (Telegram doesn't echo a bot its own posts) — so th
 index the part inline (index_uploaded below, same db_ops the bot uses). Telethon remains the
 fallback: laptop runs (no local server), files outside staging, or any API error.
 
-Known degradation vs the Telethon path: no per-byte progress callback (progress advances per
-part) and no Telegram-side thumbnail harvest for photos (the watcher's ffmpeg thumbnail
-fallback still covers videos; the web's reharvest action repairs stragglers).
+Known degradation vs the Telethon path: no REAL per-byte progress callback (the watcher shows
+estimated progress from a measured-throughput EMA instead — see watcher._send_part) and no
+Telegram-side thumbnail harvest for photos (the watcher's ffmpeg thumbnail fallback still
+covers videos; the web's reharvest action repairs stragglers).
 """
 
 import os
