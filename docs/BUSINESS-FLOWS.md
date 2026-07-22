@@ -194,7 +194,7 @@ on the VPS and its contents are re-stored as normal items — the video then str
    up to `UNPACK_MAX_DEPTH`. Wrong/missing password → `BadPassword` → `failed` (cache kept for retry).
 4. **Re-store**: `_stage_outputs` moves each extracted file into its own staging dir and inserts an
    `upload_jobs` row (`origin='upload'`, `cleanup_source=1`; **media → streamable**, else document;
-   title nests under `<archive> (unpacked)/…`). The existing watcher pipeline (Flow A2 step 4) uploads
+   title nests under `<archive>/…`). The existing watcher pipeline (Flow A2 step 4) uploads
    them and the **bot** indexes them (Flow C) — the video appears in the drive, streamable (Flow E2).
    **Exception — files > 2 GB** (`PIKPAK_MAX_BYTES`): re-uploading would only raw-split them into
    parts again, so they are **kept on the VPS** instead: moved to `_unpack/_keep/<jid>/…` and

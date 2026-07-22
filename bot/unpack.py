@@ -310,12 +310,42 @@ async def _is_archive(path, pw) -> bool:
     return proc.returncode == 0
 
 
+async def _normalize_split_volumes(outdir, pw):
+    """Detect split archive volumes where part 1 has a disguised extension (e.g. p.001.pdf or p.pdf alongside p.002),
+    and rename part 1 to the canonical volume name (e.g. p.001) so 7z extracts all parts together."""
+    for root, _dirs, files in os.walk(outdir):
+        v2_matches = []
+        for f in files:
+            m = re.match(r"^(.*?)(?:\.7z)?\.002$", f, re.I)
+            if m:
+                v2_matches.append((f, m.group(1)))
+
+        for v2_name, stem in v2_matches:
+            is_7z = v2_name.lower().endswith(".7z.002")
+            expected_v1 = f"{stem}.7z.001" if is_7z else f"{stem}.001"
+            if expected_v1 in files:
+                continue
+
+            candidates = [
+                f for f in files
+                if f != v2_name and (f.startswith(stem) or stem.startswith(os.path.splitext(f)[0]))
+            ]
+            for cand in candidates:
+                cand_path = os.path.join(root, cand)
+                if await _is_archive(cand_path, pw):
+                    new_path = os.path.join(root, expected_v1)
+                    log.info("Unpack: renaming disguised split volume 1 '%s' -> '%s'", cand, expected_v1)
+                    os.rename(cand_path, new_path)
+                    break
+
+
 async def _deep_extract(outdir, pw):
     """Peel nested / disguised archives: repeatedly find extracted files that are themselves archives
     (e.g. a password-protected RAR hidden inside a .jpg) and extract them in place, dropping the
     container, up to UNPACK_MAX_DEPTH passes. A wrong password on an inner layer raises BadPassword so
     the cached outer archive is kept for a retry; a file 7z opens but can't extract is left as a leaf."""
     for _pass in range(UNPACK_MAX_DEPTH):
+        await _normalize_split_volumes(outdir, pw)
         found = False
         targets = [os.path.join(r, n) for r, _d, files in os.walk(outdir) for n in files]
         for fpath in targets:
@@ -332,8 +362,18 @@ async def _deep_extract(outdir, pw):
             except UnpackError:
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
-            os.remove(fpath)  # drop the container / decoy image
             parent = os.path.dirname(fpath)
+            fname = os.path.basename(fpath)
+            os.remove(fpath)  # drop the container / decoy image
+            m_v1 = re.match(r"^(.*?)(?:\.7z)?\.001$", fname, re.I)
+            if m_v1:
+                prefix = m_v1.group(1)
+                for sib in os.listdir(parent):
+                    if re.match(re.escape(prefix) + r"\.(?:7z\.)?00[2-9]\d*$", sib, re.I):
+                        try:
+                            os.remove(os.path.join(parent, sib))
+                        except OSError:
+                            pass
             for n2 in os.listdir(tmp):
                 dst = os.path.join(parent, n2)
                 if os.path.exists(dst):
@@ -373,7 +413,7 @@ async def _stage_outputs(db, outdir, unpacked_folder, jid, item_id):
                 continue
             kind = "media" if _is_media(name) else "archive"
             part_size = DRIVE_SPLIT_PART_MB if (kind == "archive" and size > PIKPAK_MAX_BYTES) else 4096
-            # Title nests under "<archive> (unpacked)/<subdirs>/<name-without-ext>" — upsert_item splits
+            # Title nests under "<archive>/<subdirs>/<name-without-ext>" — upsert_item splits
             # on '/' into folders, so the extracted tree is mirrored in the drive.
             base = os.path.splitext(name)[0] or name
             title = "/".join(p for p in [unpacked_folder, rel_dir, base] if p)
@@ -438,7 +478,7 @@ async def _process(client, channel, db, job):
         password = None  # done with it
 
         await _set(db, jid, progress=85, message="storing extracted files…")
-        n, kept = await _stage_outputs(db, outdir, f"{title} (unpacked)", jid, item_id)
+        n, kept = await _stage_outputs(db, outdir, title, jid, item_id)
         if n == 0 and kept == 0:
             raise UnpackError("Archive extracted but contained no files.")
 

@@ -126,7 +126,7 @@ password in the same statement** — a CTE reads it before the UPDATE nulls it),
 (Telethon-download every part → ordered binary concat → the archive), `_extract` (async `7z x -p…`;
 `-p` always passed so it never blocks on a prompt), `_stage_outputs` (each extracted file → own
 staging dir + an `upload_jobs` row so the existing pipeline uploads + the bot indexes it; title nests
-under `<archive> (unpacked)/…`; **files > 2 GB are kept on the VPS instead**: moved to
+under `<archive>/…`; **files > 2 GB are kept on the VPS instead**: moved to
 `_unpack/_keep/<jid>/…` + an `unpack_kept` row with `expires_at` = now + `UNPACK_KEEP_TTL_H` (72 h) —
 the web lists them with play/download/keep-longer/compress/delete-now, `_sweep_keep` auto-deletes
 them at expiry from the idle loop), `_process` (disk-guard `size×2.3` → download → extract → stage →
