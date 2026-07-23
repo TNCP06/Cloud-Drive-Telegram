@@ -315,6 +315,74 @@ export async function deleteKeptFile(id: number): Promise<{ ok: boolean; error?:
   return { ok: true };
 }
 
+export async function uploadKeptFileToTelegram(
+  id: number
+): Promise<{ ok: boolean; error?: string }> {
+  const rs = await db.execute({
+    sql: "SELECT rel_path, file_name, size FROM unpack_kept WHERE id = ?",
+    args: [id],
+  });
+  if (!rs.rows.length) return { ok: false, error: "File not found." };
+  const relPath = String(rs.rows[0].rel_path);
+  const fileName = String(rs.rows[0].file_name);
+  const size = Number(rs.rows[0].size ?? 0);
+
+  const full = path.resolve(KEEP_ROOT, relPath);
+  if (!full.startsWith(path.resolve(KEEP_ROOT) + path.sep)) {
+    return { ok: false, error: "Invalid path." };
+  }
+
+  let realSize = size;
+  try {
+    const st = await fs.stat(full);
+    realSize = st.size;
+  } catch {
+    return { ok: false, error: "File is no longer on the server." };
+  }
+
+  const MAX_BYTES = 2000 * 1024 * 1024;
+  if (realSize > MAX_BYTES) {
+    return {
+      ok: false,
+      error: `File is ${(realSize / (1024 * 1024 * 1024)).toFixed(2)} GB, which exceeds the 2 GB limit. Compress it first before uploading.`,
+    };
+  }
+
+  const stagingRoot = path.join(process.env.UPLOAD_STAGING_DIR || "/staging", "_kept_upload", String(id));
+  await fs.mkdir(stagingRoot, { recursive: true });
+  const dstFile = path.join(stagingRoot, fileName);
+
+  try {
+    await fs.rename(full, dstFile);
+  } catch {
+    await fs.copyFile(full, dstFile);
+    await fs.rm(full, { force: true });
+  }
+
+  await db.execute({
+    sql: "DELETE FROM unpack_kept WHERE id = ?",
+    args: [id],
+  });
+
+  const MEDIA_EXTS = new Set([
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp3", ".m4a", ".flac", ".wav", ".ogg",
+  ]);
+  const ext = path.extname(fileName).toLowerCase();
+  const kind = MEDIA_EXTS.has(ext) ? "media" : "archive";
+  const stem = path.basename(fileName, ext) || fileName;
+
+  await db.execute({
+    sql:
+      "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) " +
+      "VALUES (?, ?, '', ?, 4096, 'upload', 1, ?, 'pending')",
+    args: [kind, stem, stagingRoot, realSize],
+  });
+
+  refresh();
+  return { ok: true };
+}
+
 export async function bulkToggleFavorite(itemIds: number[], starred: boolean) {
   if (itemIds.length === 0) return;
   for (const itemId of itemIds) {

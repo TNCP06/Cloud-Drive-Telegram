@@ -121,6 +121,8 @@ CREATE TABLE IF NOT EXISTS download_jobs (
     size        BIGINT NOT NULL DEFAULT 0,         -- bytes (from rclone lsjson)
     status      TEXT NOT NULL DEFAULT 'queued'
                   CHECK (status IN ('queued','downloading','downloaded','uploading','done','failed','paused')),
+    dest        TEXT NOT NULL DEFAULT 'telegram'
+                  CHECK (dest IN ('telegram','vps')),
     progress    INTEGER NOT NULL DEFAULT 0,        -- 0..100 (download %)
     speed       TEXT,                              -- last transfer speed + ETA (e.g. "5.12MB/s · ETA 3m"), shown while downloading
     bytes_done  BIGINT NOT NULL DEFAULT 0,         -- resumable-download checkpoint: bytes fetched so far

@@ -113,12 +113,10 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    resolved `remote:prefix/path` to validate + read the size. Rejected up front (no download, no job)
    if: the remote isn't configured / OpenList is unreachable / the drive cookie expired (→ a message
    pointing at `rclone config` for PikPak or the **OpenList UI** for WebDAV drives), the path is
-   missing, or it's a folder. **Size policy** (all drives): a **media** file > **`PIKPAK_MAX_BYTES`**
-   (2 GB) is **rejected** — a binary-split video can't be streamed. A **non-media** file > 2 GB is
-   **accepted** and split later. **Disk-guard**: if free space on the staging volume `< size × 1.2`
+   missing, or it's a folder. **Size policy** (all drives): files > **`PIKPAK_MAX_BYTES`** (2 GB) prompt the user with interactive inline buttons (**Save to VPS Only** vs **Upload to Telegram**), or can specify `--vps`/`--telegram` in the command. If **Save to VPS Only** is chosen, the file is kept on the server (`unpack_kept` table + `_unpack/_keep/`) without uploading to Telegram. If **Upload to Telegram** is chosen, it is split into 2 GB parts. **Disk-guard**: if free space on the staging volume `< size × 1.2`
    it first reclaims orphaned `_pikpak/<jid>` staging of done/failed jobs, then rejects if it still
    won't fit (so a big download can't fill the small shared VPS disk). Otherwise it inserts a
-   `download_jobs` row (`status='queued'`, `source=<drive>`) and replies a progress message.
+   `download_jobs` row (`status='queued'`, `source=<drive>`, `dest='telegram'`|`'vps'`) and replies a progress message.
 3. **Worker** (in-bot, `PIKPAK_MAX_CONCURRENT` asyncio tasks polling every 3 s, `FOR UPDATE SKIP
    LOCKED` claim) resolves the drive from `download_jobs.source` and runs a **resumable** download into
    `/staging/_pikpak/<jobid>/<name>`: the file is **pre-reserved** to its full size (`posix_fallocate`,
@@ -210,7 +208,8 @@ on the VPS and its contents are re-stored as normal items — the video then str
    Other controls: **Download**, **Keep for…** (`extendKeptFile` — +3/7/30 days or a
    `9999-12-31` sentinel = permanent until manually deleted), **Compress…** (`compressKeptFile` →
    `kept_compress_jobs`; the unpack worker re-encodes the VPS copy with ffmpeg at the chosen CRF
-   20/23/26/28, `veryfast`, live % in `message`, replacing the file only when smaller) and
+   20/23/26/28, `veryfast`, live % in `message`, replacing the file only when smaller), **Upload to Telegram**
+   (`uploadKeptFileToTelegram` — for files ≤ 2 GB, queues an `upload_jobs` row so watcher uploads it to Telegram and indexes it into the website), and
    **Delete now** (`deleteKeptFile` — removes file + row immediately). The worker's idle sweep
    (`_sweep_keep`, every ~10 min) deletes any file past its expiry.
 5. **Original archive is kept** (never deleted). The worker cleans its own temp dirs; per-file staging

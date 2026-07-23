@@ -398,6 +398,7 @@ export function KeptFilesModal({
   onExtend,
   onPlay,
   onCompress,
+  onUploadToTelegram,
 }: {
   files: {
     id: number; name: string; size: number; expiresAt: string;
@@ -408,6 +409,7 @@ export function KeptFilesModal({
   onExtend: (id: number, hours: number | null) => void;
   onPlay: (f: { id: number; name: string }) => void;
   onCompress: (id: number, crf: number) => void;
+  onUploadToTelegram?: (id: number) => void;
 }) {
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -417,14 +419,15 @@ export function KeptFilesModal({
         </div>
         <div className="dbody">
           <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--ink-2)" }}>
-            Unpacked files over 2 GB are too big for Telegram, so they stay on the server until they
-            expire. Download them before then, or delete them now to free disk space.
+            Unpacked or downloaded files over 2 GB are stored on the server. Once compressed or if under 2 GB,
+            you can upload them directly to Telegram to index them on the drive.
           </p>
           {files.length === 0 && (
             <p style={{ margin: 0, fontSize: 13, color: "var(--faint)" }}>Nothing kept right now.</p>
           )}
           {files.map((f) => {
             const busy = f.compress && ["queued", "running"].includes(f.compress.status);
+            const canUpload = f.size <= 2000 * 1024 * 1024 && !busy;
             return (
               <div key={f.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--line-2)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -456,6 +459,16 @@ export function KeptFilesModal({
                     <option value="720">30 more days</option>
                     <option value="inf">Until I delete it</option>
                   </select>
+                  {canUpload && onUploadToTelegram && (
+                    <button
+                      className="btn subtle"
+                      style={{ color: "var(--accent)" }}
+                      title="Upload to Telegram Drive & index on website"
+                      onClick={() => onUploadToTelegram(f.id)}
+                    >
+                      <Icon name="upload" size={15} />
+                    </button>
+                  )}
                   {KEPT_VIDEO_RE.test(f.name) && (
                     <button className="btn subtle" title="Play" onClick={() => onPlay(f)}>
                       <Icon name="video" size={15} />

@@ -706,9 +706,9 @@ async def _process_compress(db, job):
     await db.execute(
         "UPDATE unpack_kept SET file_name=?, rel_path=?, size=? WHERE id=?",
         [new_name, new_rel, new_size, kept_id])
-    saved = round((1 - new_size / size) * 100)
+    ready_note = " — ready to upload" if new_size <= PIKPAK_MAX_BYTES else ""
     await _set_compress(db, jid, status="done",
-                        message=f"{size / 1073741824:.2f} GB → {new_size / 1073741824:.2f} GB (−{saved}%)")
+                        message=f"{size / 1073741824:.2f} GB → {new_size / 1073741824:.2f} GB (−{saved}%{ready_note})")
     log.info("Kept-compress job #%s: %s −%s%%", jid, fname, saved)
 
 

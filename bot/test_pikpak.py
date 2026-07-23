@@ -44,10 +44,9 @@ def test_clean_stats():
 
 
 def test_size_reject():
-    # Threshold is exactly 2 GiB; oversized rejected, at/under accepted.
-    assert pikpak.PIKPAK_MAX_BYTES == 2 * 1024 ** 3
-    assert (3 * 1024 ** 3) > pikpak.PIKPAK_MAX_BYTES        # 3 GB → rejected
-    assert (2 * 1024 ** 3) <= pikpak.PIKPAK_MAX_BYTES       # exactly 2 GB → allowed
+    # Threshold is PIKPAK_MAX_BYTES (2000 MB by default); oversized (> threshold), at/under allowed.
+    assert pikpak.PIKPAK_MAX_BYTES == 2000 * 1024 * 1024
+    assert (3 * 1024 ** 3) > pikpak.PIKPAK_MAX_BYTES        # 3 GB → oversized
     assert (500 * 1024 ** 2) <= pikpak.PIKPAK_MAX_BYTES     # 500 MB → allowed
 
 
@@ -90,18 +89,15 @@ def test_drive_remote_path():
 
 
 def test_split_policy():
-    # Media > 2 GB → rejected (can't stream a split video). Non-media > 2 GB → split.
+    # Oversized files (> 2 GB) split into DRIVE_SPLIT_PART_MB parts if uploaded to Telegram.
     over = 3 * 1024 ** 3
     under = 500 * 1024 ** 2
-    assert pikpak._is_media("movie.mkv") and over > pikpak.PIKPAK_MAX_BYTES   # → reject branch
-    assert not pikpak._is_media("data.iso")                                    # → split branch
-    # part_size chosen in _process: split size only for oversized non-media, else single-part cap.
     def part_size(fname, size):
-        kind = "media" if pikpak._is_media(fname) else "archive"
-        return pikpak.DRIVE_SPLIT_PART_MB if (kind == "archive" and size > pikpak.PIKPAK_MAX_BYTES) else 4096
-    assert part_size("data.iso", over) == pikpak.DRIVE_SPLIT_PART_MB   # oversized non-media → split
-    assert part_size("data.iso", under) == 4096                        # small non-media → single
-    assert part_size("movie.mkv", under) == 4096                       # media → single
+        return pikpak.DRIVE_SPLIT_PART_MB if size > pikpak.PIKPAK_MAX_BYTES else 4096
+    assert part_size("data.iso", over) == pikpak.DRIVE_SPLIT_PART_MB   # oversized → split parts
+    assert part_size("data.iso", under) == 4096                        # small → single part
+    assert part_size("movie.mkv", under) == 4096                       # small media → single part
+    assert part_size("movie.mkv", over) == pikpak.DRIVE_SPLIT_PART_MB  # oversized media → split parts
     assert pikpak.DRIVE_SPLIT_PART_MB < 2048, "split parts must stay under the 2 GB Telegram cap"
 
 

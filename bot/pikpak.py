@@ -29,9 +29,11 @@ import html
 import json
 import os
 import re
+import secrets
 import shutil
 import time
 from collections import deque
+from datetime import datetime, timezone, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -47,6 +49,12 @@ from bot_config import (
     log,
 )
 from db_ops import is_user_authorized
+
+UNPACK_STAGING = os.path.join(os.path.dirname(PIKPAK_STAGING_DIR), "_unpack")
+UNPACK_KEEP = os.path.join(UNPACK_STAGING, "_keep")
+KEEP_TTL_S = int(os.environ.get("UNPACK_KEEP_TTL_H", "72")) * 3600
+
+_PENDING_CONFIRMS = {}
 
 BROWSE_LIMIT = 50           # max entries shown as buttons per folder (Telegram keyboard sanity)
 
@@ -282,13 +290,14 @@ async def _claim_next(db):
         "UPDATE download_jobs SET status='downloading', updated_at=now_text() "
         "WHERE id = (SELECT id FROM download_jobs WHERE status='queued' "
         "            ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
-        "RETURNING id, remote_path, filename, size, chat_id, message_id, source, bytes_done"
+        "RETURNING id, remote_path, filename, size, chat_id, message_id, source, bytes_done, dest"
     )
     if not rs.rows:
         return None
     r = rs.rows[0]
+    dest = r[8] if len(r) > 8 and r[8] else "telegram"
     return {"id": r[0], "remote_path": r[1], "filename": r[2],
-            "size": r[3], "chat_id": r[4], "message_id": r[5], "source": r[6], "bytes_done": r[7]}
+            "size": r[3], "chat_id": r[4], "message_id": r[5], "source": r[6], "bytes_done": r[7], "dest": dest}
 
 
 # ---------------------------------------------------------------------------
@@ -472,32 +481,49 @@ async def _process(bot, db, job):
                 f"❌ Not enough disk to finish {fname}: {human_size(free)} free, "
                 f"{human_size(remaining)} still needed.")
         await _rclone_copy(bot, db, job, dst, state, drive)
-        _resolve_single(dst)  # sanity: a file actually landed
+        fpath = _resolve_single(dst)  # sanity: a file actually landed
 
-        # Hand off to the existing upload pipeline. origin='upload' + cleanup_source=1 means
-        # the watcher uploads the staged file and deletes `dst` afterwards. Size policy:
-        #   media                → single part (4096 MB cap); >2 GB media was rejected up front.
-        #   non-media ≤ 2 GB     → single part (4096 MB cap), unchanged from before.
-        #   non-media > 2 GB     → part_size = DRIVE_SPLIT_PART_MB so the watcher raw-splits it
-        #                          into sequential binary parts (one item, N parts).
-        kind = "media" if _is_media(fname) else "archive"  # photo/video → thumbnail+preview; else document
-        part_size = DRIVE_SPLIT_PART_MB if (kind == "archive" and size > PIKPAK_MAX_BYTES) else 4096
-        title = _drive_title(job["remote_path"], fname, drive)  # files it under the drive folder
-        rs = await db.execute(
-            "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, "
-            "cleanup_source, total_bytes, status) VALUES (?, ?, '', ?, ?, 'upload', 1, ?, 'pending') "
-            "RETURNING id",
-            [kind, title, dst, part_size, size],
-        )
-        upload_id = rs.rows[0][0] if rs.rows else None
-        await _set(db, jid, status="downloaded", progress=100)
-        await _safe_edit(bot, job, f"✅ Downloaded {fname} — uploading to Telegram…", state, force=True)
-        log.info("PikPak job #%s downloaded, handed to upload_jobs #%s", jid, upload_id)
-        # Track the upload to completion so /jobs shows 'done' and the staging file is confirmed
-        # gone. (cleanup_source=1 already makes the watcher delete it on a successful upload; this
-        # updates status + is a defensive backstop.)
-        if upload_id:
-            asyncio.create_task(_track_upload(bot, db, dict(job), upload_id, dst))
+        dest = job.get("dest") or "telegram"
+        if dest == "vps":
+            rel = f"pikpak/{jid}/{fname}"
+            keep_file = os.path.join(UNPACK_KEEP, *rel.split("/"))
+            os.makedirs(os.path.dirname(keep_file), exist_ok=True)
+            shutil.move(fpath, keep_file)
+
+            expires = (datetime.now(timezone.utc) + timedelta(seconds=KEEP_TTL_S)).strftime("%Y-%m-%d %H:%M:%S")
+            await db.execute(
+                "INSERT INTO unpack_kept (item_id, file_name, rel_path, size, expires_at) "
+                "VALUES (NULL, ?, ?, ?, ?)",
+                [fname, rel, size, expires],
+            )
+            shutil.rmtree(dst, ignore_errors=True)
+            await _set(db, jid, status="done", progress=100)
+            await _safe_edit(bot, job, f"✅ Downloaded {fname} — saved to VPS only (accessible in Web Dashboard).", state, force=True)
+            log.info("PikPak job #%s downloaded and saved to VPS (unpack_kept)", jid)
+        else:
+            # Hand off to the existing upload pipeline. origin='upload' + cleanup_source=1 means
+            # the watcher uploads the staged file and deletes `dst` afterwards. Size policy:
+            #   media / archive ≤ 2 GB → single part (4096 MB cap).
+            #   media / archive > 2 GB → part_size = DRIVE_SPLIT_PART_MB so the watcher raw-splits it
+            #                            into sequential binary parts (one item, N parts).
+            kind = "media" if _is_media(fname) else "archive"  # photo/video → thumbnail+preview; else document
+            part_size = DRIVE_SPLIT_PART_MB if size > PIKPAK_MAX_BYTES else 4096
+            title = _drive_title(job["remote_path"], fname, drive)  # files it under the drive folder
+            rs = await db.execute(
+                "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, "
+                "cleanup_source, total_bytes, status) VALUES (?, ?, '', ?, ?, 'upload', 1, ?, 'pending') "
+                "RETURNING id",
+                [kind, title, dst, part_size, size],
+            )
+            upload_id = rs.rows[0][0] if rs.rows else None
+            await _set(db, jid, status="downloaded", progress=100)
+            await _safe_edit(bot, job, f"✅ Downloaded {fname} — uploading to Telegram…", state, force=True)
+            log.info("PikPak job #%s downloaded, handed to upload_jobs #%s", jid, upload_id)
+            # Track the upload to completion so /jobs shows 'done' and the staging file is confirmed
+            # gone. (cleanup_source=1 already makes the watcher delete it on a successful upload; this
+            # updates status + is a defensive backstop.)
+            if upload_id:
+                asyncio.create_task(_track_upload(bot, db, dict(job), upload_id, dst))
     except DownloadCancelled:
         # Status/error were already set by cancel_download; just clean up and confirm.
         shutil.rmtree(dst, ignore_errors=True)
@@ -584,6 +610,8 @@ async def ensure_schema(db):
             size        BIGINT NOT NULL DEFAULT 0,
             status      TEXT NOT NULL DEFAULT 'queued'
                           CHECK (status IN ('queued','downloading','downloaded','uploading','done','failed','paused')),
+            dest        TEXT NOT NULL DEFAULT 'telegram'
+                          CHECK (dest IN ('telegram','vps')),
             progress    INTEGER NOT NULL DEFAULT 0,
             speed       TEXT,
             bytes_done  BIGINT NOT NULL DEFAULT 0,
@@ -597,6 +625,18 @@ async def ensure_schema(db):
     await db.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status)")
     await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS speed TEXT")            # existing DBs
     await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS bytes_done BIGINT NOT NULL DEFAULT 0")
+    await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS dest TEXT NOT NULL DEFAULT 'telegram'")
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS unpack_kept (
+            id         BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+            item_id    BIGINT,
+            file_name  TEXT NOT NULL,
+            rel_path   TEXT NOT NULL,
+            size       BIGINT NOT NULL DEFAULT 0,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT now_text()
+        )
+    """)
     # Existing DBs: widen the status CHECK to allow 'paused' (drop + re-add is idempotent).
     await db.execute("ALTER TABLE download_jobs DROP CONSTRAINT IF EXISTS download_jobs_status_check")
     await db.execute(
@@ -640,46 +680,77 @@ async def _deny(message, user_id):
 
 
 # --- Reusable cores (shared by the /commands and the PikPak menu buttons) ----
+async def _enqueue_download_job(target_msg, db, remote_path, drive_key, size, fname, dest="telegram", is_edit=False):
+    drive = resolve_drive(drive_key)
+    name = drive.get("display", drive_key) if drive else drive_key
+    split_note = " (will be uploaded in parts)" if (size > PIKPAK_MAX_BYTES and dest == "telegram") else ""
+    vps_note = " to VPS" if dest == "vps" else ""
+    text = f"🗂 Queued {fname} ({human_size(size)}){vps_note}{split_note} for download…"
+
+    if is_edit and hasattr(target_msg, "edit_text"):
+        try:
+            sent = await target_msg.edit_text(text, reply_markup=_CANCEL_KB)
+        except Exception:  # noqa: BLE001
+            sent = target_msg
+    else:
+        sent = await target_msg.reply_text(text, reply_markup=_CANCEL_KB)
+
+    chat_id = getattr(sent, "chat_id", None) or getattr(target_msg, "chat_id", None)
+    message_id = getattr(sent, "message_id", None) or getattr(target_msg, "message_id", None)
+
+    rs = await db.execute(
+        "INSERT INTO download_jobs (source, remote_path, filename, size, dest, status, chat_id, message_id) "
+        "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?) RETURNING id",
+        [drive_key, remote_path, fname, size, dest, chat_id, message_id],
+    )
+    jid = rs.rows[0][0] if rs.rows else "?"
+    log.info("%s job #%s queued (dest=%s): %s (%s)", name, jid, dest, remote_path, human_size(size))
+
+
 async def start_download(message, db, remote_path, drive_key="pikpak"):
     """Validate a drive path, apply the size policy, queue a download job + progress reply.
 
-    Size policy: media > 2 GB is rejected (a binary-split media file can't be streamed);
-    non-media > 2 GB is accepted and later split into parts by the watcher.
+    Size policy:
+      - Files ≤ 2 GB: queued for download & Telegram upload (or VPS if --vps specified).
+      - Files > 2 GB: asks confirmation to save to VPS only vs split-upload to Telegram.
     """
     drive = resolve_drive(drive_key)
     if not drive:
         await message.reply_text(f"❌ Unknown drive '{drive_key}'.")
         return
     name = drive.get("display", drive_key)
-    remote_path = (remote_path or "").strip().strip("/")
-    if not remote_path:
+    raw_path = (remote_path or "").strip().strip("/")
+    if not raw_path:
         await message.reply_text("No path given. Example: `My Pack/delyn.jpg`.", parse_mode="Markdown")
         return
+
+    dest = None
+    clean_path = raw_path
+    if re.search(r'\s+--(vps|local|vps-only)$', clean_path, re.IGNORECASE) or re.search(r'\s+-(vps|local)$', clean_path, re.IGNORECASE):
+        dest = "vps"
+        clean_path = re.sub(r'\s+--(vps|local|vps-only)$', '', clean_path, flags=re.IGNORECASE)
+        clean_path = re.sub(r'\s+-(vps|local)$', '', clean_path, flags=re.IGNORECASE).strip()
+    elif re.search(r'\s+--(telegram|tg)$', clean_path, re.IGNORECASE) or re.search(r'\s+-(telegram|tg)$', clean_path, re.IGNORECASE):
+        dest = "telegram"
+        clean_path = re.sub(r'\s+--(telegram|tg)$', '', clean_path, flags=re.IGNORECASE)
+        clean_path = re.sub(r'\s+-(telegram|tg)$', '', clean_path, flags=re.IGNORECASE).strip()
+
     try:
-        entry = await rclone_stat(remote_path, drive)
+        entry = await rclone_stat(clean_path, drive)
     except PikpakError as e:
         await message.reply_text(str(e))
         return
     if entry.get("IsDir"):
         await message.reply_text(
-            f"“{remote_path}” is a folder — /{drive_key} takes a single file. Browse it with "
-            f"`/{drive_key}_ls {remote_path}`.", parse_mode="Markdown")
+            f"“{clean_path}” is a folder — /{drive_key} takes a single file. Browse it with "
+            f"`/{drive_key}_ls {clean_path}`.", parse_mode="Markdown")
         return
     size = int(entry.get("Size") or 0)
-    fname = entry.get("Name") or os.path.basename(remote_path) or remote_path
+    fname = entry.get("Name") or os.path.basename(clean_path) or clean_path
     if size <= 0:
         await message.reply_text(f"❌ Couldn't determine the file size on {name} — aborting.")
         return
-    if size > PIKPAK_MAX_BYTES and _is_media(fname):
-        await message.reply_text(
-            f"❌ {fname} is {human_size(size)}, over the {human_size(PIKPAK_MAX_BYTES)} Telegram limit. "
-            "Media files can't be split (a split video won't stream/play), so it's rejected. "
-            "Only non-media files are split and uploaded in parts.")
-        return
-    # Disk-guard: refuse up front if the staging volume can't hold the file + split/handoff overhead,
-    # so a big download can't fill the disk (bricking postgres/streamer/web) then fail. 1.2× covers a
-    # split part staged alongside the whole file. ponytail: queue-time only — add a worker-start recheck
-    # if concurrent downloads (PIKPAK_MAX_CONCURRENT>1) ever make between-queue-and-run depletion real.
+
     need = int(size * 1.2)
     try:
         os.makedirs(PIKPAK_STAGING_DIR, exist_ok=True)
@@ -688,7 +759,6 @@ async def start_download(message, db, remote_path, drive_key="pikpak"):
         free = None
     reclaimed = 0
     if free is not None and free < need:
-        # Don't reject outright — bin orphaned staging (junk from done/failed jobs) first, then re-check.
         reclaimed = await _reclaim_orphan_staging(db)
         if reclaimed:
             free = shutil.disk_usage(PIKPAK_STAGING_DIR).free
@@ -699,17 +769,70 @@ async def start_download(message, db, remote_path, drive_key="pikpak"):
             f"Free: {human_size(free)}, need ~{human_size(need)}. "
             f"Delete some stored files or clear the video cache on the server, then retry.")
         return
-    split_note = " (will be uploaded in parts)" if size > PIKPAK_MAX_BYTES else ""
-    sent = await message.reply_text(
-        f"🗂 Queued {fname} ({human_size(size)}){split_note} for download…",
-        reply_markup=_CANCEL_KB)
-    rs = await db.execute(
-        "INSERT INTO download_jobs (source, remote_path, filename, size, status, chat_id, message_id) "
-        "VALUES (?, ?, ?, ?, 'queued', ?, ?) RETURNING id",
-        [drive_key, remote_path, fname, size, sent.chat_id, sent.message_id],
+
+    if size > PIKPAK_MAX_BYTES and dest is None:
+        now_t = time.monotonic()
+        stale = [k for k, v in _PENDING_CONFIRMS.items() if now_t - v["created_at"] > 1800]
+        for k in stale:
+            _PENDING_CONFIRMS.pop(k, None)
+
+        token = secrets.token_hex(4)
+        _PENDING_CONFIRMS[token] = {
+            "remote_path": clean_path,
+            "drive_key": drive_key,
+            "size": size,
+            "fname": fname,
+            "created_at": now_t,
+        }
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💾 Save to VPS Only", callback_data=f"dlc:vps:{token}")],
+            [InlineKeyboardButton("📤 Upload to Telegram", callback_data=f"dlc:tg:{token}")],
+            [InlineKeyboardButton("✖️ Cancel", callback_data=f"dlc:c:{token}")],
+        ])
+        media_note = "\n<i>⚠️ Note: Splitting media/video files means they cannot stream directly in Telegram.</i>" if _is_media(fname) else ""
+        text = (
+            f"⚠️ <b>{html.escape(fname)}</b> ({human_size(size)}) exceeds the 2.00 GB Telegram limit.\n\n"
+            f"Select how you want to handle this file:\n"
+            f"• <b>Save to VPS:</b> Store on server (view/download via Web Dashboard).\n"
+            f"• <b>Upload to Telegram:</b> Split into multi-part files and upload.{media_note}"
+        )
+        await message.reply_text(text, reply_markup=kb, parse_mode="HTML")
+        return
+
+    dest = dest or "telegram"
+    await _enqueue_download_job(message, db, clean_path, drive_key, size, fname, dest=dest)
+
+
+async def confirm_choice(query, db, data):
+    """Handle a dlc:vps:<token> / dlc:tg:<token> / dlc:c:<token> callback query."""
+    msg = query.message
+    if msg is None:
+        return
+    parts = data.split(":", 2)
+    if len(parts) < 3:
+        return
+    action, token = parts[1], parts[2]
+
+    if action == "c":
+        _PENDING_CONFIRMS.pop(token, None)
+        try:
+            await msg.edit_text("✖️ Download cancelled.")
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
+    info = _PENDING_CONFIRMS.pop(token, None)
+    if not info:
+        try:
+            await msg.edit_text("⚠️ Confirmation expired. Please request the download again.")
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
+    dest = "vps" if action == "vps" else "telegram"
+    await _enqueue_download_job(
+        msg, db, info["remote_path"], info["drive_key"], info["size"], info["fname"], dest=dest, is_edit=True
     )
-    jid = rs.rows[0][0] if rs.rows else "?"
-    log.info("%s job #%s queued: %s (%s)", name, jid, remote_path, human_size(size))
 
 
 async def do_ls(message, folder, drive_key="pikpak"):

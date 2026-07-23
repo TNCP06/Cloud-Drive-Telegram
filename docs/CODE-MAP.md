@@ -54,9 +54,9 @@ the **existing** `upload_jobs` → watcher pipeline; no new process/session. **D
 `bot_config.DRIVES` (overridable via `DRIVES_JSON`) maps a command key → `{remote, prefix, folder,
 display}`; `resolve_drive`/`drive_remote` build the `remote:prefix/path` target. PikPak is native
 (`pikpak:`); Baidu/Quark/… route through the OpenList WebDAV remote (`openlist:`, prefix = mount).
-Reusable cores `start_download(…, drive_key)` (validate via `rclone_stat`; **size policy: media
-> `PIKPAK_MAX_BYTES` rejected, non-media > 2 GB accepted for splitting**; insert a `download_jobs`
-row with `source=<drive>` + progress reply), `do_ls(…, drive_key)` (browse via `rclone_lsf`,
+Reusable cores `start_download(…, drive_key)` (validate via `rclone_stat`; **size policy: files
+> `PIKPAK_MAX_BYTES` (2 GB) prompt confirmation for Save to VPS Only vs Upload to Telegram (split)**; insert a `download_jobs`
+row with `source=<drive>`, `dest='telegram'|'vps'` + progress reply), `do_ls(…, drive_key)` (browse via `rclone_lsf`,
 ~50-entry cap), `jobs_text` (last 10 jobs across all drives, drive-tagged) — shared by generic cores
 `_cmd_download`/`_cmd_ls` and the thin per-drive handlers `on_pikpak`/`on_ls`/`on_baidu`/`on_baidu_ls`,
 `on_jobs` (`/pikpak_jobs`), **and** the ☁️ Cloud Drives inline-button menu (drive picker →

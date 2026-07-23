@@ -69,6 +69,7 @@ import {
   deleteKeptFile,
   extendKeptFile,
   compressKeptFile,
+  uploadKeptFileToTelegram,
   createFolder,
   renameFolder,
   deleteFolder,
@@ -2118,6 +2119,14 @@ export function DriveApp({
             startTransition(async () => {
               const r = await compressKeptFile(id, crf);
               if (!r.ok) setToast(r.error ?? "Failed to queue the compression.");
+              setKeptFiles(await listKeptFiles());
+            })
+          }
+          onUploadToTelegram={(id) =>
+            startTransition(async () => {
+              const r = await uploadKeptFileToTelegram(id);
+              if (!r.ok) setToast(r.error ?? "Failed to queue Telegram upload.");
+              else setToast("Queued for Telegram upload & indexing.");
               setKeptFiles(await listKeptFiles());
             })
           }

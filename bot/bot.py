@@ -93,6 +93,7 @@ from pikpak import (  # noqa: F401  (remote-download feature: PikPak + WebDAV dr
     resume_download as pikpak_resume_download,
     render_browser as pikpak_render_browser,
     browse_navigate as pikpak_browse_navigate,
+    confirm_choice as pikpak_confirm_choice,
     ensure_schema as ensure_pikpak_schema,
     start_workers as start_pikpak_workers,
 )
@@ -1168,6 +1169,9 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data.startswith("dlxy:"):
         await pikpak_cancel_download(query, db, data.split(":", 1)[1])
+        return
+    if data.startswith("dlc:"):
+        await pikpak_confirm_choice(query, db, data)
         return
 
     if data == "upload:cancel":
