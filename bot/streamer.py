@@ -6,6 +6,11 @@ with standard Range-request support (206 Partial Content). Designed for browser
 <video> playback with YouTube-style chunked delivery.
 
 Architecture:
+  - Two delivery paths. Once a part's ORIGINAL sits on the local telegram-bot-api
+    server it is served straight off that file (instant seeking, and ffmpeg has a
+    real file for sprites/transcode). Until then — getFile downloads the WHOLE part
+    before returning a path, minutes of black screen on a 2 GB video — playback runs
+    on the Telethon chunk cache below while the pull happens in the background.
   - Sparse chunk cache on disk: each part gets a directory with a meta.json and
     individual chunk files (chunk_000000, chunk_000001, …). Chunks are 1 MB by
     default, matching YouTube's chunk size for responsive seeking.
@@ -141,6 +146,10 @@ STREAMER_PORT = int(os.environ.get("STREAMER_PORT", "8080"))
 
 # Cache of resolved local file paths: part_id -> local absolute path
 _local_file_paths: dict[int, str] = {}
+
+# In-flight background pulls of an original onto the local Bot API server (part_id -> task).
+# Playback is served from the Telethon chunk path while one of these runs.
+_local_fetch_tasks: dict[int, asyncio.Task] = {}
 
 # Pin the served variant ("original" | "compressed") for the duration of one
 # playback so the reported file size never changes between a load and its seeks.
@@ -383,6 +392,81 @@ def _reclaim_original_after_compress(part_id: int, src_path: str) -> None:
     except Exception as e:  # noqa: BLE001
         log.warning("Could not reclaim original for part %d: %s", part_id, e)
     _local_file_paths.pop(part_id, None)
+
+
+async def _fetch_local_original(part_id: int, channel_msg_id: int, meta: dict,
+                                total_size: int, mime: str) -> None:
+    """Background: pull a part's ORIGINAL onto the local Bot API server, then schedule the extras
+    that need a real file on disk (seek-preview sprites → transcode → priority subtitles).
+
+    Runs detached from the request that triggered it: the viewer is already watching via the
+    Telethon chunk path, so a multi-minute getFile never delays the first frame.
+    """
+    try:
+        async with _part_locks[(part_id, -1)]:
+            file_path = _local_file_paths.get(part_id)
+            if not file_path or not os.path.exists(file_path):
+                file_id = meta.get("file_id")
+                if not file_id:
+                    try:
+                        # Not in DB yet (old file) -> resolve dynamically via forwarding
+                        file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
+                        meta["file_id"] = file_id  # update in memory meta
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("Failed to resolve file_id via forwarding: %s. Falling back to "
+                                    "Telethon pack_bot_file_id...", e)
+                        msg = await _get_tg_message(channel_msg_id)
+                        if not msg or not msg.media:
+                            log.error("Message %s has no media — cannot cache part %d",
+                                      channel_msg_id, part_id)
+                            return
+                        file_id = pack_bot_file_id(msg.media)
+                        if not file_id:
+                            log.error("Failed to pack file ID for part %d", part_id)
+                            return
+                _evict_local_api_cache_if_needed(total_size)
+                try:
+                    file_path = await download_via_local_bot_api(file_id)
+                except Exception as e:  # noqa: BLE001
+                    # The file_id may be invalid/expired — resolve a fresh one and retry once.
+                    log.warning("Local Bot API download failed: %s. Retrying with fresh resolved "
+                                "file_id...", e)
+                    file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
+                    meta["file_id"] = file_id
+                    file_path = await download_via_local_bot_api(file_id)
+                _local_file_paths[part_id] = file_path
+
+        # Sprites first, THEN the background compression: the user gets seek previews quickly and
+        # two ffmpegs never fight for CPU. Videos only — documents/images must not touch ffmpeg.
+        if mime.startswith("video/"):
+            sp_task = _schedule_seekpreview(part_id, file_path)
+            if sp_task:
+                try:
+                    await sp_task
+                except Exception:  # noqa: BLE001
+                    pass
+            _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
+            # Bump this video to the FRONT of the subtitle backfill queue so a just-opened (or
+            # just-uploaded) video gets subtitled while it's being watched, and the web player
+            # loads the tracks live. This only reorders/wakes the single backfill worker — no
+            # second STT/ffmpeg runs in parallel, so playback never competes for the shared
+            # semaphore (the original reason this was kept off the streaming path).
+            _enqueue_priority_subtitle(part_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.error("Background local-original fetch failed for part %d: %s", part_id, e)
+
+
+def _start_local_fetch(part_id: int, channel_msg_id: int, meta: dict,
+                       total_size: int, mime: str) -> bool:
+    """Ensure exactly one background fetch per part. True if one is (now) running."""
+    task = _local_fetch_tasks.get(part_id)
+    if task and not task.done():
+        return True
+    _local_fetch_tasks[part_id] = asyncio.create_task(
+        _fetch_local_original(part_id, channel_msg_id, meta, total_size, mime))
+    return True
 
 
 async def download_via_local_bot_api(file_id: str) -> str:
@@ -1508,69 +1592,16 @@ async def stream(part_id: int, request: Request):
                 _enqueue_priority_subtitle(part_id)  # subtitle this video next (live in the player)
             return _serve_local_file_range(str(comp_path), "video/mp4", request, range_header)
 
-        # Serve the ORIGINAL (and trigger a background transcode for future views).
-        # Try to use the file_id from the metadata (retrieved from parts.file_id in database)
-        file_id = meta.get("file_id")
-        if not file_id:
-            try:
-                # Not in DB yet (old file) -> resolve dynamically via forwarding
-                file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
-                meta["file_id"] = file_id  # update in memory meta
-            except Exception as e:
-                log.warning("Failed to resolve file_id via forwarding: %s. Falling back to Telethon pack_bot_file_id...", e)
-                # Fallback to Telethon's pack_bot_file_id
-                msg = await _get_tg_message(channel_msg_id)
-                if not msg or not msg.media:
-                    return Response("Message has no media", status_code=404)
-                file_id = pack_bot_file_id(msg.media)
-                if not file_id:
-                    return Response("Failed to pack file ID", status_code=500)
-
-        # Get local file path (download via Bot API server if needed)
-        async with _part_locks[(part_id, -1)]:
-            file_path = _local_file_paths.get(part_id)
-            if not file_path or not os.path.exists(file_path):
-                _evict_local_api_cache_if_needed(total_size)
-                try:
-                    file_path = await download_via_local_bot_api(file_id)
-                    _local_file_paths[part_id] = file_path
-                except Exception as e:
-                    # In case the file_id was invalid/expired, try a fresh resolution via forwarding
-                    log.warning("Local Bot API download failed: %s. Retrying with fresh resolved file_id...", e)
-                    try:
-                        file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
-                        meta["file_id"] = file_id
-                        file_path = await download_via_local_bot_api(file_id)
-                        _local_file_paths[part_id] = file_path
-                    except Exception as retry_err:
-                        log.error("Failed to download even after dynamic re-resolution: %s", retry_err)
-                        return Response(f"Failed to download file: {retry_err}", status_code=500)
-
-        # First generate seek-preview sprites, THEN kick off background compression.
-        # This gives the user immediate UI feedback and prevents two ffmpegs
-        # from fighting for CPU at the exact same time.
-        # Videos only — documents/images must never be fed to ffmpeg.
-        if mime.startswith("video/"):
-            sp_task = _schedule_seekpreview(part_id, file_path)
-
-            async def _wait_and_transcode() -> None:
-                if sp_task:
-                    try:
-                        await sp_task
-                    except Exception:
-                        pass
-                _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
-
-            asyncio.create_task(_wait_and_transcode())
-
-            # Bump this video to the FRONT of the subtitle backfill queue so a just-opened
-            # (or just-uploaded) video gets subtitled while it's being watched, and the web
-            # player loads the tracks live. This only reorders/wakes the single backfill worker
-            # — no second STT/ffmpeg runs in parallel, so playback never competes for the
-            # shared semaphore (the original reason this was kept off the streaming path).
-            _enqueue_priority_subtitle(part_id)
-
-        return _serve_local_file_range(file_path, mime, request, range_header)
+        # Serve the ORIGINAL straight off the local Bot API server — but only once it's actually
+        # there. getFile pulls the WHOLE part before it returns a path, which on a 2 GB video is
+        # minutes of black screen before the first frame. So when the file is still missing we
+        # kick the download off in the background and fall through to the Telethon chunk path
+        # below, which starts playing in seconds. Every later request finds the local file and
+        # takes this fast path (instant seeking anywhere, and ffmpeg can work on a real file).
+        file_path = _local_file_paths.get(part_id)
+        if file_path and os.path.exists(file_path):
+            return _serve_local_file_range(file_path, mime, request, range_header)
+        _start_local_fetch(part_id, channel_msg_id, meta, total_size, mime)
 
     # --- 4. Fallback Telethon Mode (Sparse Chunk Cache) ---
     first_chunk = start // CHUNK_SIZE
@@ -1591,9 +1622,12 @@ async def stream(part_id: int, request: Request):
                     async for chunk_data in stream:
                         yield chunk_data
 
-            # Start prefetch only after successfully yielding all requested chunks
+            # Start prefetch only after successfully yielding all requested chunks — and not while
+            # a background fetch is already pulling the whole part onto the local Bot API server,
+            # or the same bytes would be downloaded twice.
             prefetch_from = last_chunk + 1
-            if prefetch_from < total_chunks:
+            fetching = _local_fetch_tasks.get(part_id)
+            if prefetch_from < total_chunks and not (fetching and not fetching.done()):
                 _start_prefetch(part_id, channel_msg_id,
                                 prefetch_from, total_chunks, total_size)
         except asyncio.CancelledError:
