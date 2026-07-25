@@ -115,14 +115,10 @@ export function VideoPlayer({
   src,
   poster,
   partId,
-  subtitleBase,
 }: {
   src: string;
   poster?: string;
   partId?: number;
-  // Base URL for the subtitle API (list at `${base}`, one track at `${base}/${lang}`). Defaults to
-  // the part-keyed streamer routes; kept-on-server files pass their own /api/kept/<id>/subtitles.
-  subtitleBase?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const posterDims = useRef<{ w: number; h: number } | null>(null);
@@ -156,8 +152,9 @@ export function VideoPlayer({
     let destroyed = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-    // Where to load subtitles from: an explicit base (kept files) or the part-keyed streamer routes.
-    const subBase = subtitleBase ?? (partId != null ? `/api/subtitles/${partId}` : undefined);
+    // Subtitles live at the part-keyed streamer routes (list at `${base}`, one track at
+    // `${base}/${lang}`).
+    const subBase = partId != null ? `/api/subtitles/${partId}` : undefined;
 
     (async () => {
       const PlyrCtor = (await import("plyr")).default;
@@ -364,7 +361,7 @@ export function VideoPlayer({
         player?.destroy();
       } catch {}
     };
-  }, [src, partId, subtitleBase]);
+  }, [src, partId]);
 
   const handleClick = (e: React.MouseEvent) => {
     // The player sits inside .viewer-stage (whose click closes the viewer); stop

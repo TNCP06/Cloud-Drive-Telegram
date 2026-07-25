@@ -55,8 +55,8 @@ the **existing** `upload_jobs` → watcher pipeline; no new process/session. **D
 display}`; `resolve_drive`/`drive_remote` build the `remote:prefix/path` target. PikPak is native
 (`pikpak:`); Baidu/Quark/… route through the OpenList WebDAV remote (`openlist:`, prefix = mount).
 Reusable cores `start_download(…, drive_key)` (validate via `rclone_stat`; **size policy: files
-> `PIKPAK_MAX_BYTES` (2 GB) prompt confirmation for Save to VPS Only vs Upload to Telegram (split)**; insert a `download_jobs`
-row with `source=<drive>`, `dest='telegram'|'vps'` + progress reply), `do_ls(…, drive_key)` (browse via `rclone_lsf`,
+> any size is accepted — the watcher segments/splits as needed**; insert a `download_jobs`
+row with `source=<drive>` + progress reply), `do_ls(…, drive_key)` (browse via `rclone_lsf`,
 ~50-entry cap), `jobs_text` (last 10 jobs across all drives, drive-tagged) — shared by generic cores
 `_cmd_download`/`_cmd_ls` and the thin per-drive handlers `on_pikpak`/`on_ls`/`on_baidu`/`on_baidu_ls`,
 `on_jobs` (`/pikpak_jobs`), **and** the ☁️ Cloud Drives inline-button menu (drive picker →
@@ -139,12 +139,8 @@ under `<archive>/…`; **size is not a special case** — the watcher segments a
 raw-splits anything else, so no output is parked on the VPS), `_process` (disk-guard `size×2.3` →
 download → extract → stage → cleanup; **keeps the original archive**).
 
-`_unpack/_keep/` + `unpack_kept` now hold only what PikPak's `dest='vps'` puts there: `_sweep_keep`
-auto-deletes them at expiry from the idle loop, and the web lists them with
-play/download/upload-to-Telegram/keep-longer/delete-now. (The manual CRF re-encode queue
-`kept_compress_jobs` is **gone** — it only existed to shrink a file under 2 GB so it could be
-uploaded, which watcher segmentation now does losslessly.) `ensure_schema` (also creates
-`unpack_kept`), `worker_loop`. Password: never logged, passed to 7z via `-p`
+`ensure_schema` (also drops the retired `unpack_kept` / `kept_compress_jobs` tables once,
+marker-guarded), `worker_loop`. Password: never logged, passed to 7z via `-p`
 (argv, single-user VPS).
 
 ### `worker.py` — standalone upload CLI (Telethon, **laptop**)
@@ -343,10 +339,6 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `deleteMessage` + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
   intentionally NOT changed on rename), `unpackArchive`/`getUnpackStatus` (queue/poll `unpack_jobs`),
 `getActiveUnpack` (latest queued/running job — resumes the progress pill after a navigation),
-  `listKeptFiles`/`deleteKeptFile`/`extendKeptFile` (unpack outputs over the Telegram cap kept on
-  the VPS in `unpack_kept` — list them / delete file + row now / push `expires_at` out by N hours
-  or to the `9999-12-31` sentinel = permanent until manually deleted; the web shares the
-  `staging` volume).
   Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`,
   `moveFolderToFolder` (reparent; rejects cycles into self/descendants).
   Bulk ops: `bulkToggleFavorite`, `bulkSoftDelete`, `bulkRestore`, `bulkPurgeNow`.
@@ -395,23 +387,13 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   status).
 - `api/seek-preview/[partId]/route.ts` and `api/seek-preview/[partId]/sprite/route.ts` — cookie-auth proxies to
   the streamer's `/seek-preview/...` endpoints (VTT with rewritten sprite URLs + JPEG sprite sheet).
-- `api/kept/[id]/route.ts` (`nodejs` runtime) — downloads a **kept unpack output** (`unpack_kept`)
-  straight off the shared staging volume (`/staging/_unpack/_keep/<rel_path>`); own cookie-auth check
-  (same pattern as `/api/stream`), single-Range support so a multi-GB download can resume.
-- `api/kept/[id]/subtitles/` (`nodejs`) — subtitle upload/list/serve for kept files, backed by
-  `lib/keptSubs.ts` (auth + kept-path resolve + `<file>.<lang>.vtt` sibling paths + in-process
-  SRT/VTT→WebVTT `toVtt`; NO ffmpeg/streamer — the streamer never mounts staging). `route.ts` GET
-  lists langs (`done:true`), `manual/route.ts` POST converts+writes a sibling, `[lang]/route.ts` GET
-  serves one VTT. `VideoPlayer`/`SubtitleDialog` take a `subtitleBase` prop so the kept full-screen
-  viewer reuses the same track-loading + upload UI as drive videos (`localOnly` hides from-drive/
-  extract). Siblings are cleaned by `deleteKeptFile` + the bot's `_sweep_keep`.
 - `api/thumb/[itemId]/route.ts` (`nodejs` runtime) — serves an item's **cover thumbnail** bytes
   (first part by `channel_msg_id`) with `Cache-Control: public, max-age=600, stale-while-revalidate`.
   Keeps the cover out of the main page payload so the grid stays light at any scale; auth is enforced
   by middleware (path not excluded). The grid `<img>` lazy-loads → only on-screen covers are fetched.
 - `stats/page.tsx` — **live system-map + stats page** (`/stats`, force-dynamic server component,
   gated by the global middleware like every route): storage totals from `parts`, items by kind,
-  top tags, job counters (download/upload/unpack incl. `paused`), kept files, VPS disk via
+  top tags, job counters (download/upload/unpack incl. `paused`), VPS disk via
   `statfsSync` on the staging volume, and a compact data-flow map (Store / Pull / Unpack / Watch).
 - `page.tsx` (main grid), `private/page.tsx` (**PIN-gated Private space**: renders `PrivateLock` until the
   unlock cookie is present, then `DriveApp space="private"` with `getDriveData("private")`),
@@ -488,9 +470,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   mobile via CSS). Folders render in their own compact `.grid.folders` above the file grid. Its modals +
   empty state were extracted to `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete` — folder-aware
   message, `CreateFolderModal`, `RenameFolderModal`, `MoveToFolderModal`, `FolderDetailsModal` — the
-  standalone folder "Properties" popup, `EmptyState`, `KeptFilesModal` — the "files kept on server"
-  list (unpack outputs > 2 GB): download via `/api/kept/[id]` + delete-now, opened from a pill in
-  `DriveApp` when `listKeptFiles()` is non-empty). `MoveToFolderModal` takes `moveItemIds` +
+  standalone folder "Properties" popup, `EmptyState`). `MoveToFolderModal` takes `moveItemIds` +
   `moveFolderIds` so one dialog moves any mix of items + folders (excluding each moving folder's own
   subtree as a target) and offers a cross-space destination (Move to Private / Move to Main drive). `PrivateLock.tsx` —
   the phone-style PIN keypad (also keyboard-typable); fixed **6-digit** PIN that **auto-submits** the

@@ -117,10 +117,10 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    resolved `remote:prefix/path` to validate + read the size. Rejected up front (no download, no job)
    if: the remote isn't configured / OpenList is unreachable / the drive cookie expired (→ a message
    pointing at `rclone config` for PikPak or the **OpenList UI** for WebDAV drives), the path is
-   missing, or it's a folder. **Size policy** (all drives): files > **`PIKPAK_MAX_BYTES`** (2 GB) prompt the user with interactive inline buttons (**Save to VPS Only** vs **Upload to Telegram**), or can specify `--vps`/`--telegram` in the command. If **Save to VPS Only** is chosen, the file is kept on the server (`unpack_kept` table + `_unpack/_keep/`) without uploading to Telegram. If **Upload to Telegram** is chosen, it is split into 2 GB parts. **Disk-guard**: if free space on the staging volume `< size × 1.2`
+   missing, or it's a folder. **No size policy left**: every file is queued for Telegram whatever its size — the watcher segments an oversized video into playable parts and raw-splits anything else, so there is nothing to ask the user about. **Disk-guard**: if free space on the staging volume `< size × 1.2`
    it first reclaims orphaned `_pikpak/<jid>` staging of done/failed jobs, then rejects if it still
    won't fit (so a big download can't fill the small shared VPS disk). Otherwise it inserts a
-   `download_jobs` row (`status='queued'`, `source=<drive>`, `dest='telegram'`|`'vps'`) and replies a progress message.
+   `download_jobs` row (`status='queued'`, `source=<drive>`) and replies a progress message.
 3. **Worker** (in-bot, `PIKPAK_MAX_CONCURRENT` asyncio tasks polling every 3 s, `FOR UPDATE SKIP
    LOCKED` claim) resolves the drive from `download_jobs.source` and runs a **resumable** download into
    `/staging/_pikpak/<jobid>/<name>`: the file is **pre-reserved** to its full size (`posix_fallocate`,
@@ -204,23 +204,6 @@ on the VPS and its contents are re-stored as normal items — the video then str
    other — the watcher cuts a video into playable segments and raw-splits anything else — so
    nothing is parked on the VPS.
 
-**Files kept on the VPS (`unpack_kept`)** — now only PikPak/OpenList downloads the owner
-   explicitly sent to `dest='vps'` (Flow D). They live under `_unpack/_keep/…` with
-   `expires_at` = now + `UNPACK_KEEP_TTL_H` (default 72 h).
-   The web dashboard shows a *"N file(s) kept on server"* pill → a modal listing them
-   with **Play** (kept videos open in the same full-screen Plyr viewer as drive videos, fed by
-   `/api/kept/[id]` — Range-capable so seeking works; the viewer has **Download / Add subtitle /
-   Fullscreen / Close**, Esc/F keys). **Subtitles**: an *Add subtitle* button uploads an SRT/VTT
-   file (`/api/kept/[id]/subtitles/manual`, converted to WebVTT and written as a sibling
-   `<file>.<lang>.vtt` on the shared `/staging` volume — the streamer can't help here, it never
-   mounts staging). Siblings are cleaned with the kept file (delete-now + expiry sweep).
-   No STT/from-drive/softsub-extract for kept files (those are part-keyed).
-   Other controls: **Download**, **Keep for…** (`extendKeptFile` — +3/7/30 days or a
-   `9999-12-31` sentinel = permanent until manually deleted), **Upload to Telegram**
-   (`uploadKeptFileToTelegram` — **any size**: queues an `upload_jobs` row and the watcher segments
-   or splits it as needed), and
-   **Delete now** (`deleteKeptFile` — removes file + row immediately). The worker's idle sweep
-   (`_sweep_keep`, every ~10 min) deletes any file past its expiry.
 5. **Original archive is kept** (never deleted). The worker cleans its own temp dirs; per-file staging
    dirs are cleaned by the watcher after upload. Progress/errors on `unpack_jobs` (`unpack_changed`
    NOTIFY). Password: never logged, passed to 7z via `-p` (argv, single-user VPS).

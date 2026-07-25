@@ -70,15 +70,6 @@ export interface UploadJob {
   updatedAt: number;
 }
 
-// A download parked on the VPS instead of Telegram (PikPak dest='vps').
-// Auto-deleted by the unpack worker at expiresAt; delete-now via deleteKeptFile.
-export interface KeptFile {
-  id: number;
-  name: string;
-  size: number;       // bytes
-  expiresAt: string;  // "YYYY-MM-DD HH:MM:SS" UTC, or the 9999-12-31 permanent sentinel
-}
-
 export interface BotStatus {
   online: boolean;
   lastSeen: number | null;

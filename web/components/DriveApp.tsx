@@ -6,7 +6,7 @@ import { useLiveRefresh } from "@/lib/useLiveRefresh";
 import { Icon } from "@/lib/icons";
 import { fmtSize } from "@/lib/format";
 import { TAG_COLORS } from "@/lib/kinds";
-import type { DriveFile, Tag, Folder, KeptFile } from "@/lib/types";
+import type { DriveFile, Tag, Folder } from "@/lib/types";
 import {
   type GroupKey,
   GROUP_OPTIONS,
@@ -31,8 +31,6 @@ import {
 } from "./FileViews";
 import { fileTypeFor } from "@/lib/fileType";
 import { PreviewDrawer } from "./PreviewDrawer";
-import { VideoPlayer } from "./VideoPlayer";
-import { SubtitleDialog } from "./SubtitleDialog";
 import { TagManager } from "./TagManager";
 import { ThemeToggle } from "./ThemeToggle";
 import { ViewMenu } from "./ViewMenu";
@@ -51,7 +49,6 @@ import {
   RenameFolderModal,
   MoveToFolderModal,
   UnpackModal,
-  KeptFilesModal,
   FolderDetailsModal,
   EmptyState,
   ConfirmEmptyTrash,
@@ -65,10 +62,6 @@ import {
   unpackArchive,
   getUnpackStatus,
   getActiveUnpack,
-  listKeptFiles,
-  deleteKeptFile,
-  extendKeptFile,
-  uploadKeptFileToTelegram,
   createFolder,
   renameFolder,
   deleteFolder,
@@ -222,15 +215,6 @@ export function DriveApp({
   const [unpackTrack, setUnpackTrack] = useState<
     { itemId: number; name: string; status: string; progress: number; message: string } | null
   >(null);
-  // Unpack outputs > 2 GB kept on the VPS (unpack_kept): pill → modal with download/delete-now.
-  const [keptFiles, setKeptFiles] = useState<KeptFile[]>([]);
-  const [showKept, setShowKept] = useState(false);
-  // Kept video playing in the Plyr modal (same player as drive videos, src = /api/kept/<id>).
-  const [keptPlay, setKeptPlay] = useState<{ id: number; name: string } | null>(null);
-  const keptViewerRef = useRef<HTMLDivElement>(null);
-  // "Add subtitle" dialog for the kept player + a bump that remounts VideoPlayer so a new track shows.
-  const [keptSubsOpen, setKeptSubsOpen] = useState(false);
-  const [keptSubsBump, setKeptSubsBump] = useState(0);
   const [folderMenu, setFolderMenu] = useState<{ anchor: HTMLElement; folder: Folder } | null>(null);
   // Standalone folder details popup (Alt+Enter / kebab Detail / toolbar Details).
   const [folderDetail, setFolderDetail] = useState<Folder | null>(null);
@@ -469,30 +453,6 @@ export function DriveApp({
     const t = setTimeout(() => setUnpackTrack(null), 2500);
     return () => clearTimeout(t);
   }, [unpackTrack?.status]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Kept-on-server unpack outputs (> 2 GB): load on mount, reload when an unpack reaches a
-  // terminal state (its big files may have just been kept).
-  useEffect(() => {
-    listKeptFiles().then(setKeptFiles).catch(() => {});
-  }, [unpackTrack?.status]);
-
-  // Esc closes the kept-video player; F toggles fullscreen (same keys as the drive-video viewer).
-  useEffect(() => {
-    if (!keptPlay) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-        else { setKeptPlay(null); setKeptSubsOpen(false); }
-      } else if (e.key === "f" || e.key === "F") {
-        const el = keptViewerRef.current;
-        if (!el) return;
-        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-        else el.requestFullscreen?.().catch(() => {});
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [keptPlay]);
 
   // Resume the unpack pill after a navigation: the job runs server-side, but pill state is
   // client-local and dies when DriveApp unmounts (e.g. a visit to /upload).
@@ -2069,14 +2029,6 @@ export function DriveApp({
           </div>
         )}
 
-        {/* Unpack outputs > 2 GB kept on the VPS — pill opens the download/delete-now list. */}
-        {keptFiles.length > 0 && !unpackTrack && (
-          <button className="saving-pill" style={{ cursor: "pointer" }} onClick={() => setShowKept(true)}>
-            <Icon name="archive" size={15} />
-            {keptFiles.length} file{keptFiles.length > 1 ? "s" : ""} kept on server
-          </button>
-        )}
-
         {toast && (
           <div className="saving-pill err" role="alert" onClick={() => setToast(null)}>
             <Icon name="trash" size={15} />
@@ -2084,90 +2036,6 @@ export function DriveApp({
           </div>
         )}
       </div>
-
-      {showKept && (
-        <KeptFilesModal
-          files={keptFiles}
-          onClose={() => setShowKept(false)}
-          onDelete={(id) =>
-            startTransition(async () => {
-              const r = await deleteKeptFile(id);
-              if (!r.ok) setToast(r.error ?? "Failed to delete the kept file.");
-              setKeptFiles(await listKeptFiles());
-            })
-          }
-          onExtend={(id, hours) =>
-            startTransition(async () => {
-              const r = await extendKeptFile(id, hours);
-              if (!r.ok) setToast(r.error ?? "Failed to update the keep time.");
-              setKeptFiles(await listKeptFiles());
-            })
-          }
-          onPlay={(f) => setKeptPlay(f)}
-          onUploadToTelegram={(id) =>
-            startTransition(async () => {
-              const r = await uploadKeptFileToTelegram(id);
-              if (!r.ok) setToast(r.error ?? "Failed to queue Telegram upload.");
-              else setToast("Queued for Telegram upload & indexing.");
-              setKeptFiles(await listKeptFiles());
-            })
-          }
-        />
-      )}
-
-      {/* Kept-video player — the same full-screen immersive viewer as drive videos (top bar,
-          fullscreen, Esc/F keys), fed by /api/kept (Range-capable). No filmstrip/subtitles/
-          seek-preview: a kept file isn't a Telegram part, so it has no partId to key those off. */}
-      {keptPlay && (
-        <>
-          <div className="viewer-scrim" style={{ zIndex: 340 }} />
-          <div ref={keptViewerRef} className="viewer has-video-stage" style={{ zIndex: 341 }}>
-            <div className="viewer-stage">
-              <VideoPlayer
-                key={`${keptPlay.id}:${keptSubsBump}`}
-                src={`/api/kept/${keptPlay.id}`}
-                subtitleBase={`/api/kept/${keptPlay.id}/subtitles`}
-              />
-            </div>
-            <div className="viewer-top">
-              <span className="viewer-name">{keptPlay.name}</span>
-              <div className="viewer-tools">
-                <a className="viewer-iconbtn" href={`/api/kept/${keptPlay.id}`} download={keptPlay.name} title="Download">
-                  <Icon name="download" size={17} />
-                </a>
-                <button className="viewer-iconbtn" onClick={() => setKeptSubsOpen(true)} title="Add subtitle">
-                  <Icon name="subtitles" size={17} />
-                </button>
-                <button
-                  className="viewer-iconbtn"
-                  onClick={() => {
-                    const el = keptViewerRef.current;
-                    if (!el) return;
-                    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-                    else el.requestFullscreen?.().catch(() => {});
-                  }}
-                  title="Fullscreen (F)"
-                >
-                  <Icon name="expand" size={17} />
-                </button>
-                <span className="viewer-sep" />
-                <button className="viewer-iconbtn" onClick={() => { setKeptPlay(null); setKeptSubsOpen(false); }} title="Close (Esc)">
-                  <Icon name="close" size={17} />
-                </button>
-              </div>
-            </div>
-          </div>
-          {keptSubsOpen && (
-            <SubtitleDialog
-              partId={0}
-              subtitleBase={`/api/kept/${keptPlay.id}/subtitles`}
-              localOnly
-              onClose={() => setKeptSubsOpen(false)}
-              onAdded={() => setKeptSubsBump((b) => b + 1)}
-            />
-          )}
-        </>
-      )}
 
     </div>
   );

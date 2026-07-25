@@ -42,18 +42,12 @@ export function SubtitleDialog({
   partId,
   onClose,
   onAdded,
-  subtitleBase,
-  localOnly = false,
 }: {
   partId: number;
   onClose: () => void;
   onAdded: () => void;
-  // Subtitle API base (defaults to the part-keyed routes). Kept-on-server files pass their own.
-  subtitleBase?: string;
-  // Kept files only support a local file upload — hide the from-drive and softsub-extract sources.
-  localOnly?: boolean;
 }) {
-  const base = subtitleBase ?? `/api/subtitles/${partId}`;
+  const base = `/api/subtitles/${partId}`;
   const [lang, setLang] = useState("id");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -68,7 +62,6 @@ export function SubtitleDialog({
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (localOnly) return; // kept files: no from-drive picker
     let alive = true;
     listDriveSubtitleFiles()
       .then((subs) => alive && setDriveSubs(subs))
@@ -77,7 +70,7 @@ export function SubtitleDialog({
       alive = false;
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [localOnly]);
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -214,7 +207,7 @@ export function SubtitleDialog({
           </div>
 
           {/* 2 — from Telegram storage */}
-          {!localOnly && (
+          {(
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span className="sub" style={{ fontSize: 13 }}>From Telegram storage</span>
             {driveSubs === null ? (
@@ -251,7 +244,7 @@ export function SubtitleDialog({
           )}
 
           {/* 3 — extract embedded (softsub) */}
-          {!localOnly && (
+          {(
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span className="sub" style={{ fontSize: 13 }}>
               Extract embedded subtitles from the video itself (softsub). Downloads the

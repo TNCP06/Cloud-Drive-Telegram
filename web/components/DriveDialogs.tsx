@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/lib/icons";
-import { fmtSize } from "@/lib/format";
 import type { DriveFile, Folder } from "@/lib/types";
 import type { FolderStat } from "./DriveApp";
 
@@ -372,114 +371,6 @@ export function UnpackModal({
           </button>
           <button className="btn primary" onClick={() => onUnpack(password)}>
             Unpack
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Downloads the owner sent straight to the VPS (PikPak dest='vps'). This lists them with play
-// (Plyr modal) / download / upload-to-Telegram / keep-longer / delete-now controls; the unpack
-// worker auto-deletes each file at its expiry.
-const KEPT_VIDEO_RE = /\.(mp4|m4v|webm|mkv|mov)$/i;
-const KEPT_IMAGE_RE = /\.(jpe?g|png|gif|webp)$/i;
-
-export function KeptFilesModal({
-  files,
-  onClose,
-  onDelete,
-  onExtend,
-  onPlay,
-  onUploadToTelegram,
-}: {
-  files: { id: number; name: string; size: number; expiresAt: string }[];
-  onClose: () => void;
-  onDelete: (id: number) => void;
-  onExtend: (id: number, hours: number | null) => void;
-  onPlay: (f: { id: number; name: string }) => void;
-  onUploadToTelegram?: (id: number) => void;
-}) {
-  return (
-    <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog" style={{ maxWidth: 480 }}>
-        <div className="dhead">
-          <h2>Files kept on server</h2>
-        </div>
-        <div className="dbody">
-          <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--ink-2)" }}>
-            Downloads you sent straight to the VPS live here until they expire. Upload one to Telegram
-            at any size to index it on the drive — a big video is cut into playable parts on the way.
-          </p>
-          {files.length === 0 && (
-            <p style={{ margin: 0, fontSize: 13, color: "var(--faint)" }}>Nothing kept right now.</p>
-          )}
-          {files.map((f) => {
-            return (
-              <div key={f.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--line-2)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.name}>
-                      {f.name}
-                    </div>
-                    <div style={{ fontSize: 12, color: "var(--faint)" }}>
-                      {fmtSize(f.size)} ·{" "}
-                      {f.expiresAt.startsWith("9999")
-                        ? "kept until you delete it"
-                        : `expires ${f.expiresAt} UTC`}
-                    </div>
-                  </div>
-                  <select
-                    className="input"
-                    style={{ width: 104, padding: "4px 6px", fontSize: 12 }}
-                    value=""
-                    title="Keep this file longer"
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      e.target.value = "";
-                      if (v) onExtend(f.id, v === "inf" ? null : Number(v));
-                    }}
-                  >
-                    <option value="">Keep for…</option>
-                    <option value="72">3 more days</option>
-                    <option value="168">7 more days</option>
-                    <option value="720">30 more days</option>
-                    <option value="inf">Until I delete it</option>
-                  </select>
-                  {onUploadToTelegram && (
-                    <button
-                      className="btn subtle"
-                      style={{ color: "var(--accent)" }}
-                      title="Upload to Telegram Drive & index on website"
-                      onClick={() => onUploadToTelegram(f.id)}
-                    >
-                      <Icon name="upload" size={15} />
-                    </button>
-                  )}
-                  {KEPT_VIDEO_RE.test(f.name) && (
-                    <button className="btn subtle" title="Play" onClick={() => onPlay(f)}>
-                      <Icon name="video" size={15} />
-                    </button>
-                  )}
-                  {KEPT_IMAGE_RE.test(f.name) && (
-                    <a className="btn subtle" title="Open" href={`/api/kept/${f.id}`} target="_blank" rel="noopener noreferrer">
-                      <Icon name="video" size={15} />
-                    </a>
-                  )}
-                  <a className="btn subtle" title="Download" href={`/api/kept/${f.id}`} download={f.name}>
-                    <Icon name="download" size={15} />
-                  </a>
-                  <button className="btn subtle" title="Delete from server now" onClick={() => onDelete(f.id)}>
-                    <Icon name="trash" size={15} />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <div className="dfoot">
-          <button className="btn subtle" onClick={onClose}>
-            Close
           </button>
         </div>
       </div>

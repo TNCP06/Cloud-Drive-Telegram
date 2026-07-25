@@ -8,7 +8,7 @@ import { fmtSize } from "@/lib/format";
 export const dynamic = "force-dynamic";
 
 async function getStats() {
-  const [kinds, parts, tags, dl, dlSrc, unp, ups, kept, trash] = await Promise.all([
+  const [kinds, parts, tags, dl, dlSrc, unp, ups, trash] = await Promise.all([
     db.execute(
       "SELECT kind, count(*) AS n, coalesce(sum(total_size),0) AS bytes FROM items " +
         "WHERE deleted_at IS NULL GROUP BY kind"
@@ -26,7 +26,6 @@ async function getStats() {
     ),
     db.execute("SELECT status, count(*) AS n FROM unpack_jobs GROUP BY status"),
     db.execute("SELECT status, count(*) AS n FROM upload_jobs GROUP BY status"),
-    db.execute("SELECT count(*) AS n, coalesce(sum(size),0) AS bytes FROM unpack_kept"),
     db.execute("SELECT count(*) AS n FROM items WHERE deleted_at IS NOT NULL"),
   ]);
 
@@ -56,7 +55,6 @@ async function getStats() {
     })),
     unpack: byStatus(unp),
     uploads: byStatus(ups),
-    kept: { n: Number(kept.rows[0]?.n ?? 0), bytes: Number(kept.rows[0]?.bytes ?? 0) },
     trash: Number(trash.rows[0]?.n ?? 0),
     disk,
   };
@@ -150,11 +148,6 @@ export default async function StatsPage() {
             <div className="k">VPS disk free</div>
             <div className="v">{fmtSize(s.disk.free)}</div>
             <div className="d">of {fmtSize(s.disk.total)} ({usedPct}% used)</div>
-          </div>
-          <div className="stats-card">
-            <div className="k">Kept on server</div>
-            <div className="v">{s.kept.n ? fmtSize(s.kept.bytes) : "—"}</div>
-            <div className="d">{s.kept.n} file(s) &gt; 2 GB awaiting download</div>
           </div>
         </div>
 
