@@ -121,10 +121,20 @@ async def ensure_schema(db):
         "UPDATE unpack_jobs SET status='failed', message='interrupted by restart — re-run', "
         "updated_at=now_text() WHERE status='running'"
     )
-    # Retired: the manual CRF re-encode queue only existed to shrink a file under the 2 GB cap so it
-    # could be uploaded — the watcher now segments oversized videos losslessly instead. schema.sql
-    # only runs on a fresh volume, so drop it here for databases that already have it.
-    await db.execute("DROP TABLE IF EXISTS kept_compress_jobs")
+    # One-shot migration (added 2026-07-25): the manual CRF re-encode queue only existed to shrink
+    # a file under the 2 GB cap so it could be uploaded — the watcher now segments oversized videos
+    # losslessly instead. schema.sql only runs on a fresh volume, so retired tables have to be
+    # dropped here. Guarded by a bot_settings marker so this DROP runs ONCE per database and can
+    # never silently re-delete a table restored from an old backup.
+    # ponytail: delete this block (and its marker row) once every deployment has started on ≥ this
+    # commit — a migration that has already run everywhere is dead code.
+    await db.execute("CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)")
+    done = await db.execute("SELECT 1 FROM bot_settings WHERE key = 'drop_kept_compress_jobs_v1'")
+    if not done.rows:
+        await db.execute("DROP TABLE IF EXISTS kept_compress_jobs")
+        await db.execute(
+            "INSERT INTO bot_settings (key, value) VALUES ('drop_kept_compress_jobs_v1', "
+            "now_text()) ON CONFLICT (key) DO NOTHING")
 
 
 # ---------------------------------------------------------------------------

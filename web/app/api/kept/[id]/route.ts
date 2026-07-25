@@ -7,7 +7,7 @@ import { Readable } from "stream";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
 import { db } from "@/lib/db";
 
-// Download a kept unpack output (> 2 GB file stored on the VPS instead of Telegram).
+// Download a file parked on the VPS instead of Telegram (PikPak dest='vps').
 // Streams straight off the shared staging volume; supports a single Range so a
 // multi-GB download can resume. Auth checked manually — same pattern as /api/stream.
 export const runtime = "nodejs";
