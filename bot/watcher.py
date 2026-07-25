@@ -52,7 +52,6 @@ from telethon import TelegramClient
 from pg_db import create_client
 
 from bot_config import PIKPAK_MAX_BYTES
-from worker import normalize_tags, build_caption, safe_name, collect_parts
 import tg_botapi_upload as botapi
 import unpack
 
@@ -69,6 +68,45 @@ POLL_INTERVAL = 5
 # (Telegram's ~2 GB cap): the segment muxer can only cut on a keyframe, so a real segment
 # always lands a little above the target. Tune it here if your keyframe interval is huge.
 VIDEO_SEGMENT_MB = int(os.environ.get("VIDEO_SEGMENT_MB", 1800))
+
+
+# ---------------------------------------------------------------------------
+# Caption / naming helpers
+# ---------------------------------------------------------------------------
+def normalize_tags(raw: "str | None") -> str:
+    """'rpg ,  fantasy' -> 'rpg, fantasy' (ready-to-use string for the caption)."""
+    if not raw:
+        return ""
+    return ", ".join(t.strip() for t in raw.split(",") if t.strip())
+
+
+def build_caption(title: str, idx: int, total: int, tags: str) -> str:
+    """Caption contract: 'Title | part/total | tag1, tag2'."""
+    return f"{title} | {idx}/{total} | {tags}"
+
+
+def safe_name(title: str) -> str:
+    """Safe archive name derived from the title."""
+    name = re.sub(r"[^\w\-. ]", "", title).strip().replace(" ", "_")
+    return name or "archive"
+
+
+def collect_parts(path: str) -> list:
+    """Collect sorted split parts from a path (file .001/.7z, or directory)."""
+    if os.path.isdir(path):
+        parts = glob.glob(os.path.join(path, "*.7z.*")) or glob.glob(os.path.join(path, "*.0*"))
+    else:
+        # path may be "name.7z.001" or "name.7z" -> grab all "name.7z.*"
+        base = re.sub(r"\.\d{3}$", "", path)  # strip .001 suffix
+        parts = glob.glob(base + ".*")
+        if not parts and os.path.isfile(path):
+            parts = [path]
+
+    def key(p):
+        m = re.search(r"\.(\d+)$", p)
+        return int(m.group(1)) if m else 0
+
+    return sorted((p for p in parts if os.path.isfile(p)), key=key)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +242,6 @@ async def set_status(db, jid, status, message, pct=None):
 
 
 # ---------------------------------------------------------------------------
-# Split (raises, unlike worker.split_with_7zip which calls sys.exit)
 # ---------------------------------------------------------------------------
 def split_archive(path, title, part_mb):
     os.makedirs(OUT_DIR, exist_ok=True)

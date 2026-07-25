@@ -117,8 +117,9 @@ fall back to a document so the upload never dies),
 `process` (build plan `list`/`stream` → upload each part, checkpoint after each, cleanup temp
 parts + staging dir on success), `resolve_channel`, `main` (poll loop, 5 s).
 Writes `watcher.pid`. **`ffmpeg`** for media thumbnails; **7-Zip only for `local` archives**.
-Imports `normalize_tags, build_caption, safe_name, collect_parts` from `worker.py`. Also
-`import unpack` → spawns `unpack.worker_loop` in `main` (shares this process's Telethon client + 7z).
+Owns the caption/naming helpers (`normalize_tags`, `build_caption`, `safe_name`, `collect_parts`)
+that used to live in the deleted `worker.py` CLI. Also `import unpack` → spawns
+`unpack.worker_loop` in `main` (shares this process's Telethon client + 7z).
 
 ### `tg_botapi_upload.py` — fast upload transport (local Bot API, used by the watcher)
 `available(path)` (config + `/staging` visibility gate), `send_part` (sendVideo/Photo/Document with
@@ -142,12 +143,6 @@ download → extract → stage → cleanup; **keeps the original archive**).
 `ensure_schema` (also drops the retired `unpack_kept` / `kept_compress_jobs` tables once,
 marker-guarded), `worker_loop`. Password: never logged, passed to 7z via `-p`
 (argv, single-user VPS).
-
-### `worker.py` — standalone upload CLI (Telethon, **laptop**)
-Same upload logic as the watcher but argparse-driven (`archive` / `media` subcommands).
-`normalize_tags`, `build_caption`, `safe_name`, `split_with_7zip` (calls `sys.exit` on error —
-contrast watcher's `split_archive` which raises), `collect_parts`, `make_progress`, `upload_parts`,
-`run`, `main`.
 
 ### `index_history.py` — manual/automatic history back-indexer (Telethon, **laptop or server**)
 Utility to fetch channel messages using Telethon (via `worker.session`) and sync them back to the Postgres catalog. Runs on-demand or automatically inside the watcher container on startup to back-fill any updates missed while the bot was offline.

@@ -151,12 +151,10 @@ CREATE TABLE IF NOT EXISTS unpack_jobs (
     updated_at  TEXT NOT NULL DEFAULT now_text()
 );
 
--- Retired: files were once parked on the VPS instead of Telegram (unpack_kept + kept_compress_jobs).
---   The watcher now cuts an oversized video into playable segments and raw-splits anything else, so
---   everything goes to Telegram and nothing squats on the shared disk. Dropped here for fresh
---   volumes; bot/unpack.py's ensure_schema drops them once on databases that already have them.
-DROP TABLE IF EXISTS kept_compress_jobs;
-DROP TABLE IF EXISTS unpack_kept;
+-- Retired 2026-07-26: `unpack_kept` + `kept_compress_jobs` parked oversized files on the VPS.
+--   The watcher now cuts an oversized video into playable segments and raw-splits anything else,
+--   so everything goes to Telegram and nothing squats on the shared disk. Both tables (and
+--   `download_jobs.dest`) were dropped by a marker-guarded migration that has since been removed.
 
 -- Generated subtitle tracks per part (original + translations). One row per language.
 -- The VTT files live on the streamer's persistent /subtitles volume; this table just

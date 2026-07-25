@@ -9,7 +9,7 @@ You will be prompted for:
   2. OTP code sent by Telegram to your account
   3. (if enabled) 2FA password
 
-After success, worker.session is saved and worker.py can run without logging in again.
+After success, worker.session is saved and watcher.py can run without logging in again.
 DO NOT commit *.session (already in .gitignore) — it grants full access to the account.
 """
 
@@ -30,7 +30,7 @@ async def main():
     async with TelegramClient(SESSION, API_ID, API_HASH) as client:
         me = await client.get_me()
         print(f"\n✓ Login successful: {me.first_name} (@{me.username}) id={me.id}")
-        print(f"✓ Session saved: {SESSION} — worker.py is ready to use.")
+        print(f"✓ Session saved: {SESSION} — watcher.py is ready to use.")
 
 
 if __name__ == "__main__":

@@ -102,22 +102,6 @@ async def ensure_schema(db):
         "UPDATE unpack_jobs SET status='failed', message='interrupted by restart — re-run', "
         "updated_at=now_text() WHERE status='running'"
     )
-    # One-shot migration (added 2026-07-25/26): 'kept on the VPS' is retired. The CRF re-encode queue
-    # only existed to shrink a file under the 2 GB cap so it could be uploaded, and unpack_kept was
-    # where oversized files were parked — the watcher now segments oversized videos losslessly, so
-    # everything goes to Telegram. schema.sql only runs on a fresh volume, so retired tables have to
-    # be dropped here. Guarded by a bot_settings marker so these DROPs run ONCE per database and can
-    # never silently re-delete a table restored from an old backup.
-    # ponytail: delete this block (and its marker row) once every deployment has started on ≥ this
-    # commit — a migration that has already run everywhere is dead code.
-    await db.execute("CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)")
-    done = await db.execute("SELECT 1 FROM bot_settings WHERE key = 'drop_kept_tables_v2'")
-    if not done.rows:
-        await db.execute("DROP TABLE IF EXISTS kept_compress_jobs")
-        await db.execute("DROP TABLE IF EXISTS unpack_kept")
-        await db.execute(
-            "INSERT INTO bot_settings (key, value) VALUES ('drop_kept_tables_v2', "
-            "now_text()) ON CONFLICT (key) DO NOTHING")
 
 
 # ---------------------------------------------------------------------------

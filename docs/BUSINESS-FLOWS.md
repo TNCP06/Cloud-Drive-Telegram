@@ -41,8 +41,9 @@ the `upload_jobs` table.
 7. **Bot** independently sees each new `channel_post` → indexes it into `items`/`parts`
    (Flow C). The watcher and bot never talk directly.
 
-> Manual alternative (no web/queue): run `worker.py archive <path> --title ... --tags ...`
-> directly. Same upload logic, argparse CLI.
+> There is no separate CLI for this any more — the watcher itself runs on a laptop just as well
+> as on the server, and it is the only upload path that resumes, uses the local Bot API, and
+> segments oversized videos.
 
 ---
 
