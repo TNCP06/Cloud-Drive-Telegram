@@ -68,7 +68,6 @@ import {
   listKeptFiles,
   deleteKeptFile,
   extendKeptFile,
-  compressKeptFile,
   uploadKeptFileToTelegram,
   createFolder,
   renameFolder,
@@ -476,16 +475,6 @@ export function DriveApp({
   useEffect(() => {
     listKeptFiles().then(setKeptFiles).catch(() => {});
   }, [unpackTrack?.status]);
-
-  // While the kept-files modal is open and a compress job is active, poll for its progress.
-  useEffect(() => {
-    if (!showKept || !keptFiles.some((f) => f.compress && ["queued", "running"].includes(f.compress.status)))
-      return;
-    const t = setInterval(() => {
-      listKeptFiles().then(setKeptFiles).catch(() => {});
-    }, 4000);
-    return () => clearInterval(t);
-  }, [showKept, keptFiles]);
 
   // Esc closes the kept-video player; F toggles fullscreen (same keys as the drive-video viewer).
   useEffect(() => {
@@ -2115,13 +2104,6 @@ export function DriveApp({
             })
           }
           onPlay={(f) => setKeptPlay(f)}
-          onCompress={(id, crf) =>
-            startTransition(async () => {
-              const r = await compressKeptFile(id, crf);
-              if (!r.ok) setToast(r.error ?? "Failed to queue the compression.");
-              setKeptFiles(await listKeptFiles());
-            })
-          }
           onUploadToTelegram={(id) =>
             startTransition(async () => {
               const r = await uploadKeptFileToTelegram(id);

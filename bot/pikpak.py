@@ -504,8 +504,10 @@ async def _process(bot, db, job):
             # Hand off to the existing upload pipeline. origin='upload' + cleanup_source=1 means
             # the watcher uploads the staged file and deletes `dst` afterwards. Size policy:
             #   media / archive ≤ 2 GB → single part (4096 MB cap).
-            #   media / archive > 2 GB → part_size = DRIVE_SPLIT_PART_MB so the watcher raw-splits it
-            #                            into sequential binary parts (one item, N parts).
+            #   archive > 2 GB        → part_size = DRIVE_SPLIT_PART_MB so the watcher raw-splits
+            #                           it into sequential binary parts (one item, N parts).
+            #   video > 2 GB          → the watcher cuts it into playable segments instead, so it
+            #                           stays streamable (part_size doesn't apply to media).
             kind = "media" if _is_media(fname) else "archive"  # photo/video → thumbnail+preview; else document
             part_size = DRIVE_SPLIT_PART_MB if size > PIKPAK_MAX_BYTES else 4096
             title = _drive_title(job["remote_path"], fname, drive)  # files it under the drive folder

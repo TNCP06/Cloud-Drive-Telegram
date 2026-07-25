@@ -25,7 +25,7 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 |---|---|---|---|
 | **Storage channel** | Telegram | — | Holds the actual file bytes (one message per part). Bot is admin. |
 | **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake; **remote-download** (`bot/pikpak.py`: `/pikpak` + `/baidu` and other registry drives via OpenList/WebDAV, `_ls`/`_jobs` + a ☁️ PikPak inline-button browser + in-process rclone worker → hands off to `upload_jobs`, splitting non-media > 2 GB into parts). |
-| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. |
+| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. **Videos over the cap are never raw-split** — ffmpeg cuts them into keyframe-aligned parts that each still play (`split_video`). |
 | **Worker (CLI)** | The laptop | `bot/worker.py` | Manual/standalone version of the watcher's upload logic (argparse CLI). Watcher imports its helpers. |
 | **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Postgres; runs automatically on watcher container startup. |
 | **Streamer** | Server/VPS (Docker) | `bot/streamer.py` (+ `stream_compress.py`, `stream_subtitles.py`, `stream_seekpreview.py`) | Video streaming: if local Bot API server is configured, downloads files on-the-fly to a shared disk cache and streams directly; else falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetch. Also runs background **H.264 compression** (deletes the original once done), background **subtitle generation** (Groq Whisper STT → original + EN + ID WebVTT), and background **seek-preview sprite-sheet generation** (ffmpeg thumbnails → Plyr progress-bar hover). |
@@ -121,8 +121,10 @@ any other document (`.7z`, `.zip`, split parts) → `archive`.
 **Albums** (Telegram media groups) are **NOT grouped** — each photo/video becomes its **own
 single-part `media` item** (slug `m<media_group_id>-<msgid>`, so siblings stay discoverable).
 Tags are kept identical across the split members (`sync_album_tags`); the web filmstrip still
-shows them side-by-side via the parent view's nav list. So multi-part `media` items no longer
-exist — only `archive` items are multi-part (real split files).
+shows them side-by-side via the parent view's nav list. So an *album* never produces a multi-part
+item. Multi-part `media` items do still exist for one reason: a **video too big for Telegram**,
+cut by the watcher into keyframe-aligned segments (`split_video`) — one item, N parts that each
+play, navigated with Shift+←/→ in the viewer.
 
 ---
 

@@ -13,12 +13,17 @@ import types
 os.environ.setdefault("TG_API_ID", "1")
 os.environ.setdefault("TG_API_HASH", "x")
 os.environ.setdefault("STORAGE_CHANNEL_ID", "-1000000000000")
+os.environ.setdefault("BOT_TOKEN", "x")          # watcher → unpack → bot_config
+os.environ.setdefault("OWNER_USER_ID", "1")
 
 for name in ("telethon", "pg_db", "dotenv", "worker"):
     if name not in sys.modules:
         sys.modules[name] = types.ModuleType(name)
 sys.modules["telethon"].TelegramClient = object
+sys.modules["telethon.errors"] = types.ModuleType("telethon.errors")
+sys.modules["telethon.errors"].FloodError = type("FloodError", (Exception,), {})
 sys.modules["pg_db"].create_client = lambda *a, **k: None
+sys.modules["pg_db"].database_url = lambda *a, **k: "postgresql://x/x"
 sys.modules["dotenv"].load_dotenv = lambda *a, **k: None
 for fn in ("normalize_tags", "build_caption", "safe_name", "collect_parts"):
     setattr(sys.modules["worker"], fn, lambda *a, **k: None)

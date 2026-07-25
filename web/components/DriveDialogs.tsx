@@ -379,17 +379,11 @@ export function UnpackModal({
   );
 }
 
-// Unpack outputs over the Telegram cap are kept on the VPS instead of re-uploaded. This lists
-// them with play (Plyr modal) / download / keep-longer / manual-compress / delete-now controls;
-// the unpack worker auto-deletes each file at its expiry.
+// Downloads the owner sent straight to the VPS (PikPak dest='vps'). This lists them with play
+// (Plyr modal) / download / upload-to-Telegram / keep-longer / delete-now controls; the unpack
+// worker auto-deletes each file at its expiry.
 const KEPT_VIDEO_RE = /\.(mp4|m4v|webm|mkv|mov)$/i;
 const KEPT_IMAGE_RE = /\.(jpe?g|png|gif|webp)$/i;
-const COMPRESS_PRESETS: { crf: number; label: string; desc: string }[] = [
-  { crf: 20, label: "CRF 20 — archive quality", desc: "visually identical to the original; saves ~20–40%" },
-  { crf: 23, label: "CRF 23 — balanced (recommended)", desc: "differences are near-impossible to spot in normal viewing; saves ~40–60%" },
-  { crf: 26, label: "CRF 26 — small", desc: "fine detail (skin, grain, grass) softens slightly; saves ~55–70%" },
-  { crf: 28, label: "CRF 28 — smallest", desc: "visibly softer, may block up in fast motion; saves ~65–80%" },
-];
 
 export function KeptFilesModal({
   files,
@@ -397,18 +391,13 @@ export function KeptFilesModal({
   onDelete,
   onExtend,
   onPlay,
-  onCompress,
   onUploadToTelegram,
 }: {
-  files: {
-    id: number; name: string; size: number; expiresAt: string;
-    compress: { status: string; message: string; crf: number } | null;
-  }[];
+  files: { id: number; name: string; size: number; expiresAt: string }[];
   onClose: () => void;
   onDelete: (id: number) => void;
   onExtend: (id: number, hours: number | null) => void;
   onPlay: (f: { id: number; name: string }) => void;
-  onCompress: (id: number, crf: number) => void;
   onUploadToTelegram?: (id: number) => void;
 }) {
   return (
@@ -419,15 +408,13 @@ export function KeptFilesModal({
         </div>
         <div className="dbody">
           <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--ink-2)" }}>
-            Unpacked or downloaded files over 2 GB are stored on the server. Once compressed or if under 2 GB,
-            you can upload them directly to Telegram to index them on the drive.
+            Downloads you sent straight to the VPS live here until they expire. Upload one to Telegram
+            at any size to index it on the drive — a big video is cut into playable parts on the way.
           </p>
           {files.length === 0 && (
             <p style={{ margin: 0, fontSize: 13, color: "var(--faint)" }}>Nothing kept right now.</p>
           )}
           {files.map((f) => {
-            const busy = f.compress && ["queued", "running"].includes(f.compress.status);
-            const canUpload = f.size <= 2000 * 1024 * 1024 && !busy;
             return (
               <div key={f.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--line-2)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -459,7 +446,7 @@ export function KeptFilesModal({
                     <option value="720">30 more days</option>
                     <option value="inf">Until I delete it</option>
                   </select>
-                  {canUpload && onUploadToTelegram && (
+                  {onUploadToTelegram && (
                     <button
                       className="btn subtle"
                       style={{ color: "var(--accent)" }}
@@ -486,55 +473,9 @@ export function KeptFilesModal({
                     <Icon name="trash" size={15} />
                   </button>
                 </div>
-                {KEPT_VIDEO_RE.test(f.name) && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
-                    {busy ? (
-                      <span style={{ fontSize: 12, color: "var(--accent)" }}>
-                        <span className="spinner sm" style={{ verticalAlign: -2, marginRight: 6 }} />
-                        {f.compress?.message || "compressing…"}
-                      </span>
-                    ) : (
-                      <>
-                        <select
-                          className="input"
-                          style={{ width: 230, padding: "4px 6px", fontSize: 12 }}
-                          value=""
-                          title="Re-encode this file on the server to shrink it"
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            e.target.value = "";
-                            if (v) onCompress(f.id, Number(v));
-                          }}
-                        >
-                          <option value="">Compress…</option>
-                          {COMPRESS_PRESETS.map((p) => (
-                            <option key={p.crf} value={p.crf}>{p.label}</option>
-                          ))}
-                        </select>
-                        {f.compress && (
-                          <span style={{ fontSize: 12, color: f.compress.status === "failed" ? "var(--red, #d03b3b)" : "var(--faint)" }}>
-                            {f.compress.message}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </div>
-                )}
               </div>
             );
           })}
-          <details style={{ marginTop: 12, fontSize: 12, color: "var(--faint)" }}>
-            <summary style={{ cursor: "pointer" }}>What do the compress presets mean?</summary>
-            <ul style={{ margin: "8px 0 0", paddingLeft: 18, lineHeight: 1.6 }}>
-              {COMPRESS_PRESETS.map((p) => (
-                <li key={p.crf}><b>{p.label}</b>: {p.desc}</li>
-              ))}
-            </ul>
-            <p style={{ margin: "8px 0 0" }}>
-              Compression runs on the server CPU (roughly 0.5–1× the video&apos;s duration), replaces
-              the file in place, and keeps the original only if the result isn&apos;t smaller.
-            </p>
-          </details>
         </div>
         <div className="dfoot">
           <button className="btn subtle" onClick={onClose}>

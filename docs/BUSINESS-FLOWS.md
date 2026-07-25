@@ -54,8 +54,9 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
 0. **One-click entry (no form):** the drive toolbar's **Upload** button (Main space → *Upload
    files* / *Upload folder*) skips the `/upload` form entirely. It calls `addFiles(..., autoKind:
    true)` then `runQueue()` so the upload **starts immediately**; title/tags are auto-filled from
-   the filename + type, and each file's kind is chosen by size — **> 2000 MiB → split** (`archive`,
-   default part size), otherwise single `media`. The **currently open folder's path is prefixed
+   the filename + type, and each file's kind is chosen by size *and* extension (`autoKindFor`) —
+   **> 2000 MiB → `archive`** (raw split), except a **video**, which stays `media` so the watcher
+   cuts it into playable segments instead; ≤ 2000 MiB → single `media`. The **currently open folder's path is prefixed
    onto the title** (`folderPath` default), so the upload lands in the folder the user is standing
    in — server-side folder resolution splits titles on `/`. Steps 2–6 below are identical from there. The
    `/upload` page (below) remains for explicit control (per-item titles/tags, host-path mode).
@@ -71,7 +72,10 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
 3. User clicks Start → `status='pending'` (same as Flow A).
 4. **Watcher** `claim_next()` → `process()`: `resolve_staged_file()` finds the file. archive size >
    part size → **raw streaming split** (`write_window` copies one <2 GB window → send → delete the
-   part → `set_parts_done(i)`), capping disk at ~1 part; media/small → whole file. Caption
+   part → `set_parts_done(i)`), capping disk at ~1 part; media → `plan_media()`: whole file if it
+   fits, else a **video split** (`split_video` — ffmpeg segment muxer, stream copy, keyframe-aligned
+   ≤ `VIDEO_SEGMENT_MB` pieces that each play on their own, so the video stays streamable as one
+   multi-part item), or a raw split for oversized non-video media. Caption
    `Title | i/total | tags` unchanged. **Transport** (`_send_part`): the fast path posts each part
    through the **local Bot API server** (`bot/tg_botapi_upload.py`, `file:///staging/…` — the
    server reads the shared staging volume directly and uploads as the **bot** account, which is
@@ -149,8 +153,9 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    **`part_size`** encodes the split policy: media / non-media ≤ 2 GB → `4096` (single part,
    unchanged); non-media > 2 GB → **`DRIVE_SPLIT_PART_MB`** (default 1900) so the **watcher**
    raw-splits it into sequential binary parts `<name>.001`, `.002`, … (Flow A2 "stream" split) —
-   one logical `item`, N `parts` rows. Reassemble by ordered `cat`. The watcher picks it up
-   automatically (Flow A2 from step 4).
+   one logical `item`, N `parts` rows. Reassemble by ordered `cat`. A **video > 2 GB ignores
+   `part_size`**: the watcher segments it into playable parts instead (Flow A2 step 4). The watcher
+   picks the job up automatically (Flow A2 from step 4).
 5. **Cleanup**: the watcher deletes the staging file after a successful upload (`cleanup_source=1`);
    the file is now safely in Telegram (indexing reads from Telegram, not the local copy). A
    `_track_upload` task follows the `upload_jobs` row to `done` → sets `download_jobs` → `done`,
@@ -178,8 +183,9 @@ on the VPS and its contents are re-stored as normal items — the video then str
 2. **Worker** (`unpack.worker_loop`, inside the **watcher** process — it has the Telethon client +
    p7zip). `_claim` grabs the oldest queued job and **scrubs the password in the same statement**
    (CTE reads it, UPDATE nulls it → it never lingers in the DB beyond the seconds before claim).
-3. **Disk-guard** (`size × 2.3` must be free — archive + extracted output; nothing is copied
-   twice since > 2 GB outputs are renamed into `_keep`), then `_download_and_concat` Telethon-downloads every
+3. **Disk-guard** (`size × 2.3` must be free — archive + extracted output; outputs are *moved* into
+   upload staging, never copied. A > 2 GB video also needs room for its ffmpeg segments — the
+   watcher checks that itself), then `_download_and_concat` Telethon-downloads every
    part (resuming across Telegram FLOOD_PREMIUM_WAIT, with **live byte progress** — "downloading
    part 2/4 — 962/1900 MB", throttled ≤ 1 DB write / 5 s — so a multi-minute part never looks
    frozen) and concatenates them in part order → the
@@ -194,22 +200,25 @@ on the VPS and its contents are re-stored as normal items — the video then str
    `upload_jobs` row (`origin='upload'`, `cleanup_source=1`; **media → streamable**, else document;
    title nests under `<archive>/…`). The existing watcher pipeline (Flow A2 step 4) uploads
    them and the **bot** indexes them (Flow C) — the video appears in the drive, streamable (Flow E2).
-   **Exception — files > 2 GB** (`PIKPAK_MAX_BYTES`): re-uploading would only raw-split them into
-   parts again, so they are **kept on the VPS** instead: moved to `_unpack/_keep/<jid>/…` and
-   recorded in **`unpack_kept`** (`rel_path`, `size`, `expires_at` = now + `UNPACK_KEEP_TTL_H`,
-   default 72 h). The web dashboard shows a *"N file(s) kept on server"* pill → a modal listing them
+   **Size is not a special case:** an output over 2 GB (`PIKPAK_MAX_BYTES`) is queued like any
+   other — the watcher cuts a video into playable segments and raw-splits anything else — so
+   nothing is parked on the VPS.
+
+**Files kept on the VPS (`unpack_kept`)** — now only PikPak/OpenList downloads the owner
+   explicitly sent to `dest='vps'` (Flow D). They live under `_unpack/_keep/…` with
+   `expires_at` = now + `UNPACK_KEEP_TTL_H` (default 72 h).
+   The web dashboard shows a *"N file(s) kept on server"* pill → a modal listing them
    with **Play** (kept videos open in the same full-screen Plyr viewer as drive videos, fed by
    `/api/kept/[id]` — Range-capable so seeking works; the viewer has **Download / Add subtitle /
    Fullscreen / Close**, Esc/F keys). **Subtitles**: an *Add subtitle* button uploads an SRT/VTT
    file (`/api/kept/[id]/subtitles/manual`, converted to WebVTT and written as a sibling
    `<file>.<lang>.vtt` on the shared `/staging` volume — the streamer can't help here, it never
-   mounts staging). Siblings are cleaned with the kept file (delete-now + expiry sweep) and moved
-   on compress-rename. No STT/from-drive/softsub-extract for kept files (those are part-keyed).
+   mounts staging). Siblings are cleaned with the kept file (delete-now + expiry sweep).
+   No STT/from-drive/softsub-extract for kept files (those are part-keyed).
    Other controls: **Download**, **Keep for…** (`extendKeptFile` — +3/7/30 days or a
-   `9999-12-31` sentinel = permanent until manually deleted), **Compress…** (`compressKeptFile` →
-   `kept_compress_jobs`; the unpack worker re-encodes the VPS copy with ffmpeg at the chosen CRF
-   20/23/26/28, `veryfast`, live % in `message`, replacing the file only when smaller), **Upload to Telegram**
-   (`uploadKeptFileToTelegram` — for files ≤ 2 GB, queues an `upload_jobs` row so watcher uploads it to Telegram and indexes it into the website), and
+   `9999-12-31` sentinel = permanent until manually deleted), **Upload to Telegram**
+   (`uploadKeptFileToTelegram` — **any size**: queues an `upload_jobs` row and the watcher segments
+   or splits it as needed), and
    **Delete now** (`deleteKeptFile` — removes file + row immediately). The worker's idle sweep
    (`_sweep_keep`, every ~10 min) deletes any file past its expiry.
 5. **Original archive is kept** (never deleted). The worker cleans its own temp dirs; per-file staging

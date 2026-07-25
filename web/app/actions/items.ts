@@ -225,42 +225,14 @@ const KEEP_ROOT = path.join(process.env.UPLOAD_STAGING_DIR || "/staging", "_unpa
 
 export async function listKeptFiles(): Promise<KeptFile[]> {
   const rs = await db.execute(
-    "SELECT k.id, k.file_name, k.size, k.expires_at, c.status AS cstatus, " +
-      "c.message AS cmessage, c.crf AS ccrf " +
-      "FROM unpack_kept k LEFT JOIN LATERAL (" +
-      "  SELECT status, message, crf FROM kept_compress_jobs " +
-      "  WHERE kept_id = k.id ORDER BY id DESC LIMIT 1) c ON true " +
-      "ORDER BY k.id DESC"
+    "SELECT id, file_name, size, expires_at FROM unpack_kept ORDER BY id DESC"
   );
   return rs.rows.map((r) => ({
     id: Number(r.id),
     name: String(r.file_name),
     size: Number(r.size ?? 0),
     expiresAt: String(r.expires_at),
-    compress: r.cstatus
-      ? { status: String(r.cstatus), message: String(r.cmessage ?? ""), crf: Number(r.ccrf ?? 23) }
-      : null,
   }));
-}
-
-// Queue a manual re-encode of a kept file (H.264 at the chosen CRF; the unpack worker runs
-// ffmpeg on the VPS copy and replaces it in place only if the result is smaller).
-export async function compressKeptFile(
-  id: number,
-  crf: number
-): Promise<{ ok: boolean; error?: string }> {
-  if (![20, 23, 26, 28].includes(crf)) return { ok: false, error: "Invalid preset." };
-  const active = await db.execute({
-    sql: "SELECT 1 FROM kept_compress_jobs WHERE kept_id = ? AND status IN ('queued','running')",
-    args: [id],
-  });
-  if (active.rows.length) return { ok: false, error: "This file is already being compressed." };
-  await db.execute({
-    sql: "INSERT INTO kept_compress_jobs (kept_id, crf) VALUES (?, ?)",
-    args: [id, crf],
-  });
-  refresh();
-  return { ok: true };
 }
 
 // Far-future sentinel = "permanent" (no schema change; the worker's sweep compares
@@ -340,14 +312,6 @@ export async function uploadKeptFileToTelegram(
     return { ok: false, error: "File is no longer on the server." };
   }
 
-  const MAX_BYTES = 2000 * 1024 * 1024;
-  if (realSize > MAX_BYTES) {
-    return {
-      ok: false,
-      error: `File is ${(realSize / (1024 * 1024 * 1024)).toFixed(2)} GB, which exceeds the 2 GB limit. Compress it first before uploading.`,
-    };
-  }
-
   const stagingRoot = path.join(process.env.UPLOAD_STAGING_DIR || "/staging", "_kept_upload", String(id));
   await fs.mkdir(stagingRoot, { recursive: true });
   const dstFile = path.join(stagingRoot, fileName);
@@ -371,12 +335,15 @@ export async function uploadKeptFileToTelegram(
   const ext = path.extname(fileName).toLowerCase();
   const kind = MEDIA_EXTS.has(ext) ? "media" : "archive";
   const stem = path.basename(fileName, ext) || fileName;
+  // Any size goes: the watcher cuts an oversized video into playable segments and raw-splits
+  // anything else, so nothing has to be compressed under 2 GB by hand first.
+  const partSize = realSize > 2000 * 1024 * 1024 ? 1500 : 4096;
 
   await db.execute({
     sql:
       "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) " +
-      "VALUES (?, ?, '', ?, 4096, 'upload', 1, ?, 'pending')",
-    args: [kind, stem, stagingRoot, realSize],
+      "VALUES (?, ?, '', ?, ?, 'upload', 1, ?, 'pending')",
+    args: [kind, stem, stagingRoot, partSize, realSize],
   });
 
   refresh();

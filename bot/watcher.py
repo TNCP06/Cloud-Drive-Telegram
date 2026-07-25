@@ -19,6 +19,10 @@ two origins:
         After success the whole staging dir is deleted. Reassembly on download is a
         plain concat (copy /b a+b > out  |  cat a b > out), not 7-Zip.
 
+Media over Telegram's ~2 GB cap never gets raw-split (that would make parts 2..N
+un-decodable): a video is cut by ffmpeg into keyframe-aligned segments that each play on
+their own (see plan_media / split_video), so it stays streamable as one multi-part item.
+
 Resume: parts_done is a per-part checkpoint. A retried job skips parts already pushed
 to Telegram instead of starting over. The bot (channel_post handler) indexes results.
 
@@ -32,6 +36,7 @@ archives only), WORKER_OUT_DIR (temp split parts).
 
 import asyncio
 import base64
+import glob
 import math
 import re
 import os
@@ -46,6 +51,7 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 from pg_db import create_client
 
+from bot_config import PIKPAK_MAX_BYTES
 from worker import normalize_tags, build_caption, safe_name, collect_parts
 import tg_botapi_upload as botapi
 import unpack
@@ -59,6 +65,10 @@ SESSION = os.environ.get("WORKER_SESSION", "worker")
 SEVENZIP = os.environ.get("SEVENZIP_PATH", "7z")
 OUT_DIR = os.environ.get("WORKER_OUT_DIR", os.path.join(tempfile.gettempdir(), "tcd_upload_parts"))
 POLL_INTERVAL = 5
+# Target size of one video segment (see split_video). Deliberately under PIKPAK_MAX_BYTES
+# (Telegram's ~2 GB cap): the segment muxer can only cut on a keyframe, so a real segment
+# always lands a little above the target. Tune it here if your keyframe interval is huge.
+VIDEO_SEGMENT_MB = int(os.environ.get("VIDEO_SEGMENT_MB", 1800))
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +221,98 @@ def split_archive(path, title, part_mb):
     if not parts:
         raise RuntimeError("Split finished but no parts found.")
     return parts
+
+
+# ---------------------------------------------------------------------------
+# Video split — playable segments, not raw byte slices
+# ---------------------------------------------------------------------------
+def video_duration(path: str) -> float:
+    """Container duration in seconds via ffprobe (0.0 if unreadable)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", path],
+            capture_output=True, text=True, timeout=60, check=True,
+        ).stdout.strip()
+        return float(out)
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+        return 0.0
+
+
+def split_video(path: str) -> list:
+    """Cut a video too big for Telegram into segments that EACH PLAY ON THEIR OWN.
+
+    A raw byte split (split_archive / write_window) makes parts 2..N un-decodable, so a big
+    video could only be stored, never streamed. ffmpeg's segment muxer cuts on keyframes and
+    writes a full container per piece instead — the parts upload as normal media, so the whole
+    video stays watchable in the drive (Shift+←/→ moves between parts in the viewer).
+
+    Stream copy only: no re-encode, so this runs at disk speed and loses no quality.
+
+    ponytail: the muxer can only cut at the first keyframe AFTER each boundary, so segments
+    land somewhat above the target — VIDEO_SEGMENT_MB (1800) is the headroom under the 2 GB
+    cap. A source with a pathological keyframe interval can still overshoot, so an oversized
+    result is re-cut with more segments (bounded) rather than failing the upload.
+    """
+    size = os.path.getsize(path)
+    duration = video_duration(path)
+    if duration <= 0:
+        raise RuntimeError("ffprobe could not read the video duration.")
+
+    os.makedirs(OUT_DIR, exist_ok=True)
+    # Segments are written whole before the first one is sent, so the split needs room for a
+    # second copy of the file. Check up front instead of dying mid-way with a cryptic ffmpeg error.
+    try:
+        free = shutil.disk_usage(OUT_DIR).free
+    except OSError:
+        free = None
+    if free is not None and free < size * 1.05:
+        raise RuntimeError(
+            f"Not enough disk to split this video: {size // 1048576} MB needed in "
+            f"{OUT_DIR}, {free // 1048576} MB free.")
+
+    stem, ext = os.path.splitext(os.path.basename(path))
+    pattern = os.path.join(OUT_DIR, f"{safe_name(stem)}.seg%03d{ext}")
+    found = os.path.join(OUT_DIR, f"{safe_name(stem)}.seg[0-9][0-9][0-9]{ext}")
+    n = max(2, math.ceil(size / (VIDEO_SEGMENT_MB * 1024 * 1024)))
+
+    for attempt in range(3):
+        for stale in glob.glob(found):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+        cmd = ["ffmpeg", "-y", "-i", path, "-map", "0", "-c", "copy", "-ignore_unknown",
+               "-f", "segment", "-segment_time", f"{duration / n:.3f}",
+               "-reset_timestamps", "1", pattern]
+        print(f"→ Video split ({n} segments):", " ".join(cmd))
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg segment failed: {proc.stderr.strip()[-300:]}")
+        parts = sorted(glob.glob(found))
+        if not parts:
+            raise RuntimeError("ffmpeg produced no segments.")
+        biggest = max(os.path.getsize(p) for p in parts)
+        if biggest <= PIKPAK_MAX_BYTES:
+            return parts
+        print(f"  [split] segment of {biggest // 1048576} MB is over the cap — re-cutting")
+        n += max(1, n // 2)
+    raise RuntimeError("Could not cut this video into parts under the 2 GB cap.")
+
+
+def plan_media(staged: str) -> tuple:
+    """Upload plan for a media file: whole if it fits, playable segments if it's a big video,
+    raw streaming split otherwise (huge non-video media — stored, not streamable)."""
+    if os.path.getsize(staged) <= PIKPAK_MAX_BYTES:
+        return ("list", [staged], False)
+    if os.path.splitext(staged)[1].lower() in _VIDEO_EXTS:
+        try:
+            return ("list", split_video(staged), False)
+        except RuntimeError as e:
+            # Never lose the file to a split failure — fall back to raw parts (downloadable,
+            # just not streamable) exactly like an oversized archive.
+            print(f"  [warn] video split failed ({e}); falling back to a raw byte split")
+    return ("stream", staged, True)
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +474,7 @@ async def process(client, db, channel, job):
     temp_parts: list[str] = []   # files WE created (local 7-Zip split)
     stream_src: "str | None" = None   # staged file we stream-split (don't pre-split)
     source_dir_to_delete: "str | None" = None  # whole staging dir for browser uploads
+    video_segments = False       # parts are playable video segments → one item each
 
     try:
         part_bytes = part_mb * 1024 * 1024
@@ -402,7 +505,12 @@ async def process(client, db, channel, job):
             if cleanup_source:
                 source_dir_to_delete = path if os.path.isdir(path) else None
             if kind == "media":
-                plan = ("list", [staged], False)
+                plan = plan_media(staged)
+                if plan[0] == "list" and plan[1] != [staged]:
+                    temp_parts = plan[1]      # ffmpeg segments — ours to delete
+                    video_segments = True
+                elif plan[0] == "stream":
+                    stream_src = staged
             else:
                 size = os.path.getsize(staged)
                 if size <= part_bytes:
@@ -419,7 +527,12 @@ async def process(client, db, channel, job):
             else:
                 if not os.path.isfile(path):
                     raise RuntimeError(f"Media file not found: {path}")
-                plan = ("list", [path], False)
+                plan = plan_media(path)
+                if plan[0] == "list" and plan[1] != [path]:
+                    temp_parts = plan[1]
+                    video_segments = True
+                elif plan[0] == "stream":
+                    stream_src = path
 
         as_document = plan[2]
         first_file = plan[1] if plan[0] == "stream" else plan[1][0]
@@ -439,7 +552,11 @@ async def process(client, db, channel, job):
         await set_status(db, jid, "running", f"uploading {total} part(s)…", state["pct"])
 
         # ---- thumbnail (media only) --------------------------------------
-        thumb_path = make_video_thumbnail(first_file) if kind == "media" else None
+        # Video segments become one item EACH (index_uploaded gives every media message its own
+        # slug), so each one gets a cover cut from its OWN first frame — a shared cover would
+        # show part 1's frame on every part in the grid.
+        thumb_path = None if video_segments else (
+            make_video_thumbnail(first_file) if kind == "media" else None)
         thumb_b64 = None
         thumb_mime = "image/webp"
         if thumb_path:
@@ -489,16 +606,44 @@ async def process(client, db, channel, job):
                     # so sibling volumes do not collide on (item_id, part_number).
                     # ponytail: caption total may read "2/2" vs "1/1" across jobs;
                     # recompute_totals GREATEST(total_parts, COUNT(*)) self-heals it.
-                    part_no = _volume_no(p) or i
-                    caption = build_caption(title, part_no, max(total, part_no), tags)
-                    print(f"  [{part_no}/{max(total, part_no)}] {os.path.basename(p)}")
+                    if video_segments:
+                        # Each segment is a standalone video AND a standalone item, so it carries
+                        # its own title + a 1/1 part count. No '/' in the suffix — upsert_item
+                        # splits titles on '/' into folders.
+                        part_title, part_no, part_total = f"{title} — Part {i}", 1, 1
+                        own_thumb = make_video_thumbnail(p)
+                    else:
+                        part_no = _volume_no(p) or i
+                        part_title, part_total = title, max(total, part_no)
+                        own_thumb = thumb_path
+                    caption = build_caption(part_title, part_no, part_total, tags)
+                    print(f"  [{part_no}/{part_total}] {os.path.basename(p)}")
                     msg_id = await _send_part(
-                        client, channel, db, p, caption, as_document, thumb_path, make_cb(i),
-                        title=title, tags=tags, part_no=part_no,
-                        total=max(total, part_no), kind=kind,
+                        client, channel, db, p, caption, as_document, own_thumb, make_cb(i),
+                        title=part_title, tags=tags, part_no=part_no,
+                        total=part_total, kind=kind,
                     )
-                    uploaded_msg_ids.append(msg_id)
+                    if video_segments:
+                        if own_thumb:
+                            try:
+                                with open(own_thumb, "rb") as f:
+                                    mime, b64 = _encode_webp(f.read())
+                                asyncio.create_task(_store_thumbnails(db, b64, mime, [msg_id]))
+                            except OSError:
+                                pass
+                            finally:
+                                try:
+                                    os.remove(own_thumb)
+                                except OSError:
+                                    pass
+                    else:
+                        uploaded_msg_ids.append(msg_id)
                     state["pct"] = min(99, int(i / total * 100))
+                    if p in temp_parts:
+                        try:
+                            os.remove(p)   # split part we created — free disk immediately
+                        except OSError:
+                            pass
                     await set_parts_done(db, jid, i)
         finally:
             if thumb_path:

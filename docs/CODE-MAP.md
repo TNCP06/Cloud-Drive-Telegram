@@ -68,7 +68,8 @@ Worker: `start_workers` (spawn `PIKPAK_MAX_CONCURRENT` `_worker_loop` tasks in `
 `_claim_next` (atomic `UPDATE … FOR UPDATE SKIP LOCKED`, returns `source`), `_process` (resolve
 drive → `_rclone_copy` with retry+backoff + slow-transfer flags → parse `--stats-one-line` `%` →
 throttled edit → hand off to `upload_jobs`, choosing `part_size = DRIVE_SPLIT_PART_MB` for oversized
-non-media so the watcher splits it, else `4096`; staging wiped on failure). Progress writes carry
+non-media so the watcher splits it, else `4096` — an oversized **video** ignores `part_size` and is
+cut into playable segments by the watcher; staging wiped on failure). Progress writes carry
 speed **and an ETA** (`_fmt_eta`, session-average rate) into `download_jobs.speed` + the message.
 **Pause/Resume/Cancel buttons** on the progress message: `pause_download` (`dlp` → status `paused`;
 worker raises `DownloadPaused` at its next throttled check and releases the job, keeping the
@@ -86,14 +87,22 @@ image** + host `rclone.conf` bind-mounted; downloads land in the shared `staging
 
 ### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
 Handles two job origins (`upload_jobs.origin`):
-- **`local`** — file already on this machine. archive → `split_archive` (7-Zip); media → whole file.
+- **`local`** — file already on this machine. archive → `split_archive` (7-Zip); media → `plan_media`.
 - **`upload`** — file pushed via the web resumable endpoint into the shared staging dir.
   archive > part_size → **raw streaming split, no 7-Zip** (`write_window` copies one <2 GB byte
-  window → upload → delete it → next); media/small → whole file. On success the staging dir is
+  window → upload → delete it → next); media → `plan_media`. On success the staging dir is
   removed (`cleanup_source`).
+
+**Media never gets raw-split** — that would leave parts 2..N un-decodable. `plan_media` sends a
+file that fits whole; a **video over the cap** goes through `split_video` (ffmpeg segment muxer,
+`-c copy`, keyframe-aligned `VIDEO_SEGMENT_MB`-sized pieces, re-cut with more segments if one
+overshoots, disk-guarded, falls back to a raw split if ffmpeg fails) so every part still plays and
+the drive keeps it as one streamable multi-part item; oversized **non-video** media falls back to
+the raw stream split. `video_duration` is the ffprobe helper. Checked by `test_split_video.py`.
 
 `claim_next` (oldest `pending` → `running`; **preserves `parts_done`** so retries resume),
 `set_progress`/`set_status`, `set_parts_done` (per-part checkpoint), `split_archive` (local 7-Zip),
+`split_video`/`plan_media`/`video_duration` (playable video segmentation),
 `_send_part` (per-part transport: **local Bot API fast path** via `tg_botapi_upload.py` — bot
 account, no FLOOD_PREMIUM_WAIT, `file:///staging/…` read directly by the server, part indexed
 inline via `index_uploaded` because a bot gets no channel_post for its own posts; progress is
@@ -126,15 +135,16 @@ password in the same statement** — a CTE reads it before the UPDATE nulls it),
 (Telethon-download every part → ordered binary concat → the archive), `_extract` (async `7z x -p…`;
 `-p` always passed so it never blocks on a prompt), `_stage_outputs` (each extracted file → own
 staging dir + an `upload_jobs` row so the existing pipeline uploads + the bot indexes it; title nests
-under `<archive>/…`; **files > 2 GB are kept on the VPS instead**: moved to
-`_unpack/_keep/<jid>/…` + an `unpack_kept` row with `expires_at` = now + `UNPACK_KEEP_TTL_H` (72 h) —
-the web lists them with play/download/keep-longer/compress/delete-now, `_sweep_keep` auto-deletes
-them at expiry from the idle loop), `_process` (disk-guard `size×2.3` → download → extract → stage →
-cleanup; **keeps the original archive**), **manual kept-file compression** (`_claim_compress`/
-`_process_compress` — polls `kept_compress_jobs` from the idle loop, ffmpeg H.264 at the job's CRF +
-`veryfast` under `nice -19`, live % into `message` via `-progress pipe:1`, replaces the kept file in
-place only when ≥5% smaller and updates `unpack_kept` name/size), `ensure_schema` (also creates
-`unpack_kept` + `kept_compress_jobs`), `worker_loop`. Password: never logged, passed to 7z via `-p`
+under `<archive>/…`; **size is not a special case** — the watcher segments an oversized video and
+raw-splits anything else, so no output is parked on the VPS), `_process` (disk-guard `size×2.3` →
+download → extract → stage → cleanup; **keeps the original archive**).
+
+`_unpack/_keep/` + `unpack_kept` now hold only what PikPak's `dest='vps'` puts there: `_sweep_keep`
+auto-deletes them at expiry from the idle loop, and the web lists them with
+play/download/upload-to-Telegram/keep-longer/delete-now. (The manual CRF re-encode queue
+`kept_compress_jobs` is **gone** — it only existed to shrink a file under 2 GB so it could be
+uploaded, which watcher segmentation now does losslessly.) `ensure_schema` (also creates
+`unpack_kept`), `worker_loop`. Password: never logged, passed to 7z via `-p`
 (argv, single-user VPS).
 
 ### `worker.py` — standalone upload CLI (Telethon, **laptop**)
@@ -394,7 +404,7 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   lists langs (`done:true`), `manual/route.ts` POST converts+writes a sibling, `[lang]/route.ts` GET
   serves one VTT. `VideoPlayer`/`SubtitleDialog` take a `subtitleBase` prop so the kept full-screen
   viewer reuses the same track-loading + upload UI as drive videos (`localOnly` hides from-drive/
-  extract). Siblings are cleaned by `deleteKeptFile` + the bot's `_sweep_keep`, moved on compress.
+  extract). Siblings are cleaned by `deleteKeptFile` + the bot's `_sweep_keep`.
 - `api/thumb/[itemId]/route.ts` (`nodejs` runtime) — serves an item's **cover thumbnail** bytes
   (first part by `channel_msg_id`) with `Cache-Control: public, max-age=600, stale-while-revalidate`.
   Keeps the cover out of the main page payload so the grid stays light at any scale; auth is enforced

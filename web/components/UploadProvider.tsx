@@ -231,7 +231,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
         // Auto mode: split big files (archive) and keep the rest as media; otherwise use
         // the form's chosen kind. Tag by the real file type (Image/Video) regardless, so
         // a large video routed to the split pipeline isn't mislabelled "Archive".
-        const itKind: Kind = defaults.autoKind ? autoKindFor(f.size) : defaults.kind;
+        const itKind: Kind = defaults.autoKind ? autoKindFor(f.size, f.name) : defaults.kind;
         const tagKind: Kind = defaults.autoKind ? "media" : itKind;
         const itTags = withTag(defaults.tags, autoTypeTag(f.name, tagKind));
         const tokenKey = `tcd_up_${folder ? rel : f.name}:${f.size}:${f.lastModified}`;

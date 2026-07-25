@@ -16,10 +16,18 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export const SPLIT_THRESHOLD_BYTES = 2000 * 1024 * 1024; // ~2 GB
 export const DEFAULT_PART_MB = 1500;
 
+const VIDEO_EXTS = [
+  ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp",
+];
+
 // Auto-pick the upload kind for a file when no explicit kind is chosen: split big files,
-// keep everything else as a single media file.
-export function autoKindFor(size: number): Kind {
-  return size > SPLIT_THRESHOLD_BYTES ? "archive" : "media";
+// keep everything else as a single media file. Big VIDEOS stay "media" — the watcher cuts
+// those into keyframe-aligned segments that each still play, so they remain streamable
+// (a raw byte split would leave parts 2..N un-decodable).
+export function autoKindFor(size: number, name = ""): Kind {
+  if (size <= SPLIT_THRESHOLD_BYTES) return "media";
+  const lower = name.toLowerCase();
+  return VIDEO_EXTS.some((e) => lower.endsWith(e)) ? "media" : "archive";
 }
 
 export interface UploadCtl {
