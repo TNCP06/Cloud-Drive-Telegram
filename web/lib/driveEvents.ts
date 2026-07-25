@@ -33,6 +33,10 @@ function scheduleReconnect() {
 }
 
 async function ensureListener(): Promise<void> {
+  // The demo's PGlite database is per-instance and in-memory: there is no server to
+  // LISTEN on, and nothing outside the browser ever writes to it. Skipping the connect
+  // avoids a 2-second reconnect loop for a channel that can never fire.
+  if (process.env.DEMO_MODE === "1") return;
   if (client || connecting) return;
   connecting = true;
   const c = new Client({ connectionString: process.env.DATABASE_URL });

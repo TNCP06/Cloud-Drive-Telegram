@@ -199,6 +199,11 @@ from `OWNER_USER_ID`.
   as build args (Next.js pre-renders API routes at build time). Portable to any host — full guide
   in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
   Under Docker the web's watcher/bot start-stop buttons are inert (processes are compose-managed).
+- **UI-only demo:** the same `main` branch deploys to Vercel with `DEMO_MODE=1`, which swaps the
+  Postgres Pool for an in-memory **PGlite** (Postgres-as-WASM) seeded from `web/lib/demo/seed.ts` and
+  points `/api/stream` at static assets — no bot, no streamer, no database. Three files know about it
+  (`lib/db.ts`, the stream route, `lib/driveEvents.ts`); everything else runs unmodified. Full guide in
+  [`DEMO.md`](./DEMO.md).
 
 See [`CODE-MAP.md`](./CODE-MAP.md) for a file-by-file function reference and
 [`BUSINESS-FLOWS.md`](./BUSINESS-FLOWS.md) for step-by-step operational flows.

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { db } from "@/lib/db";
 
 // Proxy authenticated streaming requests to the Python streamer service.
 // Excluded from middleware (avoids edge-runtime body-size limit), so auth
@@ -27,6 +28,27 @@ export async function GET(
   }
 
   const { partId } = await params;
+
+  // UI-only demo (see lib/db.ts): there is no streamer and no Telegram, so a part's
+  // `file_id` holds the path of a static demo asset instead of a Telegram file id.
+  // Redirecting hands the request to the CDN, which serves Range requests itself —
+  // so seeking, PDF preview and inline images all behave exactly as in production.
+  if (process.env.DEMO_MODE === "1") {
+    const rs = await db.execute({
+      sql: "SELECT file_id FROM parts WHERE id = ?",
+      args: [Number(partId)],
+    });
+    const asset = String(rs.rows[0]?.file_id ?? "");
+    if (!asset.startsWith("/demo/")) {
+      return new NextResponse("Not found", { status: 404 });
+    }
+    // A RELATIVE Location (legal per RFC 7231 §7.1.2) keeps the redirect same-origin.
+    // `NextResponse.redirect` would resolve against the request URL, which can carry a
+    // different host than the browser used (localhost vs 127.0.0.1, or a proxy) — and the
+    // cross-origin hop then fails the CORS check in DocPreview's `fetch`.
+    return new NextResponse(null, { status: 307, headers: { Location: asset } });
+  }
+
   const upstream = `${STREAMER_URL}/stream/${partId}`;
 
   // Forward Range header if present (required for <video> seeking).

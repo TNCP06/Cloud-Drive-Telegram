@@ -268,6 +268,11 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 ### `web/lib/` — server-side data & helpers
 - `db.ts` — `pg` Pool wrapped to expose the libSQL-style `db.execute(sql | {sql,args})` → `{rows}`
   surface (rewrites `?`→`$n`; BIGINT→Number). `server-only` keeps `DATABASE_URL` out of the browser.
+  **The single demo switch:** with `DEMO_MODE=1` the connection is an in-memory **PGlite** (Postgres
+  compiled to WASM) seeded from `lib/demo/seed.ts` instead of a Pool — every call site above it is
+  unchanged. See [`DEMO.md`](./DEMO.md).
+- `demo/seed.ts` — **generated** (`scripts/gen_demo_seed.py`), demo-only: `bot/schema.sql` verbatim +
+  INSERTs for ~35 dummy items. Never imported unless `DEMO_MODE=1`.
 - `types.ts` — `Kind`, `Tag`, `DriveFile` (UI shape; incl. `firstPartId` + `fileName` for
   streaming), `GalleryPart` (part ID, file name, and thumbnail data URL), `UploadJob` (now incl. `origin`,
   `partsDone`, `totalBytes`), `UploadOrigin`, `UploadStatus`, `WatcherStatus`, `FsEntry`/`FsListing`/`FsShortcut`.
@@ -294,7 +299,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   focus/online -- eliminating the `/api/events` QUIC idle-timeout/RTO/`NAME_NOT_RESOLVED` console spam.
   One shared `LISTEN` connection (both channels) fans out to all tabs via **`lib/driveEvents.ts`**
   (`subscribeChanges(fn)` → `(channel, payload)`), so N browsers cost 1 Postgres connection. So files indexed
-  outside the tab (Bot Drop, history index) appear live within the cache window.
+  outside the tab (Bot Drop, history index) appear live within the cache window. `ensureListener()`
+  returns immediately under `DEMO_MODE=1` — the demo's PGlite is per-instance and in-memory, so there
+  is no server to `LISTEN` on and the 2 s reconnect loop would spin forever.
 - `version.ts` — `parseTitle()`: split an archive title into `family` + `version` (e.g.
   `ReRudy 0.6.0` → `{family:"ReRudy", version:"v0.6.0"}`) for version grouping. Archives only.
 - `kinds.ts` — `tagColorKey()` (deterministic name→palette colour) and coarse kind metadata
@@ -373,6 +380,10 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 - `api/stream/[partId]/route.ts` — **streaming proxy** (`nodejs` runtime). Authenticates via
   cookie, then proxies `Range` requests to the streamer service (`STREAMER_URL`, default
   `http://streamer:8080`). Pipes the 206 response body straight back to the browser's `<video>` element.
+  Under `DEMO_MODE=1` it short-circuits instead: the part's `file_id` holds a `/demo/…` asset path,
+  and the route answers with a 307 to a **relative** `Location` (same-origin — an absolute URL built
+  from `req.url` can carry a different host and fail `DocPreview`'s CORS check). See
+  [`DEMO.md`](./DEMO.md).
 - `api/subtitles/[partId]/route.ts` (lang list) + `api/subtitles/[partId]/[lang]/route.ts` (one WebVTT
   track) — cookie-auth proxies to the streamer's `/subtitles/...` endpoints; the player loads these as
   `<track>`s. Manual-subtitle proxies (same auth pattern): `api/subtitles/[partId]/manual/route.ts`
@@ -398,6 +409,9 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
 ### `web/public/` — static assets
 - `sw.js` — **kill-switch Service Worker**. The old video-chunk IndexedDB cache SW caused periodic playback stalls (4 MB-max responses + sequential fetches + full-store `getAll()` per write); this replacement unregisters itself, deletes `video-cache-db`, and intercepts nothing. Kept (and still registered) so clients running the old SW pick it up and get cleaned.
 - `logo.png` — sidebar/brand logo. **Note:** `next.config.ts` uses `output: "standalone"`, which does **not** bundle `public/`; `web/Dockerfile` must `COPY .../public ./public` into the run stage or these assets 404 in production.
+- `demo/` — **generated** (`scripts/gen_demo_seed.py`), ~6 MB: the videos, photos, audio and documents
+  the `DEMO_MODE=1` build serves in place of Telegram. All synthesised (ffmpeg `lavfi` + Pillow +
+  hand-rolled OOXML), so nothing here needs licensing. Dead weight in the Docker image, unused there.
 
 ### `web/` — auth & config
 - `lib/auth.ts` — `AUTH_COOKIE`, `sha256Hex` (shared by edge middleware + actions).
@@ -558,6 +572,18 @@ until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised wit
   `TagManager.tsx` / `TagPicker.tsx` — category library + chip picker (picker dedupes existing tags case-insensitively).
   `ThemeToggle.tsx` — light/dark switch (flips `data-theme` on `<html>`, persists to localStorage
   `tcd_theme`; theme is applied pre-paint by an inline script in `layout.tsx`). `AppSkeleton.tsx` — loading skeleton.
+
+---
+
+## `scripts/` — repo-root tooling (not shipped in any image)
+
+- `gen_demo_seed.py` — builds the UI-only demo's dataset: synthesises `web/public/demo/*` (ffmpeg
+  `lavfi` clips with burnt-in timecode, Pillow photos/PDF, hand-rolled OOXML) and writes
+  `web/lib/demo/seed.ts` = `bot/schema.sql` verbatim + INSERTs. Re-running it is how the demo schema
+  resyncs with the real one. Needs ffmpeg + Pillow. See [`DEMO.md`](./DEMO.md).
+- `demo_smoke.mjs` — the runnable check for the above: boots PGlite, replays the seed, and asserts the
+  drive is populated, `items.total_parts/total_size` match the seeded parts, every `file_id` resolves to
+  a file that exists on disk, and the IDENTITY sequences were advanced past the seeded ids.
 
 ---
 

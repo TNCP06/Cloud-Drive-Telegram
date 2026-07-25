@@ -1,0 +1,15 @@
+{
+  "name": "cloud-drive-web",
+  "private": true,
+  "version": "1.4.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "15.5.0",
+    "react": "19.1.0",
+    "pg": "8.13.1"
+  }
+}

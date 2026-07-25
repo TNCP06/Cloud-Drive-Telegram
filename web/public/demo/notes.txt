@@ -1,0 +1,7 @@
+Reading list
+============
+
+- Designing Data-Intensive Applications
+- The Manager's Path
+- Site Reliability Engineering
+- A Philosophy of Software Design

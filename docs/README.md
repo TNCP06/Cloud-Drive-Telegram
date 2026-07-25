@@ -9,6 +9,7 @@ Team-style reference for **Telegram Cloud Drive**. These docs describe the syste
 | [BUSINESS-FLOWS.md](./BUSINESS-FLOWS.md) | Step-by-step for every operation (upload archive/media, Bot Drop, download, delete/restore/purge, tags, watcher), with "needs laptop?" and the code path. |
 | [CODE-MAP.md](./CODE-MAP.md) | Where a function lives and what it does — file-by-file across `bot/` and `web/`. |
 | [DEPLOYMENT.md](./DEPLOYMENT.md) | Deploy to a VPS/EC2 with Docker (services, volumes, setup script, CI/CD). |
+| [DEMO.md](./DEMO.md) | The UI-only Vercel demo: how `DEMO_MODE=1` swaps Postgres for in-memory PGlite, how to regenerate the dummy dataset, and how to keep backend commits from triggering a redeploy. |
 
 Related:
 - [`../README.md`](../README.md) — project intro & quick start.
