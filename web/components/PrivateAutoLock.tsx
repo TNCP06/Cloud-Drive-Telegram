@@ -17,7 +17,9 @@ export function PrivateAutoLock() {
     window.addEventListener("pagehide", beacon);
     return () => {
       window.removeEventListener("pagehide", beacon);
-      lockPrivate();
+      if (typeof window !== "undefined" && window.location.pathname !== "/private") {
+        lockPrivate();
+      }
     };
   }, []);
   return null;

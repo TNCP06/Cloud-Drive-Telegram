@@ -836,6 +836,11 @@ export function DriveApp({
     setCurrentFolderId(id);
     clearSelection();
   };
+  const jumpToFolder = (folderId: number | null) => {
+    setQuery("");
+    setView("all");
+    goToFolder(folderId);
+  };
   const goBackFolder = () => {
     if (!folderHistory.length) return;
     const prev = folderHistory[folderHistory.length - 1];
@@ -1326,9 +1331,8 @@ export function DriveApp({
             Group versions
           </button>
 
-          {/* Upload Button (files / folder) — starts uploading immediately, no form.
-              Main space only: the upload pipeline indexes into Main, not Private. */}
-          {view === "all" && !query && !isPrivate && (
+          {/* Upload Button (files / folder) — starts uploading immediately, no form. */}
+          {view === "all" && !query && (
             <button
               className="sortbtn"
               onClick={(e) => {
@@ -1398,8 +1402,10 @@ export function DriveApp({
           folder={detailsFolder}
           folderStat={detailsFolder ? statOf(detailsFolder.id) : null}
           tags={tags}
+          folders={folders}
           showExtensions={prefs.showExtensions}
           onClose={() => updatePrefs({ detailsPane: false })}
+          onJumpToFolder={jumpToFolder}
         />
       )}
 
@@ -1703,11 +1709,13 @@ export function DriveApp({
         <PreviewDrawer
           item={previewItem}
           tags={tags}
+          folders={folders}
           hasPrevFile={hasPrevFile}
           hasNextFile={hasNextFile}
           onNavigateFile={navigatePreview}
           navFiles={navList}
           onJumpToFile={(f) => setPreviewId(f.id)}
+          onJumpToFolder={jumpToFolder}
           onClose={closePreview}
           onSave={(it, input) => {
             doSave(it, input);
@@ -1927,7 +1935,7 @@ export function DriveApp({
                 type: "create",
                 folder: { id: -now, name, parentId: currentFolderId, createdAt: now, updatedAt: now, trashed: false, deletedAt: null },
               });
-              await createFolder(name, currentFolderId);
+              await createFolder(name, currentFolderId, isPrivate);
             });
             setShowCreateFolder(false);
           }}

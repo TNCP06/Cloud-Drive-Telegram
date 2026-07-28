@@ -44,20 +44,26 @@ export function DetailsPane({
   folder = null,
   folderStat = null,
   tags,
+  folders = [],
   showExtensions = false,
   onClose,
+  onJumpToFolder,
 }: {
   item: DriveFile | null;
   folder?: Folder | null;
   folderStat?: FolderStat | null;
   tags: Tag[];
+  folders?: Folder[];
   showExtensions?: boolean;
   onClose: () => void;
+  onJumpToFolder?: (folderId: number | null) => void;
 }) {
   const ft = item ? fileTypeFor(item) : null;
   const itemTags = item
     ? (item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[])
     : [];
+  const parentFolder = item?.folderId != null ? folders.find((f) => f.id === item.folderId) : null;
+  const locationName = item ? (parentFolder ? parentFolder.name : "Root") : "";
 
   return (
     <aside className="details-pane">
@@ -110,6 +116,31 @@ export function DetailsPane({
 
           <div className="dp-fields">
             <Field label="Type">{ft.label}</Field>
+            <Field label="Location">
+              {onJumpToFolder ? (
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  style={{
+                    padding: "2px 8px",
+                    fontSize: 12,
+                    height: "auto",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    color: "var(--accent)",
+                  }}
+                  onClick={() => onJumpToFolder(item.folderId)}
+                  title="Jump to folder location"
+                >
+                  <Icon name="folder" size={13} />
+                  <span>{locationName}</span>
+                  <Icon name="chevright" size={12} />
+                </button>
+              ) : (
+                <span>{locationName}</span>
+              )}
+            </Field>
             <Field label="Size">{fmtSize(item.size)}</Field>
             {item.parts > 1 && <Field label="Parts">{item.parts}</Field>}
             <Field label="Modified">

@@ -13,7 +13,7 @@ import { VideoPlayer } from "./VideoPlayer";
 import { DocPreview } from "./DocPreview";
 import { SubtitleDialog } from "./SubtitleDialog";
 import { reharvestThumbnail, uploadThumbnail } from "@/app/actions";
-import type { DriveFile, GalleryPart, Kind, Tag } from "@/lib/types";
+import type { DriveFile, Folder, GalleryPart, Kind, Tag } from "@/lib/types";
 
 const THUMB_MAX_DIM = 320;
 const THUMB_QUALITY = 0.85;
@@ -81,6 +81,7 @@ async function videoFrameToJpeg(file: File): Promise<string> {
 export function PreviewDrawer({
   item,
   tags,
+  folders = [],
   hasPrevFile = false,
   hasNextFile = false,
   onNavigateFile,
@@ -90,12 +91,14 @@ export function PreviewDrawer({
   onToggleStar,
   navFiles,
   onJumpToFile,
+  onJumpToFolder,
   initialEditing = false,
   initialShowDetails = false,
   detailsOnly = false,
 }: {
   item: DriveFile;
   tags: Tag[];
+  folders?: Folder[];
   hasPrevFile?: boolean;
   hasNextFile?: boolean;
   onNavigateFile?: (delta: number) => void;
@@ -105,6 +108,7 @@ export function PreviewDrawer({
   onToggleStar?: () => void;
   navFiles?: DriveFile[];
   onJumpToFile?: (file: DriveFile) => void;
+  onJumpToFolder?: (folderId: number | null) => void;
   initialEditing?: boolean;
   initialShowDetails?: boolean;
   detailsOnly?: boolean;
@@ -758,6 +762,35 @@ export function PreviewDrawer({
                     <dl className="dv-meta">
                       <dt>Type</dt>
                       <dd>{ft.label}</dd>
+                      <dt>Location</dt>
+                      <dd>
+                        {onJumpToFolder ? (
+                          <button
+                            type="button"
+                            className="btn ghost sm"
+                            style={{
+                              padding: "1px 6px",
+                              fontSize: 12,
+                              height: "auto",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4,
+                              color: "var(--accent)",
+                            }}
+                            onClick={() => {
+                              onJumpToFolder(item.folderId);
+                              onClose();
+                            }}
+                            title="Jump to folder location"
+                          >
+                            <Icon name="folder" size={13} />
+                            <span>{item.folderId != null ? (folders.find((f) => f.id === item.folderId)?.name || "Root") : "Root"}</span>
+                            <Icon name="chevright" size={12} />
+                          </button>
+                        ) : (
+                          <span>{item.folderId != null ? (folders.find((f) => f.id === item.folderId)?.name || "Root") : "Root"}</span>
+                        )}
+                      </dd>
                       <dt>Size</dt>
                       <dd>{fmtSize(item.size)}</dd>
                       {item.parts > 1 && (

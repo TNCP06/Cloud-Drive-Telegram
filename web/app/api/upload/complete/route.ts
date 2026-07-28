@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
     title?: string;
     tags?: string;
     partSize?: number;
+    isPrivate?: boolean;
   };
   try {
     body = await req.json();
@@ -79,11 +80,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, jobId: Number(existing.rows[0].id) });
   }
 
+  const isPrivate = body.isPrivate ? 1 : 0;
+
   const rs = await db.execute({
     sql:
-      "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) " +
-      "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'queued') RETURNING id",
-    args: [kind, title, tags, dir, partSize, onDisk],
+      "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status, is_private) " +
+      "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'queued', ?) RETURNING id",
+    args: [kind, title, tags, dir, partSize, onDisk, isPrivate],
   });
 
   return NextResponse.json({ ok: true, jobId: Number(rs.rows[0]?.id ?? 0) });

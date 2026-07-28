@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS upload_jobs (
                      CHECK (status IN ('queued','pending','running','done','error','canceled')),
     progress       INTEGER NOT NULL DEFAULT 0,     -- 0..100
     message        TEXT,                           -- detail/error
+    is_private     INTEGER NOT NULL DEFAULT 0,     -- 1 = target PIN-gated Private space
     created_at     TEXT NOT NULL DEFAULT now_text(),
     updated_at     TEXT NOT NULL DEFAULT now_text()
 );

@@ -41,6 +41,7 @@ export interface UploadOpts {
   title: string;
   tags: string;
   partSize: number;
+  isPrivate?: boolean;
 }
 
 export type UploadResult =
@@ -193,6 +194,7 @@ export async function uploadResumable(
         title: opts.title,
         tags: opts.tags,
         partSize: opts.partSize,
+        isPrivate: opts.isPrivate,
       }),
     });
     const j = await res.json();

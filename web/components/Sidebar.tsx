@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import Image from "next/image";
 import { Icon } from "@/lib/icons";
 import { TAG_COLORS } from "@/lib/kinds";
@@ -259,8 +260,15 @@ export function Sidebar({
 }
 
 function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => void }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const segs = [...storage.segments].sort((a, b) => b.pct - a.pct);
-  return (
+  if (!mounted) return null;
+
+  return createPortal(
     <div
       className="overlay"
       onMouseDown={(e) => {
@@ -289,7 +297,7 @@ function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => 
             )}
             <span style={{ flex: 1, background: "var(--line)" }}></span>
           </div>
-          <div className="storage-detail">
+          <div className="storage-detail scroll">
             {segs.length === 0 && <div className="tagmgr-empty">No data yet.</div>}
             {segs.map((s, i) => (
               <div className="storage-detail-row" key={i}>
@@ -305,6 +313,7 @@ function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => 
           <button className="btn" onClick={onClose}>Done</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

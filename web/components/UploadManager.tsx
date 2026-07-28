@@ -52,6 +52,7 @@ export function UploadManager({
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
   const [partSize, setPartSize] = useState(1500);
+  const [isPrivate, setIsPrivate] = useState(false);
   const [mode, setMode] = useState<UploadMode>("device");
   const [sourcePath, setSourcePath] = useState("");
   const [browse, setBrowse] = useState(false);
@@ -74,7 +75,7 @@ export function UploadManager({
   } = useUpload();
 
   const addFiles = (files: File[], folder: boolean) =>
-    addFilesCtx(files, folder, { kind, title, tags, partSize });
+    addFilesCtx(files, folder, { kind, title, tags, partSize, isPrivate });
 
   const queuedJobCount = jobs.filter((j) => j.status === "queued").length;
   const activeCount =
@@ -99,7 +100,7 @@ export function UploadManager({
     setErr(null);
     startTransition(async () => {
       try {
-        await enqueueUpload({ kind, title, tags, sourcePath, partSize });
+        await enqueueUpload({ kind, title, tags, sourcePath, partSize, isPrivate });
         setTitle("");
         setSourcePath("");
         router.refresh();
@@ -123,10 +124,10 @@ export function UploadManager({
     <div className="up-wrap scroll">
       <div className="up-inner">
         <div className="up-head">
-          <Link className="btn subtle" href="/">
+          <button className="btn subtle" type="button" onClick={() => router.back()}>
             <Icon name="back" size={16} />
             Back
-          </Link>
+          </button>
           <h1>Upload files</h1>
           <div style={{ marginLeft: "auto" }}>
             <ThemeToggle />
@@ -144,6 +145,18 @@ export function UploadManager({
               </button>
               <button className={kind === "archive" ? "on" : ""} onClick={() => setKind("archive")}>
                 <Icon name="archive" size={15} /> Archive (split)
+              </button>
+            </div>
+          </div>
+
+          <div className="field">
+            <label>Destination Space</label>
+            <div className="seg-radio">
+              <button className={!isPrivate ? "on" : ""} onClick={() => setIsPrivate(false)}>
+                <Icon name="all" size={15} /> Main Drive
+              </button>
+              <button className={isPrivate ? "on" : ""} onClick={() => setIsPrivate(true)}>
+                <Icon name="lock" size={15} /> Private Space
               </button>
             </div>
           </div>

@@ -359,7 +359,7 @@ path; seek previews and transcoding then never run), `STREAMER_PORT` (default 80
   allowed to delete it, + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
   intentionally NOT changed on rename), `unpackArchive`/`getUnpackStatus` (queue/poll `unpack_jobs`),
 `getActiveUnpack` (latest queued/running job — resumes the progress pill after a navigation),
-  Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`
+  Folders: `createFolder` (supports `isPrivate` flag and inherits parent folder's `is_private`), `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`
   (also adopts the target folder's `is_private` — an item in a folder of the other space is invisible in both),
   `moveFolderToFolder` (reparent; rejects cycles into self/descendants).
   Bulk ops: `bulkToggleFavorite`, `bulkSoftDelete`, `bulkRestore`, `bulkPurgeNow`.
@@ -493,7 +493,7 @@ path; seek previews and transcoding then never run), `STREAMER_PORT` (default 80
   File name extensions / Detail items) — toggles keep the menu open. Built from the shared `Menu`/`MenuItem`.
 - `DetailsPane.tsx` — **persistent right-hand details panel** (Windows "Details pane"). Shows the
   single selected entry's preview + metadata when exactly one is selected (else a hint): a **file**
-  (type/size/parts/modified/added/status/tags) or a **folder** (type/total items/sub-folders/created/
+  (type/location with jump-to-folder button/size/parts/modified/added/status/tags) or a **folder** (type/total items/sub-folders/created/
   modified, counts from `folderStats`). Does not change card-click behavior. Desktop-only (hidden on
   mobile via CSS). Folders render in their own compact `.grid.folders` above the file grid. Its modals +
   empty state were extracted to `DriveDialogs.tsx` (`ConfirmDelete`, `ConfirmBulkDelete` — folder-aware

@@ -48,6 +48,7 @@ export interface LocalItem {
   error?: string;
   jobId?: number;
   handedOff?: boolean;
+  isPrivate?: boolean;
 }
 
 export interface UploadDefaults {
@@ -62,6 +63,7 @@ export interface UploadDefaults {
   // Folder path ("A/B/C") the upload should land in — prefixed onto each title so the
   // server's folder resolution files the item there (titles split on "/").
   folderPath?: string;
+  isPrivate?: boolean;
 }
 
 interface UploadContextValue {
@@ -139,7 +141,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
           next.file,
           next.name,
           next.token,
-          { kind: next.kind, title: next.title, tags: next.tags, partSize: next.partSize },
+          { kind: next.kind, title: next.title, tags: next.tags, partSize: next.partSize, isPrivate: next.isPrivate },
           (sent, sp) => {
             updateLocal(next.id, { sent });
             if (sp) setSpeed(sp);
@@ -262,6 +264,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
           tokenKey,
           stage: "ready",
           sent: 0,
+          isPrivate: defaults.isPrivate,
         };
         // Persist the bytes + metadata so a refresh can resume without a re-pick.
         putUpload({

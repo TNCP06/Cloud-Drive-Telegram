@@ -5,13 +5,24 @@ import { refresh } from "./_shared";
 
 // --- Folder management --------------------------------------------------------
 
-export async function createFolder(name: string, parentId: number | null) {
+export async function createFolder(name: string, parentId: number | null, isPrivate = false) {
   const n = name.trim();
   if (!n) throw new Error("Folder name cannot be empty.");
 
+  let priv = isPrivate ? 1 : 0;
+  if (!isPrivate && parentId !== null) {
+    const parentRs = await db.execute({
+      sql: "SELECT is_private FROM folders WHERE id = ?",
+      args: [parentId],
+    });
+    if (parentRs.rows.length && Number(parentRs.rows[0].is_private) === 1) {
+      priv = 1;
+    }
+  }
+
   await db.execute({
-    sql: "INSERT INTO folders (name, parent_id) VALUES (?, ?)",
-    args: [n, parentId],
+    sql: "INSERT INTO folders (name, parent_id, is_private) VALUES (?, ?, ?)",
+    args: [n, parentId, priv],
   });
   refresh();
 }

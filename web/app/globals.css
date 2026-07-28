@@ -110,13 +110,63 @@ button { font-family: inherit; }
 ::selection { background: color-mix(in oklab, var(--accent) 26%, white); }
 
 /* scrollbars */
-.scroll { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
-.scroll::-webkit-scrollbar { width: 10px; height: 10px; }
-.scroll::-webkit-scrollbar-thumb {
-  background: var(--line-2); border-radius: 99px;
-  border: 3px solid transparent; background-clip: padding-box;
+.scroll,
+[class*="-scroll"],
+.storage-detail,
+.tagmgr-list,
+.assign-list,
+.fup-body,
+.fsb-list,
+.fu-list,
+.dp-body,
+.dv-body,
+.dbody {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
 }
-.scroll::-webkit-scrollbar-thumb:hover { background: var(--line-strong); }
+.scroll::-webkit-scrollbar,
+[class*="-scroll"]::-webkit-scrollbar,
+.storage-detail::-webkit-scrollbar,
+.tagmgr-list::-webkit-scrollbar,
+.assign-list::-webkit-scrollbar,
+.fup-body::-webkit-scrollbar,
+.fsb-list::-webkit-scrollbar,
+.fu-list::-webkit-scrollbar,
+.dp-body::-webkit-scrollbar,
+.dv-body::-webkit-scrollbar,
+.dbody::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scroll::-webkit-scrollbar-thumb,
+[class*="-scroll"]::-webkit-scrollbar-thumb,
+.storage-detail::-webkit-scrollbar-thumb,
+.tagmgr-list::-webkit-scrollbar-thumb,
+.assign-list::-webkit-scrollbar-thumb,
+.fup-body::-webkit-scrollbar-thumb,
+.fsb-list::-webkit-scrollbar-thumb,
+.fu-list::-webkit-scrollbar-thumb,
+.dp-body::-webkit-scrollbar-thumb,
+.dv-body::-webkit-scrollbar-thumb,
+.dbody::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.scroll::-webkit-scrollbar-thumb:hover,
+[class*="-scroll"]::-webkit-scrollbar-thumb:hover,
+.storage-detail::-webkit-scrollbar-thumb:hover,
+.tagmgr-list::-webkit-scrollbar-thumb:hover,
+.assign-list::-webkit-scrollbar-thumb:hover,
+.fup-body::-webkit-scrollbar-thumb:hover,
+.fsb-list::-webkit-scrollbar-thumb:hover,
+.fu-list::-webkit-scrollbar-thumb:hover,
+.dp-body::-webkit-scrollbar-thumb:hover,
+.dv-body::-webkit-scrollbar-thumb:hover,
+.dbody::-webkit-scrollbar-thumb:hover {
+  background: var(--line-strong);
+}
 
 /* ===========================================================================
    App shell
@@ -554,14 +604,16 @@ button { font-family: inherit; }
   background: var(--card); border-radius: var(--r-xl);
   box-shadow: var(--sh-3); width: 100%; max-width: 460px;
   border: 1px solid var(--line-2); overflow: hidden;
+  max-height: calc(100vh - 48px);
+  display: flex; flex-direction: column;
   animation: rise .2s cubic-bezier(.2,.8,.2,1);
 }
 .dialog.wide { max-width: 540px; }
 @keyframes rise { from { opacity: 0; transform: translateY(10px) scale(.98); } }
 .dialog h2 { font-family: var(--serif); font-size: 25px; font-weight: 400; margin: 0; }
-.dialog .dhead { padding: 22px 24px 4px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.dialog .dbody { padding: 12px 24px 8px; }
-.dialog .dfoot { padding: 16px 24px 20px; display: flex; gap: 10px; justify-content: flex-end; align-items: center; }
+.dialog .dhead { padding: 22px 24px 4px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex: none; }
+.dialog .dbody { padding: 12px 24px 8px; flex: 1; overflow-y: auto; }
+.dialog .dfoot { padding: 16px 24px 20px; display: flex; gap: 10px; justify-content: flex-end; align-items: center; flex: none; }
 .dialog p.sub { color: var(--muted); font-size: 13.5px; margin: 4px 0 0; }
 
 .field { margin: 12px 0; }
@@ -954,6 +1006,8 @@ button { font-family: inherit; }
 @media (max-width: 520px) {
   .grid { grid-template-columns: repeat(2, 1fr); }
   .brand-name { font-size: 24px; }
+  .overlay { padding: 12px; }
+  .dialog { max-height: calc(100vh - 24px); border-radius: var(--r-lg); }
 }
 
 /* ===========================================================================

@@ -236,10 +236,11 @@ async def post_init(app: Application):
     app.bot_data["db"] = db
     log.info("PostgreSQL connection ready")
 
-    # Auto-migration: ensure parts table has file_id column
+    # Auto-migration: ensure parts table has file_id column & upload_jobs has is_private column
     try:
         await db.execute("ALTER TABLE parts ADD COLUMN IF NOT EXISTS file_id TEXT")
-        log.info("Migration: ensured file_id column on parts table")
+        await db.execute("ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS is_private INTEGER NOT NULL DEFAULT 0")
+        log.info("Migration: ensured file_id on parts and is_private on upload_jobs")
     except Exception as e:
         pass
 

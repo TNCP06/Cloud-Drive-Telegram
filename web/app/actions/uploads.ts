@@ -12,6 +12,7 @@ export async function enqueueUpload(input: {
   tags: string;
   sourcePath: string;
   partSize: number;
+  isPrivate?: boolean;
 }) {
   const sourcePath = input.sourcePath.trim();
   if (!sourcePath) throw new Error("File path on the laptop is required.");
@@ -26,9 +27,10 @@ export async function enqueueUpload(input: {
       throw new Error("Title is required for archives.");
     }
   }
+  const isPrivate = input.isPrivate ? 1 : 0;
   await db.execute({
-    sql: "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size) VALUES (?, ?, ?, ?, ?)",
-    args: [input.kind, title, input.tags.trim(), sourcePath, input.partSize || 1500],
+    sql: "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, is_private) VALUES (?, ?, ?, ?, ?, ?)",
+    args: [input.kind, title, input.tags.trim(), sourcePath, input.partSize || 1500, isPrivate],
   });
   revalidatePath("/upload");
 }
