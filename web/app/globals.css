@@ -4,23 +4,23 @@
    =========================================================================== */
 
 :root {
-  /* surfaces — warm paper */
-  --paper:        #F4F1EA;
-  --surface:      #FBFAF6;
-  --card:         #FFFFFF;
-  --card-2:       #FAF8F2;
+  /* surfaces — warm linen paper (Hybrid Anti-Glare, Fresh & Luminous) */
+  --paper:        #EAE6DF;
+  --surface:      #F1ECE5;
+  --card:         #F7F5F0;
+  --card-2:       #EFECE4;
 
-  /* ink — darker muted/faint for stronger text contrast on paper */
-  --ink:          #1F1D18;
-  --muted:        #6A665E;
-  --faint:        #938C7F;
+  /* ink — rich espresso charcoal for high text contrast */
+  --ink:          #1B1914;
+  --muted:        #615B52;
+  --faint:        #8C8477;
 
-  /* lines — a touch stronger so cards/rows separate clearly from the background */
-  --line:         #E1DBCD;
-  --line-2:       #D0C9B9;
-  --line-strong:  #BBB3A1;
+  /* lines — clean warm borders */
+  --line:         #DDD7CB;
+  --line-2:       #CDC6B8;
+  --line-strong:  #B6AC9C;
 
-  /* accent (clay) — deepened & slightly desaturated so it reads calmer on white */
+  /* accent (clay) — original warm terracotta red */
   --accent:       #A6422A;
   --accent-ink:   #FFFFFF;
   --accent-soft:  color-mix(in oklab, var(--accent) 12%, var(--card));
