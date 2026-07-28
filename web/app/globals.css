@@ -1834,14 +1834,17 @@ body:has(.viewer) .fup { display: none; }
 .app.show-checks .crow-check,
 .app.show-checks .litem-check { opacity: 1; }
 
-/* Compact view: denser rows, cards and gaps */
-.app.compact { --row-h: 38px; }
-.app.compact .grid { gap: 10px; }
-.app.compact .card { padding: 10px; }
-.app.compact .card .thumb { height: 88px; margin-bottom: 9px; }
-.app.compact .tiles, .app.compact .content-rows { gap: 7px; }
-.app.compact .tile { padding: 8px 10px; }
-.app.compact .crow { padding: 9px 12px; }
+/* Compact view: noticeably denser layout without sacrificing elegance */
+.app.compact { --row-h: 34px; }
+.app.compact .grid { gap: 8px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+.app.compact .card { padding: 8px; }
+.app.compact .card .thumb { height: 72px; margin-bottom: 6px; }
+.app.compact .card .title { font-size: 13px; line-height: 1.25; }
+.app.compact .tiles, .app.compact .content-rows { gap: 4px; }
+.app.compact .tile { padding: 6px 8px; font-size: 13px; }
+.app.compact .tile-thumb { width: 40px; height: 40px; }
+.app.compact .crow { padding: 6px 10px; font-size: 13px; }
+.app.compact .grid.folders { gap: 6px; }
 
 /* ---- Details pane (persistent right panel) ---- */
 .details-pane {
@@ -1914,38 +1917,44 @@ body:has(.viewer) .fup { display: none; }
   height: 12px;
 }
 
-/* Row-view adjustments */
-.ico-wrap .video-thumb-play-overlay {
+/* Row-view adjustments (Details view) */
+.ico-wrap + .video-thumb-play-overlay,
+.content-rows .video-thumb-play-overlay {
+  width: 15px;
+  height: 15px;
+  bottom: -2px;
+  right: -2px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.ico-wrap + .video-thumb-play-overlay svg,
+.content-rows .video-thumb-play-overlay svg {
+  width: 7px;
+  height: 7px;
+}
+
+/* Tile-view adjustments */
+.tile-thumb + .video-thumb-play-overlay,
+.tiles .video-thumb-play-overlay {
   width: 16px;
   height: 16px;
-  bottom: -4px;
-  right: -4px;
+  bottom: -3px;
+  right: -2px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
-.ico-wrap .video-thumb-play-overlay svg {
+.tile-thumb + .video-thumb-play-overlay svg,
+.tiles .video-thumb-play-overlay svg {
   width: 8px;
   height: 8px;
 }
 
-/* Tile-view adjustments */
-.tile-thumb .video-thumb-play-overlay {
-  width: 18px;
-  height: 18px;
-  bottom: -4px;
-  right: 2px;
-}
-.tile-thumb .video-thumb-play-overlay svg {
-  width: 10px;
-  height: 10px;
-}
-
 /* Compact-view adjustments */
 .crow-thumb .video-thumb-play-overlay {
-  width: 22px;
-  height: 22px;
-  bottom: -5px;
-  right: 4px;
+  width: 15px;
+  height: 15px;
+  bottom: -2px;
+  right: -2px;
 }
 .crow-thumb .video-thumb-play-overlay svg {
-  width: 11px;
-  height: 11px;
+  width: 7px;
+  height: 7px;
 }

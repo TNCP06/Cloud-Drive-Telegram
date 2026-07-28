@@ -3,6 +3,7 @@
 import { db } from "@/lib/db";
 import type { Kind } from "@/lib/types";
 import { refresh, resolveTagId } from "./_shared";
+import { restoreParentChain } from "./folders";
 
 // Item server actions for Turso metadata (instant, without touching Telegram).
 // Note: softDelete ONLY sets deleted_at. The actual file on Telegram is deleted
@@ -30,6 +31,10 @@ export async function softDelete(id: number) {
 }
 
 export async function restore(id: number) {
+  const rs = await db.execute({ sql: "SELECT folder_id FROM items WHERE id = ?", args: [id] });
+  if (rs.rows.length && rs.rows[0].folder_id !== null) {
+    await restoreParentChain(Number(rs.rows[0].folder_id));
+  }
   await db.execute({
     sql: "UPDATE items SET deleted_at = NULL WHERE id = ?",
     args: [id],
@@ -257,6 +262,10 @@ export async function bulkSoftDelete(itemIds: number[]) {
 export async function bulkRestore(itemIds: number[]) {
   if (itemIds.length === 0) return;
   for (const itemId of itemIds) {
+    const rs = await db.execute({ sql: "SELECT folder_id FROM items WHERE id = ?", args: [itemId] });
+    if (rs.rows.length && rs.rows[0].folder_id !== null) {
+      await restoreParentChain(Number(rs.rows[0].folder_id));
+    }
     await db.execute({
       sql: "UPDATE items SET deleted_at = NULL WHERE id = ?",
       args: [itemId],
@@ -268,14 +277,15 @@ export async function bulkRestore(itemIds: number[]) {
 export async function bulkPurgeNow(itemIds: number[]): Promise<{ ok: boolean; error?: string }> {
   if (itemIds.length === 0) return { ok: true };
 
+  const isDemo = process.env.DEMO_MODE === "1";
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
-  if (!BOT_TOKEN || !STORAGE_CHANNEL_ID) {
+  if (!isDemo && (!BOT_TOKEN || !STORAGE_CHANNEL_ID)) {
     return { ok: false, error: "BOT_TOKEN or STORAGE_CHANNEL_ID not set in web env." };
   }
 
   const telegramApiUrl = process.env.TELEGRAM_API_URL || "https://api.telegram.org";
-  const apiBase = `${telegramApiUrl.replace(/\/+$/, "")}/bot${BOT_TOKEN}`;
+  const apiBase = BOT_TOKEN ? `${telegramApiUrl.replace(/\/+$/, "")}/bot${BOT_TOKEN}` : "";
 
   for (const id of itemIds) {
     const guard = await db.execute({
@@ -289,8 +299,10 @@ export async function bulkPurgeNow(itemIds: number[]): Promise<{ ok: boolean; er
       args: [id],
     });
 
-    for (const row of parts.rows) {
-      await purgeMessage(apiBase, STORAGE_CHANNEL_ID, Number(row.channel_msg_id));
+    if (!isDemo && apiBase && STORAGE_CHANNEL_ID) {
+      for (const row of parts.rows) {
+        await purgeMessage(apiBase, STORAGE_CHANNEL_ID, Number(row.channel_msg_id));
+      }
     }
 
     await db.execute({

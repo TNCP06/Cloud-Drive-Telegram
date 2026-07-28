@@ -93,7 +93,27 @@ export async function deleteFolder(id: number) {
   refresh();
 }
 
+export async function restoreParentChain(folderId: number | null) {
+  let curr = folderId;
+  while (curr !== null) {
+    await db.execute({
+      sql: "UPDATE folders SET deleted_at = NULL WHERE id = ?",
+      args: [curr],
+    });
+    const rs = await db.execute({
+      sql: "SELECT parent_id FROM folders WHERE id = ?",
+      args: [curr],
+    });
+    if (rs.rows.length && rs.rows[0].parent_id !== null) {
+      curr = Number(rs.rows[0].parent_id);
+    } else {
+      break;
+    }
+  }
+}
+
 export async function restoreFolder(id: number) {
+  await restoreParentChain(id);
   const { itemIds, folderIds } = await getFolderItemsAndSubfolders(id);
 
   if (itemIds.length > 0) {

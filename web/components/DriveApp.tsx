@@ -538,9 +538,13 @@ export function DriveApp({
     const q = query.trim().toLowerCase();
 
     if (view === "trash") {
-      list = files.filter(
-        (f) => f.trashed && (!f.folderId || !folders.find((fd) => fd.id === f.folderId)?.trashed)
-      );
+      if (currentFolderId !== null) {
+        list = files.filter((f) => f.trashed && f.folderId === currentFolderId);
+      } else {
+        list = files.filter(
+          (f) => f.trashed && (!f.folderId || !folders.find((fd) => fd.id === f.folderId)?.trashed)
+        );
+      }
     } else if (view === "starred") list = list.filter((f) => f.starred);
     else if (view === "recent")
       list = list.filter((f) => (Date.now() - f.modified) / 86400000 < 14);
@@ -561,6 +565,9 @@ export function DriveApp({
   const currentFolders = useMemo(() => {
     if (query) return [];
     if (view === "trash") {
+      if (currentFolderId !== null) {
+        return folders.filter((f) => f.trashed && f.parentId === currentFolderId);
+      }
       return folders.filter(
         (f) => f.trashed && (!f.parentId || !folders.find((fd) => fd.id === f.parentId)?.trashed)
       );
@@ -614,6 +621,18 @@ export function DriveApp({
 
   /* ---- breadcrumbs path ---- */
   const breadcrumbs = useMemo(() => {
+    if (view === "trash") {
+      const crumbs = [{ id: null as number | null, name: "Trash" }];
+      let currId = currentFolderId;
+      const path = [];
+      while (currId !== null) {
+        const folder = folders.find((f) => f.id === currId);
+        if (!folder) break;
+        path.unshift({ id: folder.id, name: folder.name });
+        currId = folder.parentId;
+      }
+      return [...crumbs, ...path];
+    }
     if (view !== "all") return null;
     const crumbs = [{ id: null as number | null, name: "All files" }];
     let currId = currentFolderId;
@@ -920,10 +939,10 @@ export function DriveApp({
     const typing = !!ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
     const overlayOpen = previewId != null || !!menu || !!sortMenu || !!viewMenu || !!folderMenu;
 
-    // Folder navigation (Main view only, when not typing/no overlay):
+    // Folder navigation (Main & Trash view, when not typing/no overlay):
     //   Backspace → step back through the visited folders
     //   Alt+Up    → go up one level to the parent folder
-    if (!typing && !overlayOpen && view === "all" && !query) {
+    if (!typing && !overlayOpen && (view === "all" || view === "trash") && !query) {
       if (e.key === "Backspace") {
         e.preventDefault();
         goBackFolder();
@@ -1375,6 +1394,39 @@ export function DriveApp({
         </div>
 
         <div className="content scroll" ref={contentRef} onClick={onContentClick}>
+          {view === "trash" && currentFolderId !== null && (
+            <div
+              className="trash-banner"
+              style={{
+                background: "color-mix(in oklab, var(--accent) 8%, var(--card))",
+                border: "1px solid var(--accent-line)",
+                borderRadius: "var(--r-md)",
+                padding: "10px 16px",
+                marginBottom: 16,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--ink)" }}>
+                <Icon name="trash" size={16} style={{ color: "var(--accent)" }} />
+                <span>Items inside this trashed folder can be individually previewed, restored, or permanently deleted.</span>
+              </div>
+              <button
+                className="btn subtle sm"
+                type="button"
+                onClick={() => {
+                  setConfirmRestore({
+                    itemIds: [],
+                    folderIds: [currentFolderId],
+                  });
+                }}
+              >
+                <Icon name="restore" size={14} /> Restore this folder
+              </button>
+            </div>
+          )}
           {items.length === 0 && currentFolders.length === 0 ? (
             <EmptyState view={view} query={query} />
           ) : groupedCollapsed ? (
