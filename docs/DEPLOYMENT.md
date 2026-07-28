@@ -91,10 +91,31 @@ bash setup.sh
 ```
 
 `setup.sh` installs Docker + Compose (via get.docker.com, works on Amazon Linux/Ubuntu/Debian),
-creates `.env` from `.env.example` (opens it for you to fill in), runs the one-time Telethon logins
-(→ `bot/worker.session`, `bot/streamer.session`), runs `docker compose up -d --build` (the
-`postgres` service applies `bot/schema.sql` on first init).
-Re-run it any time; it skips completed steps.
+creates `.env` from `.env.example` (opens it for you to fill in), asks whether you want the **MVP**
+or the **full** feature set, runs the one-time Telethon logins (→ `bot/worker.session`,
+`bot/streamer.session`), runs `docker compose up -d --build` (the `postgres` service applies
+`bot/schema.sql` on first init). Re-run it any time; it skips completed steps.
+
+**Optional features.** `setup.sh` first asks *MVP only* or *pick one by one*, then (when picking)
+one question per feature. Every answer is a line in `.env`, so later `docker compose up` runs —
+including the CD deploy — reproduce exactly the chosen set. `--mvp` / `--full` answer everything
+without prompting.
+
+| Question | `.env` | Effect when on |
+|---|---|---|
+| Cloud-drive remote download | `COMPOSE_PROFILES=cloud` | starts `openlist` (Baidu/Quark over WebDAV) for `/pikpak`, `/baidu` |
+| Cloudflare Tunnel | `COMPOSE_PROFILES=tunnel` | starts `cloudflared` (public HTTPS streamer for an off-VPS dashboard) |
+| Cache the FULL video while streaming | `STREAM_LOCAL_ORIGINAL=1` | pulls each watched part onto the VPS via the local Bot API → enables seek previews + transcoding. **Off** = play by proxying sparse chunks only (`bot/streamer.py` Telethon path), the light default |
+| Background video compression | `VIDEO_COMPRESS=1` | ffmpeg H.264 re-encode into the `compressed` volume (needs the full copy above) |
+| Automatic subtitles | `SUBTITLE_GEN=1` | Groq Whisper STT + translation (needs `GROQ_API_KEYS`; downloads each video once) |
+
+Because CD just runs `docker compose up -d --build`, an existing deployment **must have
+`COMPOSE_PROFILES=cloud,tunnel` in its `.env`** or the deploy will stop managing `openlist` and
+`cloudflared`.
+
+If the watcher/streamer crash-loops right after a first deploy, check that `bot/worker.session` and
+`bot/streamer.session` are **files**, not directories — compose creates directories there when it
+runs before the Telethon login. `setup.sh` now refuses to `up` in that situation.
 
 Then open `http://<server-ip>:3000` (log in with `APP_PASSWORD`).
 

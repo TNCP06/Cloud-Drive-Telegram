@@ -316,6 +316,10 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
 3. **Next.js** (`api/stream/[partId]/route.ts`): verifies auth cookie, proxies the request
    (incl. Range header) to `http://streamer:8080/stream/123`.
 4. **Streamer** (`streamer.py`):
+   * **If `STREAM_LOCAL_ORIGINAL=0`** (the light setup answer): the local-copy path is disabled
+     outright — `_start_local_fetch` returns immediately and every request takes the sparse-chunk
+     path below, so a watched video never lands on the VPS in full (and there are no seek previews
+     and no transcoding, both of which need a real file).
    * **If Local Bot API Server is configured (`TELEGRAM_API_URL` set):**
      a. Convert the target Telethon message media into a Bot API `file_id` using `pack_bot_file_id`.
      b. Query the local Bot API `/getFile` endpoint, which downloads the whole file to the shared cache volume on the VPS disk.

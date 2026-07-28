@@ -235,7 +235,9 @@ independently; failed chunks don't abort the rest — the successes are cached (
 `_next_backfill_part`'s **repair pass** re-run ONLY the missing chunks on a later pass (resuming from cache),
 until complete (`.done`) or `SUBTITLE_MAX_REPAIR_ATTEMPTS` is hit (finalised with whatever partial exists).
 **Env:** `TG_API_ID`, `TG_API_HASH`, `STORAGE_CHANNEL_ID`, `DATABASE_URL`, `BOT_TOKEN`, `TELEGRAM_API_URL`
-(enables local Bot API mode), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (cache limit),
+(enables local Bot API mode), `STREAM_LOCAL_ORIGINAL` (1/0, default 1 — 0 makes `_start_local_fetch`
+a no-op, so a watched part is never pulled onto the VPS in full and playback stays on the sparse-chunk
+path; seek previews and transcoding then never run), `STREAMER_PORT` (default 8080), `CACHE_MAX_SIZE_GB` (cache limit),
 `COMPRESSED_DIR`, `VIDEO_COMPRESS` (1/0), `VIDEO_CRF`, `VIDEO_PRESET` (default `veryfast`),
 `SEEKPREVIEW_DIR`, `SEEKPREVIEW_COLS`, `SEEKPREVIEW_ROWS`, `SEEKPREVIEW_THUMB_W`, `SEEKPREVIEW_THUMB_H`,
 `VIDEO_MIN_COMPRESS_MB`, `VIDEO_TRANSCODE_CONCURRENCY`, `VIDEO_TRANSCODE_THREADS` (0 = auto),

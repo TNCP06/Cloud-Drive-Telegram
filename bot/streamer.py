@@ -143,6 +143,11 @@ CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE_MB", "15")) * 1048576
 PREFETCH_TIMEOUT = int(os.environ.get("PREFETCH_TIMEOUT_S", "90"))
 INITIAL_CHUNKS = int(os.environ.get("INITIAL_CHUNKS", "1"))
 STREAMER_PORT = int(os.environ.get("STREAMER_PORT", "8080"))
+# 0 = never pull a part's WHOLE file onto this VPS: playback stays on the Telethon sparse-chunk
+# path (bytes proxied on demand, only the touched chunks are cached and LRU-evicted). Cheap on
+# disk, but it also removes what needs a real file — seek-preview sprites and background
+# transcoding never run. 1 = keep the local Bot API full-copy path (default).
+STREAM_LOCAL_ORIGINAL = os.environ.get("STREAM_LOCAL_ORIGINAL", "1") not in ("0", "false", "False", "no")
 
 # Cache of resolved local file paths: part_id -> local absolute path
 _local_file_paths: dict[int, str] = {}
@@ -461,6 +466,8 @@ async def _fetch_local_original(part_id: int, channel_msg_id: int, meta: dict,
 def _start_local_fetch(part_id: int, channel_msg_id: int, meta: dict,
                        total_size: int, mime: str) -> bool:
     """Ensure exactly one background fetch per part. True if one is (now) running."""
+    if not STREAM_LOCAL_ORIGINAL:
+        return False  # API-only streaming: never materialise the whole file on this VPS
     task = _local_fetch_tasks.get(part_id)
     if task and not task.done():
         return True
@@ -1194,6 +1201,9 @@ async def lifespan(_app: FastAPI):
     log.info("PostgreSQL client ready")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if not STREAM_LOCAL_ORIGINAL:
+        log.info("STREAM_LOCAL_ORIGINAL=0 — API-only streaming (sparse chunks; no full copy on "
+                 "this VPS, so no seek previews and no background transcoding)")
     if VIDEO_COMPRESS:
         try:
             COMPRESSED_DIR.mkdir(parents=True, exist_ok=True)

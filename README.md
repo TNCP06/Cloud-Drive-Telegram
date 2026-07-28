@@ -70,8 +70,11 @@ bash setup.sh
 `setup.sh` will:
 1. Install **Docker + Compose** if missing.
 2. Create `.env` from `.env.example` and open it for you to paste the values from *Prerequisites*.
-3. Run the one-time **Telethon logins** (phone + code) → `bot/worker.session`, `bot/streamer.session`.
-4. **Build and start** everything: `docker compose up -d --build`. The `postgres` service applies `bot/schema.sql` automatically on first init.
+3. Ask **MVP only or pick features one by one**, then one question per optional feature, recording each answer in `.env`: cloud-drive remote download (`openlist`), Cloudflare Tunnel (`cloudflared`), caching the full video on the VPS while streaming (`STREAM_LOCAL_ORIGINAL` — off by default, so playback just proxies the chunks you watch), background transcoding, automatic subtitles. `bash setup.sh --mvp` / `--full` answers them all without prompting.
+4. Run the one-time **Telethon logins** (phone + code) → `bot/worker.session`, `bot/streamer.session`.
+5. **Build and start** everything: `docker compose up -d --build`. The `postgres` service applies `bot/schema.sql` automatically on first init.
+
+The optional containers sit behind compose **profiles** (`cloud` → `openlist`, `tunnel` → `cloudflared`), selected by `COMPOSE_PROFILES` in `.env` — so every later `docker compose up` (including the CD deploy) starts exactly the set you chose. Full table: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 When it finishes, open `http://<server-ip>:3000`. Re-run `bash setup.sh` any time — it skips completed steps.
 
@@ -85,7 +88,7 @@ cd cloud-drive
 setup.bat
 ```
 
-`setup.bat` installs Python + web dependencies, creates `bot/.env` and `web/.env.local` (opens them in Notepad to fill in), runs the Telethon logins, and points you at a local/remote PostgreSQL (`DATABASE_URL`). Then start:
+`setup.bat` installs Python + web dependencies, creates `bot/.env` and `web/.env.local` (opens them in Notepad to fill in), asks MVP vs full (writes `VIDEO_COMPRESS` / `SUBTITLE_GEN` into `bot/.env`; `setup.bat --mvp|--full` skips the question), runs the Telethon logins, and points you at a local/remote PostgreSQL (`DATABASE_URL`). Then start:
 
 ```bat
 bot\run-all.cmd            REM bot + watcher + streamer (minimized)
