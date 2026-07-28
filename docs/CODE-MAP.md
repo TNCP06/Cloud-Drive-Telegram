@@ -95,7 +95,7 @@ image** + host `rclone.conf` bind-mounted; downloads land in the shared `staging
 [`infra/openlist/`](../infra/openlist/README.md). One-check: `test_pikpak.py`.
 
 ### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
-Handles two job origins (`upload_jobs.origin`):
+Handles two job origins (`upload_jobs.origin`) and target space (`is_private`):
 - **`local`** — file already on this machine. archive → `split_archive` (7-Zip); media → `plan_media`.
 - **`upload`** — file pushed via the web resumable endpoint into the shared staging dir.
   archive > part_size → **raw streaming split, no 7-Zip** (`write_window` copies one <2 GB byte
@@ -359,10 +359,10 @@ path; seek previews and transcoding then never run), `STREAMER_PORT` (default 80
   allowed to delete it, + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
   intentionally NOT changed on rename), `unpackArchive`/`getUnpackStatus` (queue/poll `unpack_jobs`),
 `getActiveUnpack` (latest queued/running job — resumes the progress pill after a navigation),
-  Folders: `createFolder` (supports `isPrivate` flag and inherits parent folder's `is_private`), `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`
+  Folders: `createFolder` (supports `isPrivate` flag and inherits parent folder's `is_private`), `renameFolder`, `deleteFolder` (cascade soft-deletes items), `restoreFolder` (invokes `restoreParentChain`), `moveItemsToFolder`
   (also adopts the target folder's `is_private` — an item in a folder of the other space is invisible in both),
   `moveFolderToFolder` (reparent; rejects cycles into self/descendants).
-  Bulk ops: `bulkToggleFavorite`, `bulkSoftDelete`, `bulkRestore`, `bulkPurgeNow`.
+  Bulk ops: `bulkToggleFavorite`, `bulkSoftDelete`, `bulkRestore` (invokes `restoreParentChain`), `bulkPurgeNow`.
   Private (`private.ts`): `isPrivateUnlocked`/`unlockPrivate`/`lockPrivate` (PIN cookie gate, env `PIN`),
   `moveItemsPrivacy`/`moveFolderPrivacy` (toggle `is_private` between Main ⇄ Private; land at the
   destination root; **never touch `updated_at`**; folder move cascades to all descendant folders + items).

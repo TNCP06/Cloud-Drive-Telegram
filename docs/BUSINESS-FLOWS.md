@@ -26,8 +26,8 @@ The web enqueues; the watcher executes. Web and watcher communicate **only** thr
 the `upload_jobs` table.
 
 1. **Web** (`/upload`): user picks a folder/file via the host file browser
-   (`fs-actions.listDir`), sets title/tags/part size → `enqueueUpload()` inserts a row into
-   `upload_jobs` with `status='queued'`.
+   (`fs-actions.listDir`), sets title/tags/part size/target space (Main vs Private) → `enqueueUpload()` inserts a row into
+   `upload_jobs` with `status='queued'` and `is_private`.
 2. User clicks Start → `startUpload()` (or `startAllUploads()`) flips the row to
    `status='pending'`.
 3. **Watcher** (`watcher.py`, polling every 5 s) `claim_next()` grabs the oldest `pending`
@@ -459,8 +459,11 @@ A parallel drive distinguished by `items.is_private` / `folders.is_private` (def
    **not** bumped (neither here nor on restore) so a restored item keeps its original
    date/sort position instead of looking freshly uploaded — trash status lives only in
    `deleted_at`.
-2. **Restore (web, /trash)**: `restore()` sets `deleted_at = NULL`. Lossless because nothing
-   was actually deleted from Telegram, and `updated_at` is preserved.
+2. **Restore (web, /trash)**: `restore()` / `restoreFolder()` sets `deleted_at = NULL`. Lossless because nothing
+   was actually deleted from Telegram, and `updated_at` is preserved. Users can double-click trashed folders in
+   `/trash` to peek inside and perform selective previews, restores, or purges. Restoring an item or subfolder
+   inside a trashed folder automatically invokes `restoreParentChain()` to un-trash its parent folder hierarchy,
+   ensuring restored items retain their original folder structure.
 3. **Purge (bot, daily 03:00 UTC)**: `purge_job` finds items with `deleted_at <= now-7days` →
    `delete_message` each part in the channel → **tombstone every part in `purged_messages`** →
    hard-delete `thumbnails`/`parts`/`item_tags`/`items` rows → DM the owner a summary.
