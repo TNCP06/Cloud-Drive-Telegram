@@ -654,7 +654,7 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
             <Icon name="command" size={18} style={{ color: "var(--accent)" }} />
             <h3 style={{ margin: 0 }}>Keyboard Shortcuts</h3>
           </div>
-          <button className="dclose" onClick={onClose} title="Close">
+          <button className="iconbtn ghost" style={{ cursor: "pointer" }} onClick={onClose} title="Close">
             <Icon name="close" size={16} />
           </button>
         </div>
