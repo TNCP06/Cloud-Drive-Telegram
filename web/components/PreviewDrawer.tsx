@@ -652,7 +652,7 @@ export function PreviewDrawer({
                       title={t.title}
                     >
                       {t.thumb ? (
-                        <Image src={t.thumb} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+                        <Image src={t.thumb} alt="" fill unoptimized loading="lazy" style={{ objectFit: "cover" }} />
                       ) : (
                         <div className="viewer-thumb-placeholder" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.05)", color: "var(--fg-muted)" }}>
                           <Icon name={t.icon} size={18} />

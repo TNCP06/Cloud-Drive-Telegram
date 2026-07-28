@@ -235,6 +235,7 @@ export function DriveApp({
   const [selected, setSelected] = useState<SelKey[]>([]);
   // Anchor for Shift+click range selection (last entry single-clicked / ctrl-toggled).
   const [selectAnchor, setSelectAnchor] = useState<SelKey | null>(null);
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
   const selectedItemIds = useMemo(() => selected.filter(isItemKey).map(keyId), [selected]);
   const selectedFolderIds = useMemo(
     () => selected.filter((k) => !isItemKey(k)).map(keyId),
@@ -895,7 +896,7 @@ export function DriveApp({
         toggleKey(fk(f.id));
         setSelectAnchor(fk(f.id));
       },
-      selected: selected.includes(fk(folder.id)),
+      selected: selectedSet.has(fk(folder.id)),
       itemCount: s.items,
       subfolderCount: s.subfolders,
     };
@@ -918,7 +919,7 @@ export function DriveApp({
             onOpen={onOpenItem}
             onSelect={onItemSelect}
             onDetail={onDetailItem}
-            selected={selected.includes(ik(item.id))}
+            selected={selectedSet.has(ik(item.id))}
             onSelectToggle={onItemToggle}
             showExtensions={prefs.showExtensions}
             showDetails={prefs.showDetailItems}
@@ -1062,7 +1063,7 @@ export function DriveApp({
 
     // Nothing focused yet → land on the selected entry (or the first) and select it.
     if (idx === -1) {
-      const start = nodes.find((n) => selected.includes(keyOf(n))) ?? nodes[0];
+      const start = nodes.find((n) => selectedSet.has(keyOf(n))) ?? nodes[0];
       start.focus();
       setSelected([keyOf(start)]);
       setSelectAnchor(keyOf(start));
@@ -1171,7 +1172,7 @@ export function DriveApp({
       onDetail: onDetailItem,
       versionCount: counts.get(item.familyKey),
       onPickFamily: pickFamily,
-      selected: selected.includes(ik(item.id)),
+      selected: selectedSet.has(ik(item.id)),
       onSelectToggle: onItemToggle,
       showExtensions: prefs.showExtensions,
       showDetails: prefs.showDetailItems,

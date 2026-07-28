@@ -120,6 +120,7 @@ function TextPreview({
   const [state, setState] = useState<{ text?: string; error?: string; loading: boolean }>({
     loading: true,
   });
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     if (size > MAX_TEXT_BYTES) {
@@ -142,9 +143,25 @@ function TextPreview({
   }
   if (state.loading) return <Loading />;
   if (state.error) return <NoPreview ft={ft} size={size} onDownload={onDownload} reason={state.error} />;
+
+  const text = state.text ?? "";
+  const lines = text.split("\n");
+  const isTruncated = lines.length > 1000 && !showAll;
+  const displayText = isTruncated ? lines.slice(0, 1000).join("\n") : text;
+
   return (
     <div className="doc-preview doc-scroll">
-      <pre className="doc-text">{state.text}</pre>
+      <pre className="doc-text">{displayText}</pre>
+      {isTruncated && (
+        <div style={{ padding: "12px 24px 24px", display: "flex", alignItems: "center", gap: 12, borderTop: "1px solid var(--line)" }}>
+          <span style={{ fontSize: 13, color: "var(--muted)" }}>
+            Showing 1,000 of {lines.length.toLocaleString()} lines
+          </span>
+          <button className="btn subtle sm" onClick={() => setShowAll(true)}>
+            Load remaining {(lines.length - 1000).toLocaleString()} lines
+          </button>
+        </div>
+      )}
     </div>
   );
 }
