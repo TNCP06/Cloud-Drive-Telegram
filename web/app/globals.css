@@ -1547,7 +1547,15 @@ body:has(.viewer) .fup { display: none; }
 .doc-msg .doc-sub { font-size: 12.5px; color: var(--faint); }
 .doc-msg .btn { margin-top: 6px; }
 
-/* PDF iframe fills the whole stage. */
+/* PDF iframe fills the stage with a 52px top offset so native PDF toolbar is unobscured. */
+.viewer.has-pdf-stage .viewer-top {
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+.viewer.has-pdf-stage .doc-preview.doc-pdf {
+  top: 52px;
+  height: calc(100% - 52px);
+}
 .doc-frame { width: 100%; height: 100%; border: 0; background: #fff; }
 
 /* Scrollable container for text/Word/Excel content. */

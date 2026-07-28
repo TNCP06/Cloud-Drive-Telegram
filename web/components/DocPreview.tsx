@@ -40,7 +40,7 @@ export function DocPreview({
   // PDF needs no JS fetch — the browser streams it through the <iframe>.
   if (ft.preview === "pdf") {
     return (
-      <div className="doc-preview">
+      <div className="doc-preview doc-pdf">
         <iframe
           className="doc-frame"
           src={`/api/stream/${partId}#toolbar=1&navpanes=0`}

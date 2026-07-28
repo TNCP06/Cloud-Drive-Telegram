@@ -343,6 +343,7 @@ export function PreviewDrawer({
     item.kind !== "media" &&
     docPartId > 0 &&
     (ft.preview === "pdf" || ft.preview === "text" || ft.preview === "word" || ft.preview === "sheet");
+  const isPdfStage = isDocStage && ft.preview === "pdf";
   const isImageStage = !!activePart?.thumb && !isVideoStage && !isDocStage;
 
   // The bottom filmstrip lists the OTHER media in this view (siblings from the parent's nav list).
@@ -500,7 +501,7 @@ export function PreviewDrawer({
         <>
           {/* Backdrop is purely visual now — clicking it must NOT close the viewer. */}
           <div className="viewer-scrim"></div>
-          <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "") + (chromeHidden ? " chrome-hidden" : "") + (isVideoStage ? " has-video-stage" : "")}>
+          <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "") + (chromeHidden ? " chrome-hidden" : "") + (isVideoStage ? " has-video-stage" : "") + (isPdfStage ? " has-pdf-stage" : "")}>
             <div className="viewer-stage">
               {isVideoStage ? (
                 <VideoPlayer
