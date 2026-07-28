@@ -298,6 +298,24 @@ async def split_media_albums(db):
     return len(album_ids)
 
 
+async def ensure_purge_schema(db) -> None:
+    """Create `purged_messages` if it is missing.
+
+    The bot also creates it in post_init, but the watcher (and the index_history backfill it
+    runs first) must not depend on that ordering: on a fresh deploy the backfill would read
+    an absent table, skip nothing, and re-index everything that was purged.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS purged_messages (
+            channel_msg_id BIGINT PRIMARY KEY,
+            tg_deleted     INTEGER NOT NULL DEFAULT 0,
+            purged_at      TEXT NOT NULL DEFAULT now_text()
+        )
+        """
+    )
+
+
 async def tombstone_messages(db, channel_msg_ids, tg_deleted: bool = False) -> None:
     """Record purged channel messages so they are never re-indexed, and (when the message
     is still on Telegram) queue them for the watcher's Telethon account to delete.

@@ -27,6 +27,7 @@ from bot import (
     slugify,
     STORAGE_CHANNEL_ID
 )
+from db_ops import ensure_purge_schema
 from pg_db import create_client
 from telethon import TelegramClient
 
@@ -138,9 +139,10 @@ async def main():
     # purged_messages queue). Without this skip, every watcher restart re-indexed them and the
     # deleted files reappeared in the drive.
     try:
+        await ensure_purge_schema(db)
         purged_rs = await db.execute("SELECT channel_msg_id FROM purged_messages")
         purged_ids = {row[0] for row in purged_rs.rows}
-    except Exception as e:  # noqa: BLE001 — table not migrated yet
+    except Exception as e:  # noqa: BLE001
         print(f"Warning: could not read purged_messages ({e}); nothing will be skipped.")
         purged_ids = set()
     if purged_ids:

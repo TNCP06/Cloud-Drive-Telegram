@@ -771,8 +771,11 @@ async def purge_worker(client, channel, db, interval: int = 30):
     and the bot now tombstone every purged message in `purged_messages`; this loop finishes
     the deletion with the account that posted it.
     """
+    from db_ops import ensure_purge_schema
+
     while True:
         try:
+            await ensure_purge_schema(db)
             rs = await db.execute(
                 "SELECT channel_msg_id FROM purged_messages WHERE tg_deleted = 0 "
                 "ORDER BY channel_msg_id LIMIT 100"
