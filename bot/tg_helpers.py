@@ -138,13 +138,23 @@ def pick_thumb_file_id(message) -> str | None:
     return None
 
 
+# Longest edge a stored thumbnail may keep. The preview drawer shows this same image for
+# photos, so it has to stay sharp; the grid ships one per item, so it can't stay huge.
+THUMB_MAX_EDGE = int(os.environ.get("THUMB_MAX_EDGE", "1280"))
+
+
 def encode_thumbnail(data_bytes: bytes) -> tuple[str, str]:
     """Convert raw image bytes to a compact WebP base64 string → (mime, base64).
 
     Telegram's built-in thumbnails are JPEG; re-encoding to WebP is ~25-35% smaller
-    at the same visual quality, shrinking the base64 blobs stored in Turso and shipped
+    at the same visual quality, shrinking the base64 blobs stored in Postgres and shipped
     to the browser. Falls back to JPEG passthrough if Pillow is unavailable or the
     source can't be decoded — a thumbnail is never lost over an encoding issue.
+
+    For a photo the source is the FULL-size image (`pick_thumb_file_id` takes `photo[-1]`,
+    which is also what the drawer shows as the preview), so it is capped at
+    `THUMB_MAX_EDGE` first: a 2560 px original is ~380 KB of base64 in every grid
+    response, a 1280 px one is a third of that and still sharp in the preview.
     """
     try:
         from PIL import Image
@@ -152,6 +162,8 @@ def encode_thumbnail(data_bytes: bytes) -> tuple[str, str]:
         with Image.open(io.BytesIO(data_bytes)) as img:
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
+            if max(img.size) > THUMB_MAX_EDGE:
+                img.thumbnail((THUMB_MAX_EDGE, THUMB_MAX_EDGE), Image.LANCZOS)
             out = io.BytesIO()
             img.save(out, format="WEBP", quality=80, method=6)
             return "image/webp", base64.b64encode(out.getvalue()).decode("ascii")

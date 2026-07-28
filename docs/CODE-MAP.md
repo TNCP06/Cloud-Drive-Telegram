@@ -27,7 +27,8 @@ that lack a `file_name` get a **synthetic name** (`video.mp4`/`animation.mp4`) s
 extension-based type detection can distinguish them from photos, which legitimately have no
 file name), `derive_media_meta` (media caption fallback),
 `pick_thumb_file_id`, `encode_thumbnail` (raw image bytes → compact **WebP** base64 via
-Pillow, JPEG passthrough fallback). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
+Pillow, downscaled to `THUMB_MAX_EDGE` px on the long edge first — a photo's source is the
+full-size image, which the drawer also shows as the preview — JPEG passthrough fallback). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
 Postgres ops (`db_ops.py`, idempotent): `upsert_item` (`set_title` guard; preserves user-modified metadata on conflict), `upsert_part` (keyed on
 `channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**: reuses an existing tag that differs only in capitalization),
 `sync_album_tags` (keeps tags identical across the individual items split from one media album — slug prefix `m<media_group_id>-`),

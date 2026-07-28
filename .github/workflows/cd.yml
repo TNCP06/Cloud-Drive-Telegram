@@ -20,6 +20,9 @@ jobs:
           # action's default command_timeout (10m) cut it off mid type-check. Give it headroom.
           command_timeout: 30m
           script: |
+            # Without this, a failed `git pull` (e.g. a dirty working tree on the VPS) is
+            # ignored: the build runs on the OLD code and the job still reports success.
+            set -e
             cd ${{ secrets.VPS_DEPLOY_PATH }}
             git pull origin main
             docker compose up -d --build
