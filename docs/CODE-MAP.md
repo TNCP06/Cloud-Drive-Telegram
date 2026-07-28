@@ -39,11 +39,15 @@ harvests the thumbnail from the original private-chat message.
 Handlers: `on_channel_post` (`indexing.py`; index new and edited channel posts, Flow C), `harvest_thumbnail` (if the post has no thumbnail
 yet — common for video, which Telegram generates asynchronously — it schedules
 `_deferred_harvest` instead of giving up), `_deferred_harvest` (background task: wait 60 s, then
-`forward_message` to owner chat to re-fetch the now-generated thumbnail, store it, delete the
-forward), `on_start` (download via `copy_message` for authorized users), `on_auth` / `on_approve` / 
+`harvest_via_forward`), `harvest_via_forward` (forward the post to the owner chat, take the
+thumbnail file_id off the forward, store it, delete the forward), `sweep_missing_thumbnails`
+(catch-all: media parts with no `thumbnails` row → `harvest_via_forward`, newest first, 25 per
+run — covers the watcher fast path, `index_history.py`, and deferred harvests lost to a restart),
+`on_start` (download via `copy_message` for authorized users), `on_auth` / `on_approve` / 
 `on_revoke` / `on_list_users` / `on_set_web_url` (user authorization, management, and settings), `send_main_menu` / `on_menu` (button-driven main menu and guide),
 `on_cancel` (cancel active file upload), `on_private_file` (interactive PM upload & Bot Drop intake),
-`on_private_text` / `on_callback_query` (interactive questionnaire and menu callbacks), `purge_job` (daily trash purge).
+`on_private_text` / `on_callback_query` (interactive questionnaire and menu callbacks), `purge_job` (daily trash purge),
+`thumbnail_sweep_job` (`run_repeating`, first 90 s after start then hourly → `sweep_missing_thumbnails`).
 Lifecycle: `post_init`/`post_shutdown` (Postgres client, auto-migrations for `authorized_users` + `download_jobs` tables, commands menu registration, and **starts the PikPak download worker(s)**), `main` (handler registration +
 `run_daily`). **Env:** `BOT_TOKEN`, `STORAGE_CHANNEL_ID`,
 `OWNER_USER_ID`, `DATABASE_URL`, `AUTH_PASSWORD`/`APP_PASSWORD`.
@@ -107,7 +111,9 @@ the raw stream split. `video_duration` is the ffprobe helper. Checked by `test_s
 account, no FLOOD_PREMIUM_WAIT, `file:///staging/…` read directly by the server, part indexed
 inline via `index_uploaded` because a bot gets no channel_post for its own posts; progress is
 **estimated** by a ticker from a measured-throughput EMA since the server gives no byte callback;
-Telethon fallback for laptop paths / API errors),
+Telethon fallback for laptop paths / API errors), `_harvest_thumbnail` (after an inline-indexed
+media part: Telethon `download_media(thumb=-1)` → `encode_thumbnail` → `upsert_thumbnail`;
+best-effort, the bot's hourly sweep retries what fails),
 `resolve_staged_file` (the single file inside an upload's staging dir), `write_window` (raw byte
 window copy, 8 MB buffer), `make_video_thumbnail` (ffmpeg frame at 1 s → temp JPEG),
 `_store_thumbnails` (background: poll `parts` ~70 s, `INSERT OR IGNORE` thumbnail),
@@ -125,7 +131,8 @@ that used to live in the deleted `worker.py` CLI. Also `import unpack` → spawn
 `available(path)` (config + `/staging` visibility gate), `send_part` (sendVideo/Photo/Document with
 a `file://` path — the telegram-bot-api container mounts the staging volume, so the server reads
 the bytes directly and uploads as the bot account → no FLOOD_PREMIUM_WAIT), `index_uploaded`
-(inline `db_ops` indexing — a bot receives no channel_post update for its own posts). **Env:**
+(inline `db_ops` indexing — a bot receives no channel_post update for its own posts; returns
+`(item_id, part_id)` so the watcher can harvest the thumbnail for that part). **Env:**
 `TELEGRAM_API_URL`, `BOT_TOKEN`, `UPLOAD_VIA_BOT_API` (default on), `BOT_API_VISIBLE_PREFIXES`.
 
 ### `unpack.py` — archive-unpack worker (in the **watcher** process, Telethon + p7zip)

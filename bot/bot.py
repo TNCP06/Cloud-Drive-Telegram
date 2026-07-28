@@ -74,6 +74,8 @@ from indexing import (  # noqa: F401  (re-exported)
     download_file_content,
     _deferred_harvest,
     harvest_thumbnail,
+    harvest_via_forward,
+    sweep_missing_thumbnails,
     index_bot_copy,
 )
 from db_backup import run_backup
@@ -166,6 +168,12 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # JobQueue — daily purge of trashed items older than 7 days
 # ---------------------------------------------------------------------------
 
+
+
+async def thumbnail_sweep_job(context: ContextTypes.DEFAULT_TYPE):
+    """Harvest thumbnails for media parts indexed by a path that skips the harvest
+    (watcher fast path, index_history.py) or whose deferred harvest died with a restart."""
+    await sweep_missing_thumbnails(context.bot, context.bot_data["db"])
 
 
 async def purge_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1426,6 +1434,10 @@ def main():
 
     # Daily PostgreSQL backup → Telegram, indexed under Backup / CDT DB (04:00 UTC).
     app.job_queue.run_daily(run_backup, time=dtime(hour=4, minute=0))
+
+    # Catch-all for media parts that were indexed without a thumbnail (watcher fast path,
+    # index_history.py, deferred harvest lost to a restart). 90 s after startup, then hourly.
+    app.job_queue.run_repeating(thumbnail_sweep_job, interval=3600, first=90)
 
     log.info("Bot starting polling…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

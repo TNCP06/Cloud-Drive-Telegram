@@ -89,8 +89,10 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
 6. **Indexing**: Telethon-sent parts are indexed by the **bot** on each `channel_post` (Flow C).
    Bot-API-sent parts get **no** channel_post update (Telegram never echoes a bot its own posts),
    so the watcher indexes them **inline** (`tg_botapi_upload.index_uploaded` — same `db_ops`
-   upserts, same slug rules). Download reassembly for these items is a plain concat
-   (`copy /b a+b out` / `cat a b > out`), not `7z x`.
+   upserts, same slug rules) and, for media, harvests the thumbnail itself right after
+   (`watcher._harvest_thumbnail`, Telethon reads it off the message) — nothing else would,
+   which is why fast-path uploads used to land with no thumbnail and no preview. Download
+   reassembly for these items is a plain concat (`copy /b a+b out` / `cat a b > out`), not `7z x`.
 
 ---
 
@@ -219,6 +221,13 @@ on the VPS and its contents are re-stored as normal items — the video then str
    fabricates a title (caption line → filename → date). Media is never rejected.
 3. Bot harvests Telegram's built-in thumbnail (`harvest_thumbnail()` → `get_file` → `encode_thumbnail`
    re-encodes to **WebP** → base64 → `thumbnails`). If a local Telegram Bot API server is configured, the bot reads the local file directly from the shared volume (`telegram-bot-api-data`) instead of downloading it over HTTP.
+   A thumbnail Telegram hasn't generated yet schedules `_deferred_harvest` (60 s, in memory).
+   Anything that path misses — a restart inside that minute, or a part indexed by a route that
+   never harvests (`tg_botapi_upload`, `index_history.py`) — is picked up by
+   `sweep_missing_thumbnails`, which the bot runs 90 s after start and then hourly
+   (`thumbnail_sweep_job`): it forwards each thumbnail-less media part's post to the owner,
+   harvests, and deletes the forward. `reharvestThumbnail` in the web does the same on demand
+   for one item.
 4. Albums (multiple files sent together) are **split** — each member becomes its **own**
    single-part item (slug `m<media_group_id>-<msgid>`), with tags kept identical across the
    members via `sync_album_tags`. They are no longer merged into one multi-part item.

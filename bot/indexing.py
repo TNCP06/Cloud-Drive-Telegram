@@ -132,10 +132,10 @@ async def download_file_content(tg_file) -> bytes:
         return buf.getvalue()
 
 
-async def _deferred_harvest(bot, db, part_id: int, channel_msg_id: int):
-    """Background task: wait 60 s then re-fetch the message via forwardMessage to get
-    the thumbnail Telegram generates asynchronously after the file is processed."""
-    await asyncio.sleep(60)
+async def harvest_via_forward(bot, db, part_id: int, channel_msg_id: int) -> bool:
+    """Harvest one part's thumbnail by forwarding its channel post to the owner (the only
+    way for the bot to get a fresh, bot-scoped thumbnail file_id for a post it can't read
+    from an update). Returns True when a thumbnail was stored. Never raises."""
     fwd_msg_id = None
     try:
         fwd = await bot.forward_message(
@@ -145,22 +145,69 @@ async def _deferred_harvest(bot, db, part_id: int, channel_msg_id: int):
         )
         fwd_msg_id = fwd.message_id
         file_id = pick_thumb_file_id(fwd)
-        if file_id:
-            tg_file = await bot.get_file(file_id)
-            data_bytes = await download_file_content(tg_file)
-            mime, data_b64 = encode_thumbnail(data_bytes)
-            await upsert_thumbnail(db, part_id, mime, data_b64)
-            log.info("Deferred thumbnail harvested for part_id=%s", part_id)
-        else:
-            log.info("Deferred harvest: still no thumbnail for part_id=%s (unsupported codec?)", part_id)
+        if not file_id:
+            log.info("No thumbnail available for part_id=%s (msg %s) — unsupported codec?",
+                     part_id, channel_msg_id)
+            return False
+        tg_file = await bot.get_file(file_id)
+        data_bytes = await download_file_content(tg_file)
+        mime, data_b64 = encode_thumbnail(data_bytes)
+        await upsert_thumbnail(db, part_id, mime, data_b64)
+        log.info("Thumbnail harvested for part_id=%s (msg %s)", part_id, channel_msg_id)
+        return True
     except Exception:  # noqa: BLE001
-        log.exception("Deferred thumbnail harvest failed for part_id=%s", part_id)
+        log.exception("Thumbnail harvest failed for part_id=%s (msg %s)", part_id, channel_msg_id)
+        return False
     finally:
         if fwd_msg_id is not None:
             try:
                 await bot.delete_message(chat_id=OWNER_USER_ID, message_id=fwd_msg_id)
             except Exception:  # noqa: BLE001
                 pass
+
+
+async def _deferred_harvest(bot, db, part_id: int, channel_msg_id: int):
+    """Background task: wait 60 s then re-fetch the message via forwardMessage to get
+    the thumbnail Telegram generates asynchronously after the file is processed.
+
+    Best-effort only — it lives in memory, so a restart inside that minute loses it.
+    `sweep_missing_thumbnails` is the durable net that picks such parts up later.
+    """
+    await asyncio.sleep(60)
+    await harvest_via_forward(bot, db, part_id, channel_msg_id)
+
+
+async def sweep_missing_thumbnails(bot, db, limit: int = 25) -> int:
+    """Harvest thumbnails for indexed media parts that have none, newest first.
+
+    The catch-all for every path that indexes a media post without harvesting:
+    the watcher's local-Bot-API fast path (bot/tg_botapi_upload.py — the bot never
+    sees a channel_post for its own token's posts), index_history.py's Telethon
+    backfill, and deferred harvests lost to a restart. Returns how many were stored.
+    """
+    rs = await db.execute(
+        """
+        SELECT p.id, p.channel_msg_id
+          FROM parts p
+          JOIN items i ON i.id = p.item_id
+          LEFT JOIN thumbnails t ON t.part_id = p.id
+         WHERE i.kind = 'media' AND i.deleted_at IS NULL AND t.part_id IS NULL
+         ORDER BY p.id DESC
+         LIMIT ?
+        """,
+        [limit],
+    )
+    rows = list(rs.rows)
+    if not rows:
+        return 0
+    log.info("Thumbnail sweep: %d media part(s) without a thumbnail", len(rows))
+    stored = 0
+    for part_id, channel_msg_id in rows:
+        if await harvest_via_forward(bot, db, int(part_id), int(channel_msg_id)):
+            stored += 1
+        await asyncio.sleep(1)  # forward+delete per part — stay well under Telegram's limits
+    log.info("Thumbnail sweep: stored %d/%d", stored, len(rows))
+    return stored
 
 
 async def harvest_thumbnail(context, db, part_id, message, channel_msg_id=None):

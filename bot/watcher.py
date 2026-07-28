@@ -393,6 +393,30 @@ def write_window(src: str, offset: int, length: int, dst: str) -> None:
 _botapi_bps = {"v": 30 * 1024 * 1024}
 
 
+async def _harvest_thumbnail(client, channel, db, part_id: int, msg_id: int) -> None:
+    """Store the thumbnail for a part we uploaded AND indexed ourselves.
+
+    The bot's indexer normally does this (indexing.py), but it never sees a channel_post
+    for the bot token's own posts, so the fast path has to do it. Telethon reads the
+    thumbnail straight off the message — no Bot API getFile plumbing needed. Best-effort:
+    the bot's hourly sweep re-tries anything missed here.
+    """
+    try:
+        from db_ops import upsert_thumbnail
+        from tg_helpers import encode_thumbnail
+
+        msg = await client.get_messages(channel, ids=msg_id)
+        if not msg or not msg.media:
+            return
+        data = await client.download_media(msg, thumb=-1, file=bytes)
+        if not data:
+            return
+        mime, data_b64 = encode_thumbnail(data)
+        await upsert_thumbnail(db, part_id, mime, data_b64)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [botapi] thumbnail harvest failed for msg {msg_id} ({e}); the bot sweep will retry")
+
+
 async def _send_part(client, channel, db, path, caption, as_document, thumb, cb,
                      *, title, tags, part_no, total, kind) -> int:
     """Send one part and return its channel message id.
@@ -422,9 +446,11 @@ async def _send_part(client, channel, db, path, caption, as_document, thumb, cb,
                 path, caption, as_document, STORAGE_CHANNEL_ID)
             elapsed = max(time.monotonic() - start, 0.001)
             _botapi_bps["v"] = 0.5 * _botapi_bps["v"] + 0.5 * (size / elapsed)
-            await botapi.index_uploaded(
+            _, part_id = await botapi.index_uploaded(
                 db, title, tags, part_no, total, kind, msg_id,
                 os.path.basename(path), size, file_id)
+            if kind == "media":
+                await _harvest_thumbnail(client, channel, db, part_id, msg_id)
             cb(size, size)
             return msg_id
         except Exception as e:  # noqa: BLE001
