@@ -40,7 +40,7 @@ export function ConfirmDelete({
     >
       <div className="dialog" style={{ maxWidth: 420 }}>
         <div className="dhead">
-          <h2>{purge ? "Delete permanently" : "Move to Trash"}</h2>
+          <h2>{purge ? "Delete permanently" : "Move to trash"}</h2>
         </div>
         <div className="dbody">
           <p className="sub" style={{ fontSize: 14, lineHeight: 1.5 }}>
@@ -109,7 +109,7 @@ export function ConfirmBulkDelete({
     >
       <div className="dialog" style={{ maxWidth: 420 }}>
         <div className="dhead">
-          <h2>{purge ? "Delete permanently" : "Move to Trash"}</h2>
+          <h2>{purge ? "Delete permanently" : "Move to trash"}</h2>
         </div>
         <div className="dbody">
           <p className="sub" style={{ fontSize: 14, lineHeight: 1.5 }}>
@@ -182,7 +182,7 @@ export function ConfirmRestore({
     >
       <div className="dialog" style={{ maxWidth: 420 }}>
         <div className="dhead">
-          <h2>Restore from Trash</h2>
+          <h2>Restore from trash</h2>
         </div>
         <div className="dbody">
           <p className="sub" style={{ fontSize: 14, lineHeight: 1.5 }}>
@@ -229,7 +229,7 @@ export function ConfirmEmptyTrash({
     >
       <div className="dialog" style={{ maxWidth: 420 }}>
         <div className="dhead">
-          <h2>Empty Trash</h2>
+          <h2>Empty trash</h2>
         </div>
         <div className="dbody">
           <p className="sub" style={{ fontSize: 14, lineHeight: 1.5 }}>
@@ -243,7 +243,7 @@ export function ConfirmEmptyTrash({
           </button>
           <button className="btn danger" onClick={onConfirm}>
             <Icon name="trash" size={16} />
-            Empty Trash
+            Empty trash
           </button>
         </div>
       </div>
@@ -425,7 +425,7 @@ export function MoveToFolderModal({
     return folderList;
   }, [folders, excluded, space]);
 
-  const crossLabel = space === "main" ? "Move to Private" : "Move to Main drive";
+  const crossLabel = space === "main" ? "Move to private" : "Move to main drive";
   const parts: string[] = [];
   if (moveFolderIds.length) parts.push(`${moveFolderIds.length} folder${moveFolderIds.length > 1 ? "s" : ""}`);
   if (moveItemIds.length) parts.push(`${moveItemIds.length} item${moveItemIds.length > 1 ? "s" : ""}`);
@@ -615,7 +615,7 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
 
   const shortcuts = [
     {
-      category: "Navigation & Selection",
+      category: "Navigation & selection",
       list: [
         { key: "Arrow Keys", desc: "Move focus & selection between items" },
         { key: "Shift + Arrows", desc: "Select range of items" },
@@ -627,16 +627,16 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
       ],
     },
     {
-      category: "Search & Actions",
+      category: "Search & actions",
       list: [
         { key: "Ctrl + K  or  /", desc: "Focus search bar" },
-        { key: "Delete", desc: "Move selected items to Trash (or Purge in Trash)" },
+        { key: "Delete", desc: "Move selected items to trash (or purge in trash view)" },
         { key: "S", desc: "Toggle favorite / star on selected items" },
-        { key: "?", desc: "Show this Keyboard Shortcuts help" },
+        { key: "?", desc: "Show this keyboard shortcuts help" },
       ],
     },
     {
-      category: "Media & Preview Viewer",
+      category: "Media & preview viewer",
       list: [
         { key: "Left / Right Arrow", desc: "Previous / next photo or video part" },
         { key: "F", desc: "Toggle full screen viewer" },
@@ -652,7 +652,7 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
         <div className="dhead">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Icon name="command" size={18} style={{ color: "var(--accent)" }} />
-            <h3 style={{ margin: 0 }}>Keyboard Shortcuts</h3>
+            <h3 style={{ margin: 0 }}>Keyboard shortcuts</h3>
           </div>
           <button className="iconbtn ghost" style={{ cursor: "pointer" }} onClick={onClose} title="Close">
             <Icon name="close" size={16} />

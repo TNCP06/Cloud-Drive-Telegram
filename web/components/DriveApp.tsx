@@ -1327,15 +1327,9 @@ export function DriveApp({
                 <span key={idx} className="crumb-item" style={{ display: "inline-flex", alignItems: "center" }}>
                   {idx > 0 && <Icon name="chevright" size={12} style={{ margin: "0 6px", color: "var(--faint)" }} />}
                   <button
-                    className="crumb-btn"
+                    className={"crumb" + (crumb.id === currentFolderId ? "" : " dim")}
                     style={{
-                      border: 0,
-                      background: "none",
-                      padding: 0,
-                      font: "inherit",
                       cursor: crumb.id === currentFolderId ? "default" : "pointer",
-                      fontWeight: crumb.id === currentFolderId ? 600 : 400,
-                      color: crumb.id === currentFolderId ? "var(--ink)" : "var(--muted)",
                     }}
                     onClick={() => crumb.id !== currentFolderId && goToFolder(crumb.id)}
                   >
@@ -1469,7 +1463,7 @@ export function DriveApp({
               title="Create new folder"
             >
               <Icon name="plus" size={15} />
-              New Folder
+              New folder
             </button>
           )}
 
@@ -1478,10 +1472,10 @@ export function DriveApp({
               className="sortbtn danger-btn"
               style={{ color: "var(--red)", borderColor: "var(--red-dim)", background: "transparent" }}
               onClick={() => setConfirmEmptyTrash(true)}
-              title="Empty Trash"
+              title="Empty trash"
             >
               <Icon name="trash" size={15} />
-              Empty Trash
+              Empty trash
             </button>
           )}
 
