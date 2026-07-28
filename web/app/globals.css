@@ -445,11 +445,16 @@ button { font-family: inherit; }
   width: 27px; height: 27px; border-radius: 7px;
   display: grid; place-items: center; cursor: pointer;
   color: var(--faint); border: 0; background: color-mix(in oklab, var(--card) 70%, transparent);
-  opacity: 0; transition: opacity .12s;
+  opacity: 0; transition: opacity .12s, top .22s cubic-bezier(.34,1.56,.64,1), height .22s cubic-bezier(.34,1.56,.64,1), border-radius .18s, padding .18s;
 }
 .card:hover .star, .card .star.on { opacity: 1; }
-.card .star.on { color: var(--gold); }
+.card .star.on {
+  color: var(--gold); top: 0; height: 36px;
+  border-radius: 0 0 7px 7px;
+  background: color-mix(in oklab, color-mix(in oklab, var(--gold) 15%, var(--card) 85%) 34%, transparent);
+}
 .card .star:hover { background: var(--card-2); }
+.card .star.on:hover { background: color-mix(in oklab, color-mix(in oklab, var(--gold) 15%, var(--card) 85%) 46%, transparent); }
 
 .card .kebab {
   position: absolute; top: 9px; left: 9px;
