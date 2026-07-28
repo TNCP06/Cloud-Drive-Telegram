@@ -603,3 +603,94 @@ export function EmptyState({ view, query }: { view: string; query: string }) {
     </div>
   );
 }
+
+export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const shortcuts = [
+    {
+      category: "Navigation & Selection",
+      list: [
+        { key: "Arrow Keys", desc: "Move focus & selection between items" },
+        { key: "Shift + Arrows", desc: "Select range of items" },
+        { key: "Enter", desc: "Open selected folder or preview selected file" },
+        { key: "Backspace", desc: "Step back through visited folders" },
+        { key: "Alt + ArrowUp", desc: "Go up one level to parent folder" },
+        { key: "Ctrl / Cmd + A", desc: "Select all visible files and folders" },
+        { key: "Escape", desc: "Clear selection, close modals, or reset search" },
+      ],
+    },
+    {
+      category: "Search & Actions",
+      list: [
+        { key: "Ctrl + K  or  /", desc: "Focus search bar" },
+        { key: "Delete", desc: "Move selected items to Trash (or Purge in Trash)" },
+        { key: "S", desc: "Toggle favorite / star on selected items" },
+        { key: "?", desc: "Show this Keyboard Shortcuts help" },
+      ],
+    },
+    {
+      category: "Media & Preview Viewer",
+      list: [
+        { key: "Left / Right Arrow", desc: "Previous / next photo or video part" },
+        { key: "F", desc: "Toggle full screen viewer" },
+        { key: "E", desc: "Expand / collapse filmstrip panel" },
+        { key: "P", desc: "Toggle video looping mode" },
+      ],
+    },
+  ];
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="dialog scroll" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+        <div className="dhead">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Icon name="command" size={18} style={{ color: "var(--accent)" }} />
+            <h3 style={{ margin: 0 }}>Keyboard Shortcuts</h3>
+          </div>
+          <button className="dclose" onClick={onClose} title="Close">
+            <Icon name="close" size={16} />
+          </button>
+        </div>
+        <div className="dbody scroll" style={{ padding: "14px 20px 20px" }}>
+          {shortcuts.map((sec) => (
+            <div key={sec.category} style={{ marginBottom: 18 }}>
+              <h4 style={{ margin: "0 0 10px", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--faint)" }}>
+                {sec.category}
+              </h4>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {sec.list.map((item) => (
+                  <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 13 }}>
+                    <span style={{ color: "var(--muted)" }}>{item.desc}</span>
+                    <kbd
+                      style={{
+                        background: "var(--card-2)",
+                        border: "1px solid var(--line-2)",
+                        borderRadius: 5,
+                        padding: "2px 7px",
+                        fontSize: 11.5,
+                        fontFamily: "var(--ui)",
+                        fontWeight: 600,
+                        color: "var(--ink)",
+                        boxShadow: "0 1px 1px rgba(0,0,0,0.06)",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {item.key}
+                    </kbd>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

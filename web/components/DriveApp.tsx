@@ -53,6 +53,7 @@ import {
   EmptyState,
   ConfirmEmptyTrash,
   ConfirmRestore,
+  KeyboardShortcutsModal,
 } from "./DriveDialogs";
 import {
   toggleFavorite,
@@ -177,6 +178,7 @@ export function DriveApp({
   // automatically from the filename + type.
   const { addFiles: addFilesCtx, runQueue } = useUpload();
   const [uploadMenu, setUploadMenu] = useState<HTMLElement | null>(null);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   // Path of the folder currently open ("A/B/C"), so a one-click upload lands where the user
@@ -937,7 +939,90 @@ export function DriveApp({
   keyNavRef.current = (e: KeyboardEvent) => {
     const ae = document.activeElement as HTMLElement | null;
     const typing = !!ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
-    const overlayOpen = previewId != null || !!menu || !!sortMenu || !!viewMenu || !!folderMenu;
+    const overlayOpen =
+      previewId != null ||
+      !!menu ||
+      !!sortMenu ||
+      !!viewMenu ||
+      !!folderMenu ||
+      showShortcutsModal ||
+      confirmBulk != null ||
+      confirm != null ||
+      confirmRestore != null ||
+      moveTarget != null ||
+      confirmEmptyTrash;
+
+    // Quick Search (Ctrl+K or /)
+    if (!typing && !overlayOpen && (e.key === "/" || ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")))) {
+      e.preventDefault();
+      searchRef.current?.focus();
+      searchRef.current?.select();
+      return;
+    }
+
+    // Keyboard Shortcuts Help (?)
+    if (!typing && !overlayOpen && (e.key === "?" || (e.shiftKey && e.key === "/"))) {
+      e.preventDefault();
+      setShowShortcutsModal(true);
+      return;
+    }
+
+    // Escape -> reset search query or clear selection
+    if (!typing && !overlayOpen && e.key === "Escape") {
+      if (query) {
+        setQuery("");
+      } else if (selected.length > 0) {
+        clearSelection();
+      }
+      return;
+    }
+
+    // Enter -> open folder or preview file
+    if (!typing && !overlayOpen && e.key === "Enter" && selected.length === 1) {
+      e.preventDefault();
+      const selKey = selected[0];
+      if (selKey.startsWith("folder:")) {
+        const fId = Number(selKey.replace("folder:", ""));
+        goToFolder(fId);
+      } else {
+        const fileId = Number(selKey);
+        const f = files.find((x) => x.id === fileId);
+        if (f) setPreviewId(f.id);
+      }
+      return;
+    }
+
+    // Delete / Shift+Delete -> soft delete or purge
+    if (
+      !typing &&
+      !overlayOpen &&
+      (e.key === "Delete" || (e.shiftKey && e.key === "Delete")) &&
+      (selectedItemIds.length > 0 || selectedFolderIds.length > 0)
+    ) {
+      e.preventDefault();
+      if (view === "trash" || e.shiftKey) {
+        setConfirmBulk({ itemIds: selectedItemIds, folderIds: selectedFolderIds, mode: "purge" });
+      } else {
+        setConfirmBulk({ itemIds: selectedItemIds, folderIds: selectedFolderIds, mode: "trash" });
+      }
+      return;
+    }
+
+    // S -> Toggle star/favorite
+    if (
+      !typing &&
+      !overlayOpen &&
+      (e.key === "s" || e.key === "S") &&
+      selectedItemIds.length > 0
+    ) {
+      e.preventDefault();
+      const allStarred = selectedItemIds.every((id) => files.find((x) => x.id === id)?.starred);
+      startTransition(async () => {
+        optimizeFiles({ type: "star", ids: selectedItemIds, starred: !allStarred });
+        await bulkToggleFavorite(selectedItemIds, !allStarred);
+      });
+      return;
+    }
 
     // Folder navigation (Main & Trash view, when not typing/no overlay):
     //   Backspace → step back through the visited folders
@@ -1312,6 +1397,15 @@ export function DriveApp({
             aria-label={isPrivate ? "Exit Private space" : "Open Private space"}
           >
             <Icon name={isPrivate ? "unlock" : "lock"} size={19} />
+          </button>
+
+          <button
+            className="iconbtn ghost"
+            onClick={() => setShowShortcutsModal(true)}
+            title="Keyboard shortcuts (?)"
+            aria-label="Keyboard shortcuts"
+          >
+            <Icon name="command" size={18} />
           </button>
 
           <ThemeToggle />
@@ -2096,6 +2190,11 @@ export function DriveApp({
           </div>
         )}
       </div>
+
+      {/* Keyboard Shortcuts Modal */}
+      {showShortcutsModal && (
+        <KeyboardShortcutsModal onClose={() => setShowShortcutsModal(false)} />
+      )}
 
     </div>
   );

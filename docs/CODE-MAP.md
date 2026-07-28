@@ -472,10 +472,10 @@ path; seek previews and transcoding then never run), `STREAMER_PORT` (default 80
   before any click — lands on the selected/first entry; DOM-geometry nav via `[data-key]`, works in every
   layout) — **Shift+arrow** extends the range from the anchor (ranges may span folders + files + groups via the
   `visibleKeys` on-screen order), **Ctrl+arrow** moves focus only (Ctrl+Space toggles), **Ctrl/Cmd+A**
-  selects all (folders + items), **Alt+Enter** opens the detail popup. Folder navigation has two shortcuts
-  (Main "All files" view, when not typing): **Backspace** steps back through the visited folders
-  (`folderHistory` back-stack — every folder change routes through `goToFolder`), and **Alt+↑** goes up
-  one level to the parent folder (`goToParentFolder`). The floating **selection toolbar is
+  selects all (folders + items), **Enter** opens the selected folder or file preview, **Delete** soft-deletes/purges
+  selected entries, **S** toggles favorite status, **Ctrl+K** or **/** focuses search, **Escape** resets search/clears selection,
+  and **?** (or the header ⌘ button) opens `KeyboardShortcutsModal`. Folder navigation: **Backspace** steps back through visited folders,
+  and **Alt+↑** goes up one level to parent folder. The floating **selection toolbar is
   icon-only** (tooltip/aria-label per button): **Download**/**Favorite** appear only when the selection
   contains files (folders can't be downloaded/starred; download opens the bot deep link per item, badge
   when >1), **Move** and **Delete** act on the whole mix (delete → `bulkSoftDelete` items + `deleteFolder`

@@ -73,6 +73,7 @@ const PATHS: Record<string, string> = {
   compact: '<path d="M8 3.5v3.2a1 1 0 0 1-1 1H3.8M16 3.5v3.2a1 1 0 0 0 1 1h3.2M8 20.5v-3.2a1 1 0 0 0-1-1H3.8M16 20.5v-3.2a1 1 0 0 1 1-1h3.2"/>',
   checkbox: '<rect x="4.5" y="4.5" width="15" height="15" rx="3.5"/><path d="M8.4 12l2.5 2.5 5-5"/>',
   info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5"/><path d="M12 7.7h.01"/>',
+  command: '<path d="M18 9a3 3 0 1 0-3-3H9a3 3 0 1 0 3 3v6a3 3 0 1 0 3 3H9a3 3 0 1 0 3-3V9z"/>',
 };
 
 export function Icon({
