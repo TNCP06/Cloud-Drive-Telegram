@@ -93,7 +93,7 @@ async def index_uploaded(db, title, tags, part_no, total, kind, msg_id, file_nam
     part_id = await upsert_part(db, item_id, part_no, msg_id, file_name, file_size, file_id)
     await recompute_totals(db, item_id)
     if tags:
-        await sync_tags(db, item_id, tags)
+        await sync_tags(db, item_id, [t.strip() for t in tags.split(",") if t.strip()])
     # The caller harvests the thumbnail with `part_id` — this path indexes media without
     # the bot ever seeing it, so nothing else would.
     return item_id, part_id
