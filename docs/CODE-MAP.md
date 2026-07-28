@@ -29,7 +29,11 @@ file name), `derive_media_meta` (media caption fallback),
 `pick_thumb_file_id`, `encode_thumbnail` (raw image bytes → compact **WebP** base64 via
 Pillow, downscaled to `THUMB_MAX_EDGE` px on the long edge first — a photo's source is the
 full-size image, which the drawer also shows as the preview — JPEG passthrough fallback). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
-Postgres ops (`db_ops.py`, idempotent): `upsert_item` (`set_title` guard; preserves user-modified metadata on conflict), `upsert_part` (keyed on
+Postgres ops (`db_ops.py`, idempotent): `resolve_folders` (`A/B/C` title path → folder id; prefers a
+live folder over a trashed one of the same name and revives the one it indexes into; a new subfolder
+inherits the parent's `is_private`), `tombstone_messages` (record purged `channel_msg_id`s in
+`purged_messages` → blocks re-indexing, queues the watcher's delete), `upsert_item` (`set_title` guard;
+preserves user-modified metadata on conflict; a new item inherits its folder's `is_private`), `upsert_part` (keyed on
 `channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**: reuses an existing tag that differs only in capitalization),
 `sync_album_tags` (keeps tags identical across the individual items split from one media album — slug prefix `m<media_group_id>-`),
 `split_media_albums` (one-shot migration: splits any pre-existing multi-part **media** item into N single-part items, preserving tags/folder/privacy/favorite + per-part thumbnails; run from `post_init`, marker-guarded), `upsert_thumbnail`, `is_user_authorized`.
@@ -118,6 +122,9 @@ best-effort, the bot's hourly sweep retries what fails),
 `resolve_staged_file` (the single file inside an upload's staging dir), `write_window` (raw byte
 window copy, 8 MB buffer), `make_video_thumbnail` (ffmpeg frame at 1 s → temp JPEG),
 `_store_thumbnails` (background: poll `parts` ~70 s, `INSERT OR IGNORE` thumbnail),
+`purge_worker` (every 30 s: delete `purged_messages` rows with `tg_deleted = 0` using the
+**user account** — a bot may not delete a user-posted channel message; marks 1 on success,
+2 after a per-message failure so it stops retrying),
 `_send_file_smart` (send a part as media; if Telegram can't process the photo — e.g. AVIF saved
 as `.jpg` — **ffmpeg-convert to JPEG and retry as a photo** so it keeps a thumbnail/preview, else
 fall back to a document so the upload never dies),
@@ -347,11 +354,13 @@ path; seek previews and transcoding then never run), `STREAMER_PORT` (default 80
   `app/actions/` (`items.ts`, `tags.ts`, `folders.ts`, `uploads.ts`, `thumbnails.ts`, `private.ts`,
   `subtitles.ts`, plus `_shared.ts` for `refresh`/`resolveTagId`). `@/app/actions` imports are unchanged. Inventory:
   Item (`items.ts`): `toggleFavorite`,
-  `softDelete`, `restore`, `purgeNow` (on-demand permanent delete of a trashed item — Telegram
-  `deleteMessage` + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
+  `softDelete`, `restore`, `purgeNow` (on-demand permanent delete of a trashed item — `purgeMessage`
+  per part: Telegram `deleteMessage`, then a `purged_messages` tombstone whether or not the bot was
+  allowed to delete it, + hard-delete rows; mirrors the bot's `purge_job`), `updateMetadata` (slug
   intentionally NOT changed on rename), `unpackArchive`/`getUnpackStatus` (queue/poll `unpack_jobs`),
 `getActiveUnpack` (latest queued/running job — resumes the progress pill after a navigation),
-  Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`,
+  Folders: `createFolder`, `renameFolder`, `deleteFolder` (cascade soft-deletes items), `moveItemsToFolder`
+  (also adopts the target folder's `is_private` — an item in a folder of the other space is invisible in both),
   `moveFolderToFolder` (reparent; rejects cycles into self/descendants).
   Bulk ops: `bulkToggleFavorite`, `bulkSoftDelete`, `bulkRestore`, `bulkPurgeNow`.
   Private (`private.ts`): `isPrivateUnlocked`/`unlockPrivate`/`lockPrivate` (PIN cookie gate, env `PIN`),

@@ -762,6 +762,54 @@ async def resolve_channel(client):
     raise RuntimeError(f"Channel {STORAGE_CHANNEL_ID} is not accessible by this account.")
 
 
+async def purge_worker(client, channel, db, interval: int = 30):
+    """Delete channel messages that were purged in the UI but that the BOT could not delete.
+
+    Telegram refuses `deleteMessage` from a bot for a post made by the user account
+    ("Bad Request: message can't be deleted"), so purge used to drop the DB rows and leave
+    the file in the channel — where index_history re-indexed it on the next restart. The web
+    and the bot now tombstone every purged message in `purged_messages`; this loop finishes
+    the deletion with the account that posted it.
+    """
+    while True:
+        try:
+            rs = await db.execute(
+                "SELECT channel_msg_id FROM purged_messages WHERE tg_deleted = 0 "
+                "ORDER BY channel_msg_id LIMIT 100"
+            )
+            ids = [int(r[0]) for r in rs.rows]
+            if ids:
+                try:
+                    await client.delete_messages(channel, ids)
+                    done, failed = ids, []
+                except Exception:  # noqa: BLE001 — one bad id fails the whole batch; retry singly
+                    done, failed = [], []
+                    for msg_id in ids:
+                        try:
+                            await client.delete_messages(channel, [msg_id])
+                            done.append(msg_id)
+                        except Exception as e:  # noqa: BLE001
+                            print(f"  [purge] cannot delete msg {msg_id}: {e}")
+                            failed.append(msg_id)
+                for msg_id in done:
+                    await db.execute(
+                        "UPDATE purged_messages SET tg_deleted = 1 WHERE channel_msg_id = ?",
+                        [msg_id],
+                    )
+                for msg_id in failed:
+                    # 2 = gave up (still a tombstone, so it can never be re-indexed) — this
+                    # stops the loop from retrying the same undeletable message forever.
+                    await db.execute(
+                        "UPDATE purged_messages SET tg_deleted = 2 WHERE channel_msg_id = ?",
+                        [msg_id],
+                    )
+                if done:
+                    print(f"  [purge] deleted {len(done)} message(s) from the channel")
+        except Exception as e:  # noqa: BLE001 — keep the watcher alive; retry next tick
+            print(f"  [purge] delete pass failed ({e}); retrying in {interval}s")
+        await asyncio.sleep(interval)
+
+
 async def main():
     db = create_client()
     async with TelegramClient(SESSION, API_ID, API_HASH) as client:
@@ -771,6 +819,8 @@ async def main():
         # Archive-unpack worker shares this process's Telethon client + p7zip.
         await unpack.ensure_schema(db)
         asyncio.create_task(unpack.worker_loop(client, channel, db))
+        # Finishes purges the bot is not allowed to make (see purge_worker).
+        asyncio.create_task(purge_worker(client, channel, db))
         print("Polling upload_jobs… (Ctrl+C to stop)")
         while True:
             job = await claim_next(db)

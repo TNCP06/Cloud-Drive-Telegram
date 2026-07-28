@@ -127,11 +127,29 @@ export async function purgeFolderNow(id: number): Promise<{ ok: boolean; error?:
 
 export async function moveItemsToFolder(itemIds: number[], folderId: number | null) {
   if (itemIds.length === 0) return;
-  for (const itemId of itemIds) {
-    await db.execute({
-      sql: "UPDATE items SET folder_id = ?, updated_at = now_text() WHERE id = ?",
-      args: [folderId, itemId],
+  // An item takes the space of the folder it moves into: a Main item dropped into a Private
+  // folder would otherwise be invisible in both views (wrong space in Private, folder absent
+  // in Main) and only reachable through Recent.
+  let isPrivate: number | null = null;
+  if (folderId !== null) {
+    const rs = await db.execute({
+      sql: "SELECT is_private FROM folders WHERE id = ?",
+      args: [folderId],
     });
+    if (rs.rows.length) isPrivate = Number(rs.rows[0].is_private ?? 0);
+  }
+  for (const itemId of itemIds) {
+    if (isPrivate === null) {
+      await db.execute({
+        sql: "UPDATE items SET folder_id = ?, updated_at = now_text() WHERE id = ?",
+        args: [folderId, itemId],
+      });
+    } else {
+      await db.execute({
+        sql: "UPDATE items SET folder_id = ?, is_private = ?, updated_at = now_text() WHERE id = ?",
+        args: [folderId, isPrivate, itemId],
+      });
+    }
   }
   refresh();
 }

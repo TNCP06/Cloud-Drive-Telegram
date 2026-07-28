@@ -462,17 +462,26 @@ A parallel drive distinguished by `items.is_private` / `folders.is_private` (def
 2. **Restore (web, /trash)**: `restore()` sets `deleted_at = NULL`. Lossless because nothing
    was actually deleted from Telegram, and `updated_at` is preserved.
 3. **Purge (bot, daily 03:00 UTC)**: `purge_job` finds items with `deleted_at <= now-7days` →
-   `delete_message` each part in the channel → hard-delete `thumbnails`/`parts`/`item_tags`/
-   `items` rows → DM the owner a summary.
-4. **Purge now (web, /trash)**: `purgeNow(id)` is the on-demand equivalent of step 3 for a
-   single trashed item — `deleteMessage` each part via the Telegram Bot API (needs `BOT_TOKEN`
-   + `STORAGE_CHANNEL_ID` in web env), then the same hard-delete of DB rows. Guarded to items
-   with `deleted_at IS NOT NULL`; irreversible, so the UI requires confirmation. Exposed in the
+   `delete_message` each part in the channel → **tombstone every part in `purged_messages`** →
+   hard-delete `thumbnails`/`parts`/`item_tags`/`items` rows → DM the owner a summary.
+4. **Purge now (web, /trash)**: `purgeNow(id)` / `bulkPurgeNow(ids)` are the on-demand
+   equivalent of step 3 (`purgeMessage` per part, needs `BOT_TOKEN` + `STORAGE_CHANNEL_ID` in
+   web env), then the same hard-delete of DB rows. Guarded to items with
+   `deleted_at IS NOT NULL`; irreversible, so the UI requires confirmation. Exposed in the
    Trash view via the context menu and preview drawer ("Delete permanently").
+5. **The message itself (watcher)**: a bot may only delete its own posts — a part uploaded by
+   the watcher's **user account** answers `Bad Request: message can't be deleted`. So purge
+   never relies on the bot succeeding: every purged `channel_msg_id` is written to
+   `purged_messages` (`tg_deleted` 0 = pending, 1 = deleted, 2 = gave up), and
+   `watcher.purge_worker` drains the pending ones every 30 s with Telethon, which is allowed.
+6. **Staying deleted**: `index_history.py` skips every id in `purged_messages`. Without that,
+   a purge whose Telegram delete failed left the file in the channel and the next watcher
+   restart re-indexed it — the deleted files reappeared in the drive, in freshly re-created
+   folders (`resolve_folders` also revives a trashed folder it is asked to index into).
 
 > The `jobs` table (`type IN ('delete','reindex')`) exists in the schema as a generic
-> web→bot command queue but the current delete path uses `deleted_at` + the scheduled purge,
-> not `jobs`.
+> web→bot command queue but nothing consumes it; deletion uses `deleted_at`, the scheduled
+> purge, and `purged_messages`.
 
 ---
 

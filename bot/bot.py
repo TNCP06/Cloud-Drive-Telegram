@@ -66,6 +66,7 @@ from db_ops import (  # noqa: F401  (re-exported)
     sync_tags,
     sync_album_tags,
     split_media_albums,
+    tombstone_messages,
     upsert_thumbnail,
 )
 from indexing import (  # noqa: F401  (re-exported)
@@ -193,12 +194,18 @@ async def purge_job(context: ContextTypes.DEFAULT_TYPE):
             "SELECT channel_msg_id FROM parts WHERE item_id = ?", [item_id]
         )
         for row in parts.rows:
+            deleted = False
             try:
                 await context.bot.delete_message(
                     chat_id=STORAGE_CHANNEL_ID, message_id=row[0]
                 )
-            except Exception:  # noqa: BLE001 — message may already be deleted
-                log.exception("Failed to delete_message msg %s", row[0])
+                deleted = True
+            except Exception:  # noqa: BLE001 — already gone, or posted by the user account
+                # A bot may not delete a message the user account posted; the watcher's
+                # Telethon session finishes the job off the purged_messages queue.
+                log.info("Bot cannot delete msg %s — queued for the watcher", row[0])
+            # Tombstone either way: index_history.py must never re-index a purged message.
+            await tombstone_messages(db, [row[0]], tg_deleted=deleted)
             await asyncio.sleep(0.2)
         # Explicit hard delete (not relying on PRAGMA foreign_keys).
         # thumbnails has a FK to parts → delete thumbnails first.
@@ -290,6 +297,32 @@ async def post_init(app: Application):
             log.info("Migration: split %s existing media album(s) into individual items", n)
     except Exception as e:
         log.warning("Migration failed for media album split: %s", e)
+
+    # Auto-migration: purged-message tombstones (blocks re-indexing + queues the deletes
+    # the bot itself is not allowed to make). Idempotent; self-applies on restart.
+    try:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS purged_messages (
+                channel_msg_id BIGINT PRIMARY KEY,
+                tg_deleted     INTEGER NOT NULL DEFAULT 0,
+                purged_at      TEXT NOT NULL DEFAULT now_text()
+            )
+        """)
+        log.info("Migration: ensured purged_messages table")
+    except Exception as e:
+        log.warning("Migration failed for purged_messages: %s", e)
+
+    # Auto-migration: an item must live in the same space as its folder. A mismatch makes it
+    # invisible in BOTH (wrong space here, folder missing there) — it only showed up under
+    # Recent. Cheap enough to re-check on every start.
+    try:
+        await db.execute(
+            "UPDATE items i SET is_private = f.is_private FROM folders f "
+            "WHERE f.id = i.folder_id AND i.is_private <> f.is_private"
+        )
+        log.info("Migration: aligned item privacy with folder privacy")
+    except Exception as e:
+        log.warning("Migration failed for item/folder privacy alignment: %s", e)
 
     # Auto-migration: create authorized_users table
     try:

@@ -141,9 +141,16 @@ These are load-bearing — break them and indexing/downloads break:
 - **Soft delete:** `items.deleted_at` set → vanishes from UI instantly; the real Telegram
   message survives until the bot's daily purge (>7 days), so restore is lossless. The Trash
   view can also purge a single item on demand via `purgeNow()` (irreversible).
+- **Purge is final:** every purged part is tombstoned in `purged_messages`, which
+  `index_history.py` skips — otherwise a purge whose Telegram delete failed came back at the
+  next watcher start. The bot may only delete its own posts, so parts uploaded by the user
+  account are deleted from the channel by `watcher.purge_worker` off that same table.
 - **Private space partition:** `items.is_private` / `folders.is_private` (default 0) split the drive
   into the public **Main** view and the PIN-gated **Private** view. `getDriveData(space)` filters by it,
-  so private rows (and their sizes/tags/analytics) never reach the Main page. Moving in/out toggles the
+  so private rows (and their sizes/tags/analytics) never reach the Main page.
+  An item always carries its folder's `is_private` (enforced on index, on move, and by a
+  start-up alignment migration): a mismatch hides it in *both* spaces — wrong space in one,
+  folder absent in the other — leaving it reachable only through Recent. Moving in/out toggles the
   flag **without touching `updated_at`** (hiding is not a content change). The PIN lives only in env `PIN`;
   the client only ever sees a `SHA-256` unlock cookie.
 - **Subtitles are kept while the video is indexed.** Generated WebVTT tracks live on the persistent

@@ -20,22 +20,40 @@ async def is_user_authorized(db, user_id: int) -> bool:
 
 
 async def resolve_folders(db, folder_path: str) -> int | None:
+    """Resolve (creating as needed) a 'A/B/C' path to the id of its last folder.
+
+    A folder that is in the trash is revived on the way: we are about to put a live item
+    inside it, and an item sitting in a trashed folder is invisible in the drive (the
+    folder is filtered out of the listing, and the item is not at the level it renders).
+    """
     parts = [p.strip() for p in folder_path.split("/") if p.strip()]
     if not parts:
         return None
     parent_id = None
     for part in parts:
+        # Prefer a live folder over a trashed one with the same name at this level.
         if parent_id is None:
-            rs = await db.execute("SELECT id FROM folders WHERE name = ? AND parent_id IS NULL", [part])
+            rs = await db.execute(
+                "SELECT id FROM folders WHERE name = ? AND parent_id IS NULL "
+                "ORDER BY (deleted_at IS NULL) DESC, id LIMIT 1", [part])
         else:
-            rs = await db.execute("SELECT id FROM folders WHERE name = ? AND parent_id = ?", [part, parent_id])
-        
+            rs = await db.execute(
+                "SELECT id FROM folders WHERE name = ? AND parent_id = ? "
+                "ORDER BY (deleted_at IS NULL) DESC, id LIMIT 1", [part, parent_id])
+
         if rs.rows:
             parent_id = rs.rows[0][0]
-        else:
             await db.execute(
-                "INSERT INTO folders (name, parent_id) VALUES (?, ?)",
-                [part, parent_id]
+                "UPDATE folders SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+                [parent_id],
+            )
+        else:
+            # A new subfolder inherits the parent's space, so a path under a Private
+            # folder never creates a Main-space folder halfway down.
+            await db.execute(
+                "INSERT INTO folders (name, parent_id, is_private) VALUES (?, ?, "
+                "COALESCE((SELECT is_private FROM folders WHERE id = ?), 0))",
+                [part, parent_id, parent_id]
             )
             if parent_id is None:
                 rs = await db.execute("SELECT id FROM folders WHERE name = ? AND parent_id IS NULL", [part])
@@ -93,10 +111,19 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
             title = existing_title
             folder_id = existing_folder_id
 
+    # A new item inherits the space (Main / Private) of the folder it lands in. Without this
+    # a file indexed into a Private folder stays is_private = 0: hidden in Private (wrong
+    # space) AND hidden in Main (its folder is not there), visible only under Recent.
+    is_private = 0
+    if folder_id is not None:
+        rs_priv = await db.execute("SELECT is_private FROM folders WHERE id = ?", [folder_id])
+        if rs_priv.rows:
+            is_private = int(rs_priv.rows[0][0] or 0)
+
     await db.execute(
         """
-        INSERT INTO items (slug, title, kind, total_parts, folder_id)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO items (slug, title, kind, total_parts, folder_id, is_private)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(slug) DO UPDATE SET
             title       = CASE WHEN ? = 1 THEN excluded.title ELSE items.title END,
             kind        = excluded.kind,
@@ -104,7 +131,8 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
             folder_id   = CASE WHEN ? = 1 THEN excluded.folder_id ELSE items.folder_id END,
             updated_at  = now_text()
         """,
-        [slug, title, kind, total, folder_id, 1 if set_title else 0, 1 if set_title else 0],
+        [slug, title, kind, total, folder_id, is_private,
+         1 if set_title else 0, 1 if set_title else 0],
     )
     rs = await db.execute("SELECT id FROM items WHERE slug = ?", [slug])
     return rs.rows[0][0]
@@ -268,6 +296,24 @@ async def split_media_albums(db):
         # The old album item now has 0 parts → remove it (cascade clears its item_tags).
         await db.execute("DELETE FROM items WHERE id = ?", [old_id])
     return len(album_ids)
+
+
+async def tombstone_messages(db, channel_msg_ids, tg_deleted: bool = False) -> None:
+    """Record purged channel messages so they are never re-indexed, and (when the message
+    is still on Telegram) queue them for the watcher's Telethon account to delete.
+
+    A bot cannot delete a channel message posted by the user account — Telegram answers
+    "Bad Request: message can't be deleted" — so purging used to leave the file in the
+    channel while dropping its DB rows, and `index_history.py` re-indexed it on the next
+    watcher start: the deleted file came back.
+    """
+    for msg_id in channel_msg_ids:
+        await db.execute(
+            "INSERT INTO purged_messages (channel_msg_id, tg_deleted) VALUES (?, ?) "
+            "ON CONFLICT(channel_msg_id) DO UPDATE SET tg_deleted = "
+            "GREATEST(purged_messages.tg_deleted, excluded.tg_deleted)",
+            [int(msg_id), 1 if tg_deleted else 0],
+        )
 
 
 async def upsert_thumbnail(db, part_id, mime, data_b64):

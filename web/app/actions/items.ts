@@ -37,6 +37,37 @@ export async function restore(id: number) {
   refresh();
 }
 
+// Delete one channel message and tombstone it.
+//
+// The bot can only delete its OWN posts: a part uploaded by the watcher's user account
+// comes back as "Bad Request: message can't be deleted". So every purged message is
+// recorded in `purged_messages` — which (a) stops index_history.py from re-indexing it
+// on the next watcher restart (that is what used to make deleted files reappear) and
+// (b) queues it for the watcher's Telethon account, which is allowed to delete it.
+async function purgeMessage(apiBase: string, chatId: string, messageId: number) {
+  let deleted = false;
+  try {
+    const res = await fetch(`${apiBase}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+    });
+    const data = await res.json();
+    deleted = Boolean(data.ok);
+    if (!data.ok && data.description !== "Bad Request: message can't be deleted") {
+      console.error("Telegram deleteMessage failed:", data);
+    }
+  } catch (err) {
+    console.error("fetch deleteMessage threw:", err);
+  }
+  await db.execute({
+    sql: `INSERT INTO purged_messages (channel_msg_id, tg_deleted) VALUES (?, ?)
+          ON CONFLICT(channel_msg_id) DO UPDATE SET
+            tg_deleted = GREATEST(purged_messages.tg_deleted, excluded.tg_deleted)`,
+    args: [messageId, deleted ? 1 : 0],
+  });
+}
+
 // Permanently delete a trashed item *now* — same effect as the bot's daily
 // purge_job but on demand (no 7-day wait). Removes every part from the Telegram
 // channel, then hard-deletes the DB rows (thumbnails → parts → item_tags → items).
@@ -64,22 +95,8 @@ export async function purgeNow(id: number): Promise<{ ok: boolean; error?: strin
     args: [id],
   });
 
-  // Best-effort Telegram deletes — a message may already be gone; keep going so
-  // the DB rows are still cleaned up regardless.
   for (const row of parts.rows) {
-    try {
-      const res = await fetch(`${apiBase}/deleteMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: STORAGE_CHANNEL_ID, message_id: Number(row.channel_msg_id) }),
-      });
-      const data = await res.json();
-      if (!data.ok) {
-        console.error("Telegram deleteMessage failed:", data);
-      }
-    } catch (err) {
-      console.error("fetch deleteMessage threw:", err);
-    }
+    await purgeMessage(apiBase, STORAGE_CHANNEL_ID, Number(row.channel_msg_id));
   }
 
   // Explicit hard delete (thumbnails FK → parts, so delete thumbnails first).
@@ -273,19 +290,7 @@ export async function bulkPurgeNow(itemIds: number[]): Promise<{ ok: boolean; er
     });
 
     for (const row of parts.rows) {
-      try {
-        const res = await fetch(`${apiBase}/deleteMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: STORAGE_CHANNEL_ID, message_id: Number(row.channel_msg_id) }),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-          console.error("Telegram deleteMessage failed:", data);
-        }
-      } catch (err) {
-        console.error("fetch deleteMessage threw:", err);
-      }
+      await purgeMessage(apiBase, STORAGE_CHANNEL_ID, Number(row.channel_msg_id));
     }
 
     await db.execute({

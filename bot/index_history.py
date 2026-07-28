@@ -133,6 +133,20 @@ async def main():
     existing_ids = {row[0] for row in existing_rs.rows}
     print(f"Found {len(existing_ids)} messages already indexed.")
 
+    # Purged messages must stay purged: their DB rows are gone, but the message can still be
+    # in the channel (a bot may not delete a user-account post; the watcher deletes it off the
+    # purged_messages queue). Without this skip, every watcher restart re-indexed them and the
+    # deleted files reappeared in the drive.
+    try:
+        purged_rs = await db.execute("SELECT channel_msg_id FROM purged_messages")
+        purged_ids = {row[0] for row in purged_rs.rows}
+    except Exception as e:  # noqa: BLE001 — table not migrated yet
+        print(f"Warning: could not read purged_messages ({e}); nothing will be skipped.")
+        purged_ids = set()
+    if purged_ids:
+        print(f"Skipping {len(purged_ids)} purged message(s).")
+    existing_ids |= purged_ids
+
     # Initialize Telethon Client using worker.session
     session_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker")
     print(f"Starting Telethon client with session: {session_path}...")
