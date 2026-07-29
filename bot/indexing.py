@@ -29,6 +29,30 @@ from db_ops import (
 )
 
 
+# Extensions Telegram can produce a thumbnail for. Anything else indexed as kind='media'
+# (e.g. a .srt subtitle uploaded with the web uploader's default kind) can never yield one.
+THUMBNAILABLE_EXTS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp", ".mpg", ".mpeg",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic",
+}
+
+
+async def _mark_thumb_missing(db, part_id: int, *, force: bool = False) -> None:
+    """Stop sweeping this part: no thumbnail will ever come. `force` marks immediately
+    (the extension can't have one); otherwise only parts older than an hour are marked,
+    so a video whose thumbnail Telegram is still generating keeps its retries."""
+    sql = "UPDATE parts SET thumb_missing = 1 WHERE id = ?"
+    if not force:
+        sql += (
+            " AND (uploaded_at IS NULL OR uploaded_at < "
+            "to_char((now() AT TIME ZONE 'UTC') - interval '1 hour', 'YYYY-MM-DD HH24:MI:SS'))"
+        )
+    try:
+        await db.execute(sql, [part_id])
+    except Exception:  # noqa: BLE001 — a failed flag only means one more retry later
+        log.exception("Failed to flag thumb_missing for part_id=%s", part_id)
+
+
 async def warn_owner(context, text):
     try:
         await context.bot.send_message(chat_id=OWNER_USER_ID, text=text)
@@ -184,14 +208,21 @@ async def sweep_missing_thumbnails(bot, db, limit: int = 25) -> int:
     the watcher's local-Bot-API fast path (bot/tg_botapi_upload.py — the bot never
     sees a channel_post for its own token's posts), index_history.py's Telethon
     backfill, and deferred harvests lost to a restart. Returns how many were stored.
+
+    Each attempt forwards the post to the owner (and deletes it), which pings the
+    owner's Telegram. A part Telegram will never make a thumbnail for (a .srt
+    uploaded as "media", an unsupported codec) must therefore be given up on:
+    non-thumbnailable extensions are skipped outright, and a part that comes back
+    empty is flagged `parts.thumb_missing` so it is never forwarded again.
     """
     rs = await db.execute(
         """
-        SELECT p.id, p.channel_msg_id
+        SELECT p.id, p.channel_msg_id, p.file_name
           FROM parts p
           JOIN items i ON i.id = p.item_id
           LEFT JOIN thumbnails t ON t.part_id = p.id
          WHERE i.kind = 'media' AND i.deleted_at IS NULL AND t.part_id IS NULL
+           AND COALESCE(p.thumb_missing, 0) = 0
          ORDER BY p.id DESC
          LIMIT ?
         """,
@@ -202,11 +233,21 @@ async def sweep_missing_thumbnails(bot, db, limit: int = 25) -> int:
         return 0
     log.info("Thumbnail sweep: %d media part(s) without a thumbnail", len(rows))
     stored = 0
-    for part_id, channel_msg_id in rows:
+    attempted = 0
+    for part_id, channel_msg_id, file_name in rows:
+        ext = os.path.splitext(file_name or "")[1].lower()
+        if ext not in THUMBNAILABLE_EXTS:
+            log.info("Thumbnail sweep: part_id=%s (%s) cannot have a thumbnail — skipping for good",
+                     part_id, file_name)
+            await _mark_thumb_missing(db, int(part_id), force=True)
+            continue
+        attempted += 1
         if await harvest_via_forward(bot, db, int(part_id), int(channel_msg_id)):
             stored += 1
+        else:
+            await _mark_thumb_missing(db, int(part_id))
         await asyncio.sleep(1)  # forward+delete per part — stay well under Telegram's limits
-    log.info("Thumbnail sweep: stored %d/%d", stored, len(rows))
+    log.info("Thumbnail sweep: stored %d/%d", stored, attempted)
     return stored
 
 

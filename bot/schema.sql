@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS parts (
     file_size      BIGINT NOT NULL DEFAULT 0,
     file_id        TEXT,
     uploaded_at    TEXT,
+    thumb_missing  INTEGER NOT NULL DEFAULT 0,  -- 1 = Telegram has no thumbnail for it; stop sweeping
     UNIQUE(item_id, part_number)
 );
 

@@ -240,7 +240,10 @@ async def post_init(app: Application):
     try:
         await db.execute("ALTER TABLE parts ADD COLUMN IF NOT EXISTS file_id TEXT")
         await db.execute("ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS is_private INTEGER NOT NULL DEFAULT 0")
-        log.info("Migration: ensured file_id on parts and is_private on upload_jobs")
+        # thumb_missing: lets the hourly thumbnail sweep give up on a part Telegram will never
+        # thumbnail, instead of forwarding it to the owner (a notification) every hour forever.
+        await db.execute("ALTER TABLE parts ADD COLUMN IF NOT EXISTS thumb_missing INTEGER NOT NULL DEFAULT 0")
+        log.info("Migration: ensured file_id/thumb_missing on parts and is_private on upload_jobs")
     except Exception as e:
         pass
 

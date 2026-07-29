@@ -47,7 +47,10 @@ yet — common for video, which Telegram generates asynchronously — it schedul
 `harvest_via_forward`), `harvest_via_forward` (forward the post to the owner chat, take the
 thumbnail file_id off the forward, store it, delete the forward), `sweep_missing_thumbnails`
 (catch-all: media parts with no `thumbnails` row → `harvest_via_forward`, newest first, 25 per
-run — covers the watcher fast path, `index_history.py`, and deferred harvests lost to a restart),
+run — covers the watcher fast path, `index_history.py`, and deferred harvests lost to a restart;
+skips extensions outside `THUMBNAILABLE_EXTS` and flags hopeless parts via `_mark_thumb_missing`
+→ `parts.thumb_missing`, so a part that can never yield a thumbnail stops being forwarded — each
+forward is a Telegram notification for the owner),
 `on_start` (download via `copy_message` for authorized users), `on_auth` / `on_approve` / 
 `on_revoke` / `on_list_users` / `on_set_web_url` (user authorization, management, and settings), `send_main_menu` / `on_menu` (button-driven main menu and guide),
 `on_cancel` (cancel active file upload), `on_private_file` (interactive PM upload & Bot Drop intake),

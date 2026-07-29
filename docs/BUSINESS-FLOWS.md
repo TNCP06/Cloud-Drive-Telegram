@@ -228,6 +228,11 @@ on the VPS and its contents are re-stored as normal items — the video then str
    (`thumbnail_sweep_job`): it forwards each thumbnail-less media part's post to the owner,
    harvests, and deletes the forward. `reharvestThumbnail` in the web does the same on demand
    for one item.
+   Because every attempt pings the owner's Telegram, the sweep **gives up** rather than retrying
+   forever: a part whose extension isn't in `THUMBNAILABLE_EXTS` (e.g. a `.srt` uploaded with the
+   web uploader's default kind `media`) is never forwarded at all, and a forward that comes back
+   without a thumbnail flags `parts.thumb_missing = 1` (only once the part is >1 h old, so a video
+   Telegram is still processing keeps its retries). Flagged parts are excluded from the sweep query.
 4. Albums (multiple files sent together) are **split** — each member becomes its **own**
    single-part item (slug `m<media_group_id>-<msgid>`), with tags kept identical across the
    members via `sync_album_tags`. They are no longer merged into one multi-part item.
