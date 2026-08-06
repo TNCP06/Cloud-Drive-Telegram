@@ -1428,8 +1428,8 @@ export function DriveApp({
                       className="crumb dim"
                       style={{ cursor: "pointer" }}
                       onClick={() => goToFolder(breadcrumbs[0].id)}
-                      title="All files (Home)"
-                      aria-label="All files"
+                      title={view === "all" ? "All files (Home)" : breadcrumbs[0].name}
+                      aria-label={view === "all" ? "All files" : breadcrumbs[0].name}
                     >
                       {view === "all" ? (
                         <Icon name="home" size={20} stroke={1.8} className="crumb-home-icon" />
@@ -1463,6 +1463,7 @@ export function DriveApp({
                       className="crumb dim crumb-parent"
                       style={{ cursor: "pointer" }}
                       onClick={() => goToFolder(breadcrumbs[breadcrumbs.length - 2].id)}
+                      title={breadcrumbs[breadcrumbs.length - 2].name}
                     >
                       {breadcrumbs[breadcrumbs.length - 2].name}
                     </button>
@@ -1474,6 +1475,7 @@ export function DriveApp({
                     <button
                       className="crumb current"
                       style={{ cursor: "default" }}
+                      title={breadcrumbs[breadcrumbs.length - 1].name}
                     >
                       {breadcrumbs[breadcrumbs.length - 1].name}
                     </button>
@@ -1482,7 +1484,7 @@ export function DriveApp({
               )
             ) : (
               <>
-                <span className="crumb current">{title}</span>
+                <span className="crumb current" title={title}>{title}</span>
                 <span className="crumb-count">{items.length} item</span>
               </>
             )}

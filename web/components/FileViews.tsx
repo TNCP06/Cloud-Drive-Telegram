@@ -849,6 +849,7 @@ export function MenuItem({
   return (
     <button
       className={"menu-item" + (danger ? " danger" : "")}
+      title={label}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();

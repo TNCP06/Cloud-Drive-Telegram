@@ -570,12 +570,14 @@ button { font-family: inherit; }
   position: fixed; z-index: 200;
   background: var(--card); border: 1px solid var(--line-2);
   border-radius: var(--r-md); box-shadow: var(--sh-3);
-  padding: 6px; min-width: 196px;
+  padding: 6px; min-width: 196px; max-width: 320px;
+  max-height: calc(100vh - 32px); overflow-y: auto;
   animation: pop .12s ease;
 }
 @keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
-.menu-item { display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; font-size: 13.5px; color: var(--ink); border: 0; background: none; width: 100%; text-align: left; }
+.menu-item { display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; font-size: 13.5px; color: var(--ink); border: 0; background: none; width: 100%; text-align: left; min-width: 0; }
 .menu-item .ico { color: var(--muted); flex: none; }
+.menu-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .menu-item:hover { background: var(--card-2); }
 .menu-item.danger { color: #A8362B; }
 .menu-item.danger .ico { color: #A8362B; }
