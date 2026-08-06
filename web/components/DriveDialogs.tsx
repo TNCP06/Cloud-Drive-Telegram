@@ -666,8 +666,8 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
               </h4>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {sec.list.map((item) => (
-                  <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 13 }}>
-                    <span style={{ color: "var(--muted)" }}>{item.desc}</span>
+                  <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 13, flexWrap: "wrap" }}>
+                    <span style={{ color: "var(--muted)", flex: 1, minWidth: 160 }}>{item.desc}</span>
                     <kbd
                       style={{
                         background: "var(--card-2)",
@@ -680,6 +680,7 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
                         color: "var(--ink)",
                         boxShadow: "0 1px 1px rgba(0,0,0,0.06)",
                         whiteSpace: "nowrap",
+                        flexShrink: 0,
                       }}
                     >
                       {item.key}

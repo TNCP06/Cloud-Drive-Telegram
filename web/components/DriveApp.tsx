@@ -302,6 +302,13 @@ export function DriveApp({
     previewClosedTimeRef.current = Date.now();
     setPreviewId(null);
     setDetailsOnly(false);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has("preview")) {
+        url.searchParams.delete("preview");
+        window.history.replaceState({ type: "folder", folderId: currentFolderId }, "", url.toString());
+      }
+    }
   };
 
   const closeMenu = () => {
@@ -323,6 +330,11 @@ export function DriveApp({
   const closeUploadMenu = () => {
     markMenuClosed();
     setTimeout(() => setUploadMenu(null), 0);
+  };
+  const [crumbMenuAnchor, setCrumbMenuAnchor] = useState<HTMLElement | null>(null);
+  const closeCrumbMenu = () => {
+    markMenuClosed();
+    setTimeout(() => setCrumbMenuAnchor(null), 0);
   };
 
   useEffect(() => {
@@ -366,6 +378,56 @@ export function DriveApp({
     const onKey = (e: KeyboardEvent) => keyNavRef.current(e);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  /* ---- browser / hardware back button integration (popstate + URL sync) ---- */
+  const previewIdRef = useRef(previewId);
+  previewIdRef.current = previewId;
+  const currentFolderIdRef = useRef(currentFolderId);
+  currentFolderIdRef.current = currentFolderId;
+
+  // Sync initial state from URL query params (for direct landing & refresh)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const folderParam = params.get("folder");
+    const previewParam = params.get("preview");
+    if (folderParam) {
+      const fId = Number(folderParam);
+      if (!isNaN(fId)) setCurrentFolderId(fId);
+    }
+    if (previewParam) {
+      const pId = Number(previewParam);
+      if (!isNaN(pId)) setPreviewId(pId);
+    }
+  }, []);
+
+  // Listen to browser / hardware Back button (popstate)
+  useEffect(() => {
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const prevParam = params.get("preview");
+      const folderParam = params.get("folder");
+
+      // Preview state sync
+      if (!prevParam && previewIdRef.current != null) {
+        setPreviewId(null);
+        setDetailsOnly(false);
+      } else if (prevParam) {
+        const pId = Number(prevParam);
+        if (!isNaN(pId)) setPreviewId(pId);
+      }
+
+      // Folder state sync
+      const targetFolderId = folderParam ? Number(folderParam) : null;
+      if (targetFolderId !== currentFolderIdRef.current) {
+        setCurrentFolderId(targetFolderId);
+        clearSelection();
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
   /* ---- background album gallery prefetch (idle)
@@ -689,7 +751,14 @@ export function DriveApp({
 
   // "N versions" click → show all versions in the family (via search) and disable grouping.
   const pickFamily = (family: string) => setQuery(family);
-  const openPreview = (item: DriveFile) => setPreviewId(item.id);
+  const openPreview = (item: DriveFile, pushHistory = true) => {
+    setPreviewId(item.id);
+    if (pushHistory && typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("preview", String(item.id));
+      window.history.pushState({ type: "preview", previewId: item.id }, "", url.toString());
+    }
+  };
   const previewItem = previewId != null ? files.find((f) => f.id === previewId) ?? null : null;
 
   // Group archives by family → representative = version with the most recent upload (date_added).
@@ -852,11 +921,17 @@ export function DriveApp({
   /* ---- folder navigation (records a back-stack) ----
      Every folder change goes through goToFolder so Backspace can step back through the
      visited path; Alt+Up jumps to the parent of the current folder. */
-  const goToFolder = (id: number | null) => {
+  const goToFolder = (id: number | null, pushHistory = true) => {
     if (id === currentFolderId) return;
     setFolderHistory((h) => [...h, currentFolderId]);
     setCurrentFolderId(id);
     clearSelection();
+    if (pushHistory && typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (id != null) url.searchParams.set("folder", String(id));
+      else url.searchParams.delete("folder");
+      window.history.pushState({ type: "folder", folderId: id }, "", url.toString());
+    }
   };
   const jumpToFolder = (folderId: number | null) => {
     setQuery("");
@@ -1323,23 +1398,91 @@ export function DriveApp({
           </button>
           <div className="crumbs">
             {breadcrumbs ? (
-              breadcrumbs.map((crumb, idx) => (
-                <span key={idx} className="crumb-item" style={{ display: "inline-flex", alignItems: "center" }}>
-                  {idx > 0 && <Icon name="chevright" size={12} style={{ margin: "0 6px", color: "var(--faint)" }} />}
-                  <button
-                    className={"crumb" + (crumb.id === currentFolderId ? "" : " dim")}
-                    style={{
-                      cursor: crumb.id === currentFolderId ? "default" : "pointer",
-                    }}
-                    onClick={() => crumb.id !== currentFolderId && goToFolder(crumb.id)}
-                  >
-                    {crumb.name}
-                  </button>
-                </span>
-              ))
+              breadcrumbs.length <= 3 ? (
+                breadcrumbs.map((crumb, idx) => {
+                  const isCurrent = crumb.id === currentFolderId;
+                  const isRoot = idx === 0;
+                  return (
+                    <span key={idx} className="crumb-item">
+                      {idx > 0 && <Icon name="chevright" size={12} style={{ margin: "0 6px", color: "var(--faint)", flex: "none" }} />}
+                      <button
+                        className={"crumb" + (isCurrent ? " current" : " dim")}
+                        style={{ cursor: isCurrent ? "default" : "pointer" }}
+                        onClick={() => !isCurrent && goToFolder(crumb.id)}
+                        title={crumb.name}
+                      >
+                        {isRoot && view === "all" && breadcrumbs.length > 1 ? (
+                          <Icon name="home" size={20} stroke={1.8} className="crumb-home-icon" />
+                        ) : (
+                          crumb.name
+                        )}
+                      </button>
+                    </span>
+                  );
+                })
+              ) : (
+                <>
+                  {/* Root / Home */}
+                  <span className="crumb-item">
+                    <button
+                      className="crumb dim"
+                      style={{ cursor: "pointer" }}
+                      onClick={() => goToFolder(breadcrumbs[0].id)}
+                      title="All files (Home)"
+                      aria-label="All files"
+                    >
+                      {view === "all" ? (
+                        <Icon name="home" size={20} stroke={1.8} className="crumb-home-icon" />
+                      ) : (
+                        breadcrumbs[0].name
+                      )}
+                    </button>
+                  </span>
+
+                  {/* Ellipsis Dropdown for middle folders */}
+                  <span className="crumb-item">
+                    <Icon name="chevright" size={12} style={{ margin: "0 6px", color: "var(--faint)", flex: "none" }} />
+                    <button
+                      className="crumb dim crumb-ellipsis"
+                      style={{ cursor: "pointer" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCrumbMenuAnchor(e.currentTarget);
+                      }}
+                      title="Show parent folders"
+                      aria-label="Show parent folders"
+                    >
+                      …
+                    </button>
+                  </span>
+
+                  {/* Immediate Parent (Desktop only) */}
+                  <span className="crumb-item hide-mob">
+                    <Icon name="chevright" size={12} style={{ margin: "0 6px", color: "var(--faint)", flex: "none" }} />
+                    <button
+                      className="crumb dim crumb-parent"
+                      style={{ cursor: "pointer" }}
+                      onClick={() => goToFolder(breadcrumbs[breadcrumbs.length - 2].id)}
+                    >
+                      {breadcrumbs[breadcrumbs.length - 2].name}
+                    </button>
+                  </span>
+
+                  {/* Current Folder */}
+                  <span className="crumb-item">
+                    <Icon name="chevright" size={12} style={{ margin: "0 6px", color: "var(--faint)", flex: "none" }} />
+                    <button
+                      className="crumb current"
+                      style={{ cursor: "default" }}
+                    >
+                      {breadcrumbs[breadcrumbs.length - 1].name}
+                    </button>
+                  </span>
+                </>
+              )
             ) : (
               <>
-                <span className="crumb">{title}</span>
+                <span className="crumb current">{title}</span>
                 <span className="crumb-count">{items.length} item</span>
               </>
             )}
@@ -1349,8 +1492,6 @@ export function DriveApp({
               </span>
             )}
           </div>
-
-          <div className="spacer"></div>
 
           <div className="search">
             <Icon name="search" size={17} className="ico" />
@@ -1372,38 +1513,52 @@ export function DriveApp({
             )}
           </div>
 
-          <button
-            className="viewbtn hide-mob"
-            onClick={(e) => {
-              e.stopPropagation();
-              setViewMenu(e.currentTarget);
-            }}
-            title="Layout & view options"
-          >
-            <Icon name={LAYOUT_ICON[layout]} size={16} />
-            <span>View</span>
-            <Icon name="chevdown" size={14} />
-          </button>
+          <div className="topbar-actions">
+            <button
+              className="viewbtn hide-mob"
+              onClick={(e) => {
+                e.stopPropagation();
+                setViewMenu(e.currentTarget);
+              }}
+              title="Layout & view options"
+            >
+              <Icon name={LAYOUT_ICON[layout]} size={16} />
+              <span>View</span>
+              <Icon name="chevdown" size={14} />
+            </button>
 
-          <button
-            className="iconbtn ghost"
-            onClick={isPrivate ? exitPrivate : enterPrivate}
-            title={isPrivate ? "Exit Private space" : "Open Private space"}
-            aria-label={isPrivate ? "Exit Private space" : "Open Private space"}
-          >
-            <Icon name={isPrivate ? "unlock" : "lock"} size={19} />
-          </button>
+            <button
+              className="iconbtn ghost show-mob-only"
+              onClick={(e) => {
+                e.stopPropagation();
+                setViewMenu(e.currentTarget);
+              }}
+              title="Layout & view options"
+              aria-label="Layout & view options"
+            >
+              <Icon name={LAYOUT_ICON[layout]} size={18} />
+            </button>
 
-          <button
-            className="iconbtn ghost"
-            onClick={() => setShowShortcutsModal(true)}
-            title="Keyboard shortcuts (?)"
-            aria-label="Keyboard shortcuts"
-          >
-            <Icon name="command" size={18} />
-          </button>
+            <button
+              className="iconbtn ghost"
+              onClick={isPrivate ? exitPrivate : enterPrivate}
+              title={isPrivate ? "Exit Private space" : "Open Private space"}
+              aria-label={isPrivate ? "Exit Private space" : "Open Private space"}
+            >
+              <Icon name={isPrivate ? "unlock" : "lock"} size={19} />
+            </button>
 
-          <ThemeToggle />
+            <button
+              className="iconbtn ghost hide-mob"
+              onClick={() => setShowShortcutsModal(true)}
+              title="Keyboard shortcuts (?)"
+              aria-label="Keyboard shortcuts"
+            >
+              <Icon name="command" size={18} />
+            </button>
+
+            <ThemeToggle />
+          </div>
         </div>
 
         <div className="toolbar">
@@ -1609,6 +1764,26 @@ export function DriveApp({
                 closeUploadMenu();
               }}
             />
+          </Menu>
+        </>
+      )}
+
+      {crumbMenuAnchor && breadcrumbs && breadcrumbs.length > 3 && (
+        <>
+          <div className="menu-scrim" onClick={closeCrumbMenu} />
+          <Menu anchor={crumbMenuAnchor} onClose={closeCrumbMenu} width={220}>
+            <div className="menu-label">Path folders</div>
+            {breadcrumbs.slice(1, breadcrumbs.length - 1).map((crumb, idx) => (
+              <MenuItem
+                key={crumb.id ?? idx}
+                icon="folder"
+                label={crumb.name}
+                onClick={() => {
+                  goToFolder(crumb.id);
+                  closeCrumbMenu();
+                }}
+              />
+            ))}
           </Menu>
         </>
       )}

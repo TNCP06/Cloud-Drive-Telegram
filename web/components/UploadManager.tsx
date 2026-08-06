@@ -3,7 +3,6 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useLiveRefresh } from "@/lib/useLiveRefresh";
-import Link from "next/link";
 import { Icon } from "@/lib/icons";
 import { fmtDate, fmtSize } from "@/lib/format";
 import type { Kind, Tag, UploadJob, UploadStatus } from "@/lib/types";

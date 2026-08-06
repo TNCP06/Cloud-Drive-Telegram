@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+// @ts-ignore
 import type Plyr from "plyr";
 import "plyr/dist/plyr.css";
 
@@ -157,6 +158,7 @@ export function VideoPlayer({
     const subBase = partId != null ? `/api/subtitles/${partId}` : undefined;
 
     (async () => {
+      // @ts-ignore
       const PlyrCtor = (await import("plyr")).default;
       if (destroyed || !videoRef.current) return;
 
@@ -354,7 +356,7 @@ export function VideoPlayer({
       // Save the position on close/source-switch so reopening resumes from the exact spot.
       try {
         if (partId != null && player) {
-          writeProgress(partId, player.currentTime, videoRef.current?.duration ?? 0);
+          writeProgress(partId, player.currentTime, video?.duration ?? 0);
         }
       } catch {}
       try {

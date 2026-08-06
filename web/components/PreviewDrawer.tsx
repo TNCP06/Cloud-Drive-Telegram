@@ -210,18 +210,26 @@ export function PreviewDrawer({
     const onMove = () => {
       setChromeHidden(false);
       clearIdle();
-      if (document.fullscreenElement) idle = setTimeout(() => setChromeHidden(true), 1000);
+      if (document.fullscreenElement) idle = setTimeout(() => setChromeHidden(true), 3000);
     };
-    const onOut = (e: MouseEvent) => { if (!e.relatedTarget) setChromeHidden(true); }; // left the window
+    const onOut = (e: MouseEvent) => {
+      // Only hide if the mouse actually left the document window on a desktop cursor
+      if (!e.relatedTarget && e.clientY <= 0) setChromeHidden(true);
+    };
     const onOver = () => setChromeHidden(false);
     const onFsChange = () => { clearIdle(); setChromeHidden(false); };
+
     document.addEventListener("mousemove", onMove);
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("touchstart", onMove, { passive: true });
     document.addEventListener("mouseout", onOut);
     document.addEventListener("mouseover", onOver);
     document.addEventListener("fullscreenchange", onFsChange);
     return () => {
       clearIdle();
       document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("touchstart", onMove);
       document.removeEventListener("mouseout", onOut);
       document.removeEventListener("mouseover", onOver);
       document.removeEventListener("fullscreenchange", onFsChange);
@@ -489,6 +497,24 @@ export function PreviewDrawer({
     return () => document.removeEventListener("keydown", onKey, true);
   }, [onClose, showDetails, editing, go, item.kind, activePart, detailsOnly, isDocStage, subsOpen]);
 
+  // Swipe left/right gesture handlers for mobile preview
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
+  };
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!touchStartRef.current || e.changedTouches.length === 0) return;
+    const dx = e.changedTouches[0].clientX - touchStartRef.current.x;
+    const dy = e.changedTouches[0].clientY - touchStartRef.current.y;
+    touchStartRef.current = null;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      if (dx < 0) go(1);
+      else go(-1);
+    }
+  };
+
   const save = () => {
     if (!title.trim()) return;
     onSave(item, { title, kind, tags: tagsText });
@@ -502,7 +528,7 @@ export function PreviewDrawer({
           {/* Backdrop is purely visual now — clicking it must NOT close the viewer. */}
           <div className="viewer-scrim"></div>
           <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "") + (chromeHidden ? " chrome-hidden" : "") + (isVideoStage ? " has-video-stage" : "") + (isPdfStage ? " has-pdf-stage" : "")}>
-            <div className="viewer-stage">
+            <div className="viewer-stage" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
               {isVideoStage ? (
                 <VideoPlayer
                   key={`${activePart!.partId}:${subsBump}`}

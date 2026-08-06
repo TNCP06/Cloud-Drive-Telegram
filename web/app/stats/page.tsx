@@ -114,11 +114,11 @@ export default async function StatsPage() {
         .lg i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
         .flow-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px dashed var(--line-2); font-size: 13px; }
         .flow-row .fl { width: 64px; font-weight: 650; color: var(--ink); flex-shrink: 0; }
-        .hop { background: var(--card-2); border: 1px solid var(--line-2); border-radius: 7px; padding: 3px 9px; color: var(--ink-2); }
+        .hop { background: var(--card-2); border: 1px solid var(--line-2); border-radius: 7px; padding: 3px 9px; color: var(--ink-2); word-break: break-word; max-width: 100%; }
         .arr { color: var(--faint); }
-        .tag-row { display: grid; grid-template-columns: minmax(90px, max-content) 1fr max-content; gap: 6px 12px; align-items: center; }
+        .tag-row { display: grid; grid-template-columns: minmax(60px, 140px) 1fr max-content; gap: 6px 12px; align-items: center; }
         .tag-row .tn { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .tag-row .tb { background: var(--card-2); border-radius: 4px; height: 13px; }
+        .tag-row .tb { background: var(--card-2); border-radius: 4px; height: 13px; min-width: 40px; }
         .tag-row .tb span { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
         .tag-row .tv { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
         .st-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line-2); border-radius: 99px; padding: 3px 11px; font-size: 12.5px; color: var(--ink-2); margin: 0 6px 6px 0; }
