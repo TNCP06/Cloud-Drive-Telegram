@@ -545,7 +545,18 @@ export function PreviewDrawer({
                   onDownload={onDownload}
                 />
               ) : isImageStage ? (
-                <Image src={activePart!.thumb!} alt={item.name} unoptimized width={0} height={0} sizes="100vw" style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 0, cursor: "default", transform: rotation ? `rotate(${rotation}deg)` : undefined, transition: "transform .2s ease" }} />
+                <img
+                  src={activePart?.partId ? `/api/stream/${activePart.partId}` : activePart!.thumb!}
+                  alt={item.name}
+                  onError={(e) => {
+                    // Fallback to thumbnail if stream fails
+                    const target = e.currentTarget as HTMLImageElement;
+                    if (activePart?.thumb && target.src !== activePart.thumb) {
+                      target.src = activePart.thumb;
+                    }
+                  }}
+                  style={{ width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 0, cursor: "default", transform: rotation ? `rotate(${rotation}deg)` : undefined, transition: "transform .2s ease" }}
+                />
               ) : (
                 <Icon name={ft.icon} size={120} stroke={1.2} style={{ color: ft.tint }} />
               )}

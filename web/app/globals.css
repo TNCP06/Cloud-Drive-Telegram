@@ -757,6 +757,7 @@ button { font-family: inherit; }
 .viewer.has-nav .viewer-stage { padding-left: 60px; padding-right: 60px; }
 .viewer.has-bottom .viewer-stage { padding-bottom: 85px; }
 .viewer-stage img {
+  width: 100%; height: 100%;
   max-width: 100%; max-height: 100%; min-width: 0; min-height: 0;
   object-fit: contain; border-radius: 0; cursor: default;
 }
@@ -780,13 +781,15 @@ button { font-family: inherit; }
   width: 100%; height: 100%; min-width: 0; min-height: 0;
   cursor: default;
 }
+.viewer-video video,
 .viewer-video .plyr {
   width: 100%; height: 100%;
   border-radius: 0;
   --plyr-color-main: var(--accent);
 }
+.viewer-video video,
 .viewer-video .plyr video { object-fit: contain; background: transparent; }
-.viewer-video .plyr__video-wrapper { background: transparent; }
+.viewer-video .plyr__video-wrapper { background: transparent; height: 100%; }
 
 /* Custom player controls visibility and spacing */
 .viewer-video .plyr__controls {
