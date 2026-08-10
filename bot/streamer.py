@@ -244,6 +244,10 @@ _backfill_failed: set[int] = set()  # part_ids that failed THIS session (retried
 _poster_task: "asyncio.Task | None" = None
 _poster_failed: set[int] = set()  # part_ids that failed THIS session (retried next restart)
 
+# Both backfills pull WHOLE videos onto a 30 GB disk shared with other projects. Serialise them:
+# one retroactive download at a time, whichever loop asks first.
+_backfill_download_lock: "asyncio.Lock | None" = None
+
 
 # ---------------------------------------------------------------------------
 # Helpers — disk cache
@@ -1106,13 +1110,17 @@ async def _backfill_one(part: dict) -> None:
     """Download one video, generate its subtitles, then delete the download to reclaim disk."""
     part_id = part["part_id"]
     try:
-        path = await _download_part_original(part)
+        async with _backfill_download_lock:
+            path = await _download_part_original(part)
     except Exception as e:  # noqa: BLE001
         log.warning("Backfill: download failed for part %d: %s", part_id, e)
         _backfill_failed.add(part_id)
         return
 
     try:
+        # The video is already here for the STT pass — take its cover frame off the same
+        # download instead of making the poster backfill fetch it a second time.
+        await _ensure_poster(part_id, path)
         await run_subtitle_job(db, part_id, path)
         # The worker writes the `.done` marker only when a part is finalised (complete,
         # no-speech, no-audio, or budget-exhausted). If it's still absent the part either
@@ -1242,7 +1250,8 @@ async def _poster_backfill_one(part: dict) -> None:
     part_id = part["part_id"]
     path = None
     try:
-        path = await _download_part_original(part)
+        async with _backfill_download_lock:
+            path = await _download_part_original(part)
         if not await store_poster(db, part_id, path):
             _poster_failed.add(part_id)
     except Exception as e:  # noqa: BLE001
@@ -1290,12 +1299,14 @@ async def _poster_backfill_loop() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global tg_client, db, channel, _backfill_task, _poster_task, _subtitle_wake
+    global _backfill_download_lock
 
     init_semaphore()  # create the transcode concurrency semaphore in the running loop
     init_subtitle_semaphore()  # create the subtitle concurrency semaphore in the running loop
     init_seekpreview_semaphore()  # create the seek-preview concurrency semaphore
     init_poster_semaphore()  # create the poster concurrency semaphore
     _subtitle_wake = asyncio.Event()  # lets a viewed video wake the idle backfill loop
+    _backfill_download_lock = asyncio.Lock()  # one retroactive whole-video download at a time
 
     log.info("Starting streamer — connecting to Telegram and Turso…")
     tg_client = TelegramClient(SESSION, API_ID, API_HASH)
