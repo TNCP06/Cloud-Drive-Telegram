@@ -636,33 +636,34 @@ export function PreviewDrawer({
               </>
             )}
 
-            {/* Floating controls over the media (like the title bar), just above the bottom box:
-                part counter + collapse chevron (center) and rotate/fullscreen (right). The collapse
-                chevron / "E" hides the box so the media grows to fill the freed space. */}
-            <div className="viewer-floatbar" style={{ bottom: isVideoStage ? (collapsed ? 48 : 91) : (collapsed ? 14 : 91) }}>
-              <div />
-              <div className="viewer-floatcenter">
+            {/* Floating controls over the media (PikPak-style unified pill): part counter + rotate + collapse chevron */}
+            <div className="viewer-floatbar">
+              <div className="viewer-floatpill">
                 {stripThumbs.length > 1 && (
-                  <span className="viewer-count">{activeThumbIndex + 1} / {stripThumbs.length}</span>
+                  <>
+                    <span className="viewer-count">{activeThumbIndex + 1} / {stripThumbs.length}</span>
+                    <span className="viewer-pill-sep" />
+                  </>
+                )}
+                {isImageStage && (
+                  <>
+                    <button
+                      className="viewer-iconbtn"
+                      onClick={() => setRotation((r) => (r + 90) % 360)}
+                      title="Rotate (R)"
+                    >
+                      <Icon name="rotate" size={16} />
+                    </button>
+                    <span className="viewer-pill-sep" />
+                  </>
                 )}
                 <button
                   className="viewer-iconbtn"
                   onClick={() => setCollapsed((c) => !c)}
-                  title={collapsed ? "Expand (E)" : "Collapse (E)"}
+                  title={collapsed ? "Expand filmstrip (E)" : "Collapse filmstrip (E)"}
                 >
                   <Icon name={collapsed ? "chevup" : "chevdown"} size={16} />
                 </button>
-              </div>
-              <div className="viewer-botbtns">
-                {isImageStage && (
-                  <button
-                    className="viewer-iconbtn"
-                    onClick={() => setRotation((r) => (r + 90) % 360)}
-                    title="Rotate"
-                  >
-                    <Icon name="rotate" size={16} />
-                  </button>
-                )}
               </div>
             </div>
 

@@ -770,6 +770,11 @@ button { font-family: inherit; }
    (esp. video) even when the bottom box is collapsed. Zero it so media fills edge-to-edge. */
 .viewer:fullscreen .viewer-stage,
 .viewer:-webkit-full-screen .viewer-stage { padding: 0; }
+/* ...but the filmstrip is opaque and NOT floating chrome: with the padding zeroed it lands on top
+   of the media's bottom edge and buries Plyr's control bar entirely. When it's expanded, keep
+   reserving its height in fullscreen exactly as the windowed layout does. */
+.viewer:fullscreen.has-bottom .viewer-stage,
+.viewer:-webkit-full-screen.has-bottom .viewer-stage { padding-bottom: 85px; }
 
 /* Plyr video player. The player fills the entire stage from the first frame —
    even while the stream is still loading — so it never collapses to a tiny box.
@@ -819,12 +824,25 @@ button { font-family: inherit; }
 .viewer-video .plyr__controls .plyr__time:last-of-type {
   margin-right: auto !important;
 }
+/* Plyr drops the duration ("/ 00:30") on narrow screens, which takes the auto margin above with it
+   — and the row, still `justify-content: flex-end`, collapses to the right edge. Below that same
+   breakpoint, hang the auto margin on the current time instead: it is never hidden. */
+@media (max-width: 767px) {
+  .viewer-video .plyr__controls .plyr__time--current {
+    margin-right: auto !important;
+  }
+}
 .viewer-video .plyr:hover .plyr__controls {
   pointer-events: auto !important;
 }
 .viewer-video .plyr__controls:hover,
-.viewer-video .plyr__controls:focus-within {
+.viewer-video .plyr__controls:focus-within,
+/* The collapsed floatpill sits ON the button row and covers its centre, so a cursor resting there
+   hovers the pill and NOT the control bar — which would drop the bar out from under it. Treat a
+   hover on the pill as a hover on the bar. */
+.viewer:has(.viewer-floatpill:hover) .viewer-video .plyr__controls {
   opacity: 1 !important;
+  pointer-events: auto !important;
 }
 @media (hover: none) {
   .viewer-video .plyr__controls {
@@ -851,7 +869,8 @@ button { font-family: inherit; }
 /* Lift ONLY while the seek bar is actually visible — the SAME `:hover` signal that reveals it.
    Deliberately NOT `:focus-within`: after clicking play, the strip keeps focus, which would stick
    the subtitles up long after the cursor left — read by the user as "moving on its own". */
-.viewer-video .plyr:has(.plyr__controls:hover) .plyr__captions {
+.viewer-video .plyr:has(.plyr__controls:hover) .plyr__captions,
+.viewer:has(.viewer-floatpill:hover) .viewer-video .plyr__captions {
   bottom: 74px;
 }
 
@@ -886,21 +905,29 @@ button { font-family: inherit; }
   display: none !important;
 }
 
-/* When collapsed and playing video, viewer-floatcenter opacity matches .plyr__controls */
-.viewer:not(.has-bottom).has-video-stage .viewer-floatcenter {
+/* When collapsed and playing video, viewer-floatbar opacity matches .plyr__controls.
+   Hidden state uses `visibility`, NOT `pointer-events: auto` on reveal: the floatbar is a
+   full-width strip lying across Plyr's button row, so making the strip itself hit-testable turns
+   the whole row into a hover trap that swallows `.plyr__controls:hover` everywhere except on the
+   pill. The strip stays `pointer-events: none` (see .viewer-floatbar) and only the pill inside it
+   takes pointers; `visibility` keeps that pill from being clickable while it is invisible. */
+.viewer:not(.has-bottom).has-video-stage .viewer-floatbar {
   opacity: 0;
-  pointer-events: none;
-  transition: opacity .25s ease;
+  visibility: hidden;
+  transition: opacity .25s ease, visibility 0s linear .25s, bottom .22s cubic-bezier(0.16, 1, 0.3, 1), transform .25s ease;
 }
-.viewer:not(.has-bottom).has-video-stage:has(.plyr__controls:hover) .viewer-floatcenter,
-.viewer:not(.has-bottom).has-video-stage .viewer-floatbar:hover .viewer-floatcenter {
+.viewer:not(.has-bottom).has-video-stage:has(.plyr__controls:hover) .viewer-floatbar,
+.viewer:not(.has-bottom).has-video-stage:has(.viewer-floatpill:hover) .viewer-floatbar {
   opacity: 1;
-  pointer-events: auto;
+  visibility: visible;
+  transition: opacity .25s ease, visibility 0s, bottom .22s cubic-bezier(0.16, 1, 0.3, 1), transform .25s ease;
 }
+/* Touch has no hover to reveal the pill with, so it stays put. `visibility`, never
+   `pointer-events: auto`: the strip spans the full width and would eat every tap along its row. */
 @media (hover: none) {
-  .viewer:not(.has-bottom).has-video-stage .viewer-floatcenter {
+  .viewer:not(.has-bottom).has-video-stage .viewer-floatbar {
     opacity: 1;
-    pointer-events: auto;
+    visibility: visible;
   }
 }
 
@@ -941,20 +968,104 @@ button { font-family: inherit; }
 .viewer-nav.prev { left: 14px; }
 .viewer-nav.next { right: 14px; }
 
-/* Kontrol mengambang di atas kotak bawah (seperti judul): counter + chevron collapse (tengah) dan
-   rotate/fullscreen (kanan). pointer-events dimatikan agar area kosong tak menghalangi media. */
+/* Floating controls over bottom box (PikPak-style unified pill): part counter + rotate + collapse */
 .viewer-floatbar {
   position: absolute; left: 0; right: 0; z-index: 4;
-  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
-  padding: 0 14px; pointer-events: none; transition: bottom .18s ease, transform .25s ease, opacity .25s ease;
+  display: flex; justify-content: center; align-items: center;
+  padding: 0 14px; pointer-events: none;
+  bottom: 14px;
+  transition: bottom .22s cubic-bezier(0.16, 1, 0.3, 1), transform .25s ease, opacity .25s ease;
 }
-.viewer-floatbar > * { pointer-events: none; }
-.viewer-floatbar .viewer-iconbtn { pointer-events: auto; }
-.viewer-floatcenter { justify-self: center; display: inline-flex; align-items: center; gap: 10px; }
-.viewer-botbtns { justify-self: end; display: flex; align-items: center; gap: 6px; }
+.viewer.has-bottom .viewer-floatbar {
+  bottom: 85px;
+}
+/* Collapsed video: the pill drops into the empty centre of Plyr's button row, BELOW the seek
+   bar — the left cluster (play/volume/time) and the right cluster both stop well short of it. */
+.viewer.has-video-stage:not(.has-bottom) .viewer-floatbar {
+  bottom: 8px;
+}
+/* ...but that centre is only empty on a wide stage. The left cluster is ~350px regardless of
+   viewport width and the pill is ~98px centred, so they start overlapping (the volume slider
+   first) below roughly 800px. Park the pill above the whole control bar there instead. */
+@media (max-width: 800px) {
+  .viewer.has-video-stage:not(.has-bottom) .viewer-floatbar {
+    bottom: 88px;
+  }
+}
+/* Expanded hits the same squeeze: the video ends exactly at the strip's top edge, so its control
+   bar runs right under the attached tab. Moving the tab would undo the attachment, so reserve the
+   tab's height on the stage as well and let the video end above it (35px tab + strip height). */
+@media (max-width: 800px) {
+  .viewer.has-bottom.has-video-stage .viewer-stage,
+  .viewer:fullscreen.has-bottom.has-video-stage .viewer-stage,
+  .viewer:-webkit-full-screen.has-bottom.has-video-stage .viewer-stage { padding-bottom: 121px; }
+  /* A centred 98px tab would leave that reserved band as empty black on either side, reading as a
+     control bar left hanging in mid-air. Spread the tab across the full width instead: the band is
+     then all bar, continuous with the strip below it — the usual phone toolbar. */
+  .viewer.has-bottom.has-video-stage .viewer-floatbar { padding: 0; }
+  .viewer.has-bottom.has-video-stage .viewer-floatpill {
+    flex: 1;
+    justify-content: space-between;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+    padding: 4px 8px 2px 14px;
+  }
+  .viewer.has-bottom.has-video-stage .viewer-pill-sep { display: none; }
+}
+/* That 88px assumes the control bar stays two rows (seek + buttons). The buttons need ~310px, so
+   below ~340px they wrap to a third row and grow back under the pill. Drop the volume slider there
+   — the same thing Plyr does on iOS, where volume is the OS's job anyway. The mute button stays. */
+@media (max-width: 360px) {
+  .viewer-video .plyr__volume input[type="range"] { display: none !important; }
+}
+
+.viewer-floatpill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 6px 4px 14px; border-radius: 99px;
+  background: rgba(18, 18, 22, 0.78);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  transition: background .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.viewer-floatpill:hover {
+  background: rgba(24, 24, 28, 0.88);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+}
+/* Expanded: the pill stops floating and becomes a tab grown out of the filmstrip — bottom corners
+   squared off so it sits flush on the strip's top edge, strip-coloured so the two read as one
+   piece, and no shadow/blur (both are "floating above" cues that fight the attached look). */
+.viewer.has-bottom .viewer-floatpill {
+  border-radius: 14px 14px 0 0;
+  border-bottom: 0;
+  padding-bottom: 2px;
+  background: #0b0b0c;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+.viewer.has-bottom .viewer-floatpill:hover {
+  background: #16161a;
+  box-shadow: none;
+}
 .viewer-count {
-  color: #fff; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums;
-  padding: 3px 10px; border-radius: 99px; background: color-mix(in oklab, #000 48%, transparent);
+  color: rgba(255, 255, 255, 0.9); font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+  padding: 0 4px; background: transparent;
+}
+.viewer-pill-sep {
+  flex: none; width: 1px; height: 16px; margin: 0 3px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.viewer-floatpill .viewer-iconbtn {
+  width: 28px; height: 28px; border-radius: 99px;
+  background: transparent; transition: background .15s ease;
+}
+.viewer-floatpill .viewer-iconbtn:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 /* Kotak bawah = filmstrip: bar SOLID full-bleed, tipis, tanpa margin, menempel ke media.
@@ -1008,12 +1119,18 @@ button { font-family: inherit; }
 
 @media (max-width: 520px) {
   .viewer.has-bottom .viewer-stage { padding-bottom: 60px; }
+  /* 60px strip + 35px attached tab — see the reserve rule above. */
+  .viewer.has-bottom.has-video-stage .viewer-stage,
+  .viewer:fullscreen.has-bottom.has-video-stage .viewer-stage,
+  .viewer:-webkit-full-screen.has-bottom.has-video-stage .viewer-stage { padding-bottom: 96px; }
   .viewer-thumb { width: 60px; height: 60px; }
   .viewer-top { padding: 8px 10px; gap: 6px; }
   .viewer-name { font-size: 12px; }
   .viewer-tools { gap: 3px; }
   .viewer-iconbtn { width: 28px; height: 28px; }
   .viewer-floatbar { padding: 0 8px; }
+  /* Thumbs shrink to 60px here, so the attached tab has to follow the strip's new top edge. */
+  .viewer.has-bottom .viewer-floatbar { bottom: 60px; }
 }
 
 /* ===========================================================================

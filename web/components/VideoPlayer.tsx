@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-// @ts-ignore
 import type Plyr from "plyr";
 import "plyr/dist/plyr.css";
 
@@ -160,7 +159,6 @@ export function VideoPlayer({
     const subBase = partId != null ? `/api/subtitles/${partId}` : undefined;
 
     (async () => {
-      // @ts-ignore
       const PlyrCtor = (await import("plyr")).default;
       if (destroyed || !videoRef.current) return;
 
