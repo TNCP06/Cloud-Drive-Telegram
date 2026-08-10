@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS item_tags (
 CREATE TABLE IF NOT EXISTS thumbnails (
     part_id BIGINT PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
     mime    TEXT NOT NULL DEFAULT 'image/jpeg',
-    data    TEXT NOT NULL                          -- base64
+    data    TEXT NOT NULL,                         -- base64
+    source  TEXT NOT NULL DEFAULT 'telegram'       -- 'telegram' | 'ffmpeg' | 'manual'
 );
 
 CREATE TABLE IF NOT EXISTS purged_messages (

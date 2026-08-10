@@ -16,7 +16,8 @@ approximate and will drift — treat function names as the stable anchor.
 > registry, ☁️ Cloud Drives inline-button browser + in-bot rclone worker). `bot.py` keeps the interactive handlers
 > + `main()` and **re-exports** the names
 > `index_history.py` imports (`from bot import …`). The streamer's background compression lives in
-> `stream_compress.py` and seek-preview sprite generation in `stream_seekpreview.py`.
+> `stream_compress.py`, seek-preview sprite generation in `stream_seekpreview.py`, and video
+> cover frames in `stream_poster.py`.
 
 ### `bot.py` (+ `bot_config` / `tg_helpers` / `db_ops` / `indexing`) — indexer + download server + purge
 Pure helpers (`tg_helpers.py`, no I/O): `slugify` (non-ASCII titles get a stable md5-8 suffix of the
@@ -198,6 +199,15 @@ transcode can't collide with a big unpack/download on the shared 30 GB disk),
 (ffmpeg → sprite sheet + VTT), `init_seekpreview_semaphore`, `vtt_path`/`sprite_path`, `has_preview`.
 Endpoints: `GET /seek-preview/{part_id}` (VTT) and `GET /seek-preview/{part_id}/sprite` (JPEG sprite sheet).
 `_schedule_seekpreview` (fire-and-forget, dedup'd by part_id).
+**Video cover frames** live in **`stream_poster.py`**: `generate_poster` (ffmpeg seeks
+`POSTER_SEEK_RATIO` into the file, scales the longest edge to `POSTER_MAX_EDGE`, WebP → base64 with a
+JPEG fallback for an ffmpeg build without libwebp), `store_poster` (writes it to `thumbnails` with
+`source='ffmpeg'`), `init_poster_semaphore`. Telegram's own video thumbnail is capped at ~320 px, so
+this replaces it wherever the streamer already has the file. In the streamer: `_ensure_poster`
+(called from `_fetch_local_original`, skips parts already `'ffmpeg'`/`'manual'`), and
+`_next_poster_part`/`_poster_backfill_one`/`_poster_backfill_loop` — the retroactive pass over older
+videos, one at a time, paused while `_active_downloads` is non-empty and deleting each download
+straight after (`POSTER_BACKFILL*` env).
 `stream` serves the original on the first view (instant) while transcoding in the background; later views
 serve the compressed copy. The served variant is **pinned per playback** (`_serving_variant`: a fresh load /
 `bytes=0-` re-evaluates and prefers compressed once ready; seeks reuse the pin) so file size never changes
@@ -477,7 +487,10 @@ path; seek previews and transcoding then never run), `STREAMER_PORT` (default 80
   `visibleKeys` on-screen order), **Ctrl+arrow** moves focus only (Ctrl+Space toggles), **Ctrl/Cmd+A**
   selects all (folders + items), **Enter** opens the selected folder or file preview, **Delete** soft-deletes/purges
   selected entries, **S** toggles favorite status, **Ctrl+K** or **/** focuses search, **Escape** resets search/clears selection,
-  and **?** (or the header ⌘ button) opens `KeyboardShortcutsModal`. Folder navigation: **Backspace** steps back through visited folders,
+  and **?** (or the header ⌘ button) opens `KeyboardShortcutsModal`. On a phone the search box is
+  **collapsed behind an icon** (`mobileSearchOpen` + `.search.mob-open`) so the breadcrumb keeps the
+  row; focusing it (tap, Ctrl+K, `/`) opens it, Esc closes it and clears the query. While a query is
+  active the breadcrumb is replaced by "Search results" + a match count. Folder navigation: **Backspace** steps back through visited folders,
   and **Alt+↑** goes up one level to parent folder. The floating **selection toolbar is
   icon-only** (tooltip/aria-label per button): **Download**/**Favorite** appear only when the selection
   contains files (folders can't be downloaded/starred; download opens the bot deep link per item, badge
@@ -493,7 +506,7 @@ path; seek previews and transcoding then never run), `STREAMER_PORT` (default 80
   (the upload pipeline indexes into Main only).
 - `ViewMenu.tsx` — the **View dropdown**: a radio list of the 8 layouts (picks close the menu), a
   Details-pane toggle, and a "Show" group of on/off toggles (Sidebar / Compact view / Item check boxes /
-  File name extensions / Detail items) — toggles keep the menu open. Built from the shared `Menu`/`MenuItem`.
+  File name extensions / Group versions / Detail items) — toggles keep the menu open. Built from the shared `Menu`/`MenuItem`.
 - `DetailsPane.tsx` — **persistent right-hand details panel** (Windows "Details pane"). Shows the
   single selected entry's preview + metadata when exactly one is selected (else a hint): a **file**
   (type/location with jump-to-folder button/size/parts/modified/added/status/tags) or a **folder** (type/total items/sub-folders/created/

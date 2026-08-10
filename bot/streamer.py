@@ -98,6 +98,17 @@ from stream_seekpreview import (
     generate_seek_preview,
 )
 
+# Sharp video covers: one frame pulled from the video itself, replacing Telegram's ~320 px
+# thumbnail. Runs off the same on-disk original the sprites use.
+from stream_poster import (
+    POSTER_BACKFILL,
+    POSTER_BACKFILL_IDLE_S,
+    POSTER_BACKFILL_INTERVAL_S,
+    POSTER_BACKFILL_START_DELAY_S,
+    init_poster_semaphore,
+    store_poster,
+)
+
 # ---------------------------------------------------------------------------
 # In-memory log buffer for debugging
 # ---------------------------------------------------------------------------
@@ -228,6 +239,10 @@ _active_downloads: dict[int, int] = defaultdict(int)
 # Retroactive subtitle backfill bookkeeping
 _backfill_task: "asyncio.Task | None" = None
 _backfill_failed: set[int] = set()  # part_ids that failed THIS session (retried next restart)
+
+# Retroactive poster backfill bookkeeping (sharp covers for videos indexed before posters existed)
+_poster_task: "asyncio.Task | None" = None
+_poster_failed: set[int] = set()  # part_ids that failed THIS session (retried next restart)
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +465,8 @@ async def _fetch_local_original(part_id: int, channel_msg_id: int, meta: dict,
                     await sp_task
                 except Exception:  # noqa: BLE001
                     pass
+            # The file is on disk anyway — take a sharp cover frame while it is (one decode).
+            await _ensure_poster(part_id, file_path)
             _schedule_transcode(part_id, file_path, on_success=_reclaim_original_after_compress)
             # Bump this video to the FRONT of the subtitle backfill queue so a just-opened (or
             # just-uploaded) video gets subtitled while it's being watched, and the web player
@@ -1176,15 +1193,108 @@ async def _subtitle_backfill_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Poster backfill — sharp covers for videos indexed before posters existed
+# ---------------------------------------------------------------------------
+async def _ensure_poster(part_id: int, src_path: str) -> None:
+    """Replace a part's Telegram thumbnail with a frame from the video, if it still has one.
+
+    Cheap to call on every local-original fetch: one SELECT, and it does nothing once the part
+    already carries an 'ffmpeg' poster or a cover the user picked.
+    """
+    try:
+        rs = await db.execute("SELECT source FROM thumbnails WHERE part_id = ?", [part_id])
+        if rs.rows and str(rs.rows[0][0]) in ("ffmpeg", "manual"):
+            return
+        await store_poster(db, part_id, src_path)
+    except Exception:  # noqa: BLE001
+        log.exception("Poster refresh failed for part %d", part_id)
+
+
+async def _next_poster_part() -> dict | None:
+    """The next video whose cover is still Telegram's ~320 px thumbnail (or missing entirely).
+    Newest first — those are the ones the user is most likely to be looking at."""
+    rs = await db.execute(
+        "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id "
+        "FROM parts p JOIN items i ON i.id = p.item_id "
+        "LEFT JOIN thumbnails t ON t.part_id = p.id "
+        "WHERE i.kind = 'media' AND i.deleted_at IS NULL "
+        "AND COALESCE(t.source, 'telegram') NOT IN ('ffmpeg', 'manual') "
+        "ORDER BY p.id DESC"
+    )
+    for row in rs.rows:
+        part_id = int(row[0])
+        if part_id in _poster_failed:
+            continue
+        # Videos only: a photo's stored thumbnail is already the full-size image downscaled.
+        if os.path.splitext(row[2] or "")[1].lower() not in MIME_MAP:
+            continue
+        return {
+            "part_id": part_id,
+            "channel_msg_id": int(row[1]),
+            "file_name": row[2] or "",
+            "file_id": row[3],
+        }
+    return None
+
+
+async def _poster_backfill_one(part: dict) -> None:
+    """Download one video, take its cover frame, then delete the download to reclaim disk."""
+    part_id = part["part_id"]
+    path = None
+    try:
+        path = await _download_part_original(part)
+        if not await store_poster(db, part_id, path):
+            _poster_failed.add(part_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Poster backfill: part %d failed: %s", part_id, e)
+        _poster_failed.add(part_id)
+    finally:
+        # The download exists only for this one frame — this VPS shares a small disk.
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:  # noqa: BLE001
+            pass
+        _local_file_paths.pop(part_id, None)
+
+
+async def _poster_backfill_loop() -> None:
+    """Re-cover already-indexed videos one at a time, yielding to anything being watched."""
+    if not POSTER_BACKFILL:
+        return
+    await asyncio.sleep(POSTER_BACKFILL_START_DELAY_S)
+    log.info("Poster backfill enabled — one video every %ds", POSTER_BACKFILL_INTERVAL_S)
+    while True:
+        try:
+            # Never pull a whole video down while someone is streaming: that download competes
+            # for the same Telegram connection and the same small disk as playback.
+            if any(_active_downloads.values()):
+                await asyncio.sleep(POSTER_BACKFILL_INTERVAL_S)
+                continue
+            part = await _next_poster_part()
+            if part is None:
+                await asyncio.sleep(POSTER_BACKFILL_IDLE_S)
+                continue
+            log.info("Poster backfill: processing part %d (%s)", part["part_id"], part["file_name"])
+            await _poster_backfill_one(part)
+        except asyncio.CancelledError:
+            break
+        except Exception:  # noqa: BLE001
+            log.exception("Poster backfill loop error")
+        await asyncio.sleep(POSTER_BACKFILL_INTERVAL_S)
+
+
+# ---------------------------------------------------------------------------
 # FastAPI lifespan
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global tg_client, db, channel, _backfill_task, _subtitle_wake
+    global tg_client, db, channel, _backfill_task, _poster_task, _subtitle_wake
 
     init_semaphore()  # create the transcode concurrency semaphore in the running loop
     init_subtitle_semaphore()  # create the subtitle concurrency semaphore in the running loop
     init_seekpreview_semaphore()  # create the seek-preview concurrency semaphore
+    init_poster_semaphore()  # create the poster concurrency semaphore
     _subtitle_wake = asyncio.Event()  # lets a viewed video wake the idle backfill loop
 
     log.info("Starting streamer — connecting to Telegram and Turso…")
@@ -1230,12 +1340,20 @@ async def lifespan(_app: FastAPI):
     if SUBTITLE_BACKFILL and SUBTITLE_GEN and GROQ_API_KEYS:
         _backfill_task = asyncio.create_task(_subtitle_backfill_loop())
 
+    # …and the equally slow poster backfill, which re-covers videos still carrying Telegram's
+    # ~320 px thumbnail. Both download whole videos, so they are paced independently and each
+    # deletes its download immediately.
+    if POSTER_BACKFILL:
+        _poster_task = asyncio.create_task(_poster_backfill_loop())
+
     yield  # --- app runs ---
 
     # Shutdown
     log.info("Shutting down streamer…")
     if _backfill_task:
         _backfill_task.cancel()
+    if _poster_task:
+        _poster_task.cancel()
     for task in _prefetch_tasks.values():
         task.cancel()
     if db:

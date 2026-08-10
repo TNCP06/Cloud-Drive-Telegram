@@ -334,11 +334,15 @@ async def tombstone_messages(db, channel_msg_ids, tg_deleted: bool = False) -> N
         )
 
 
-async def upsert_thumbnail(db, part_id, mime, data_b64):
+async def upsert_thumbnail(db, part_id, mime, data_b64, source="telegram"):
+    """Store a part's cover. `source` records where the image came from ('telegram' /
+    'ffmpeg' / 'manual') — the streamer's poster backfill replaces only 'telegram' ones,
+    so a sharp ffmpeg frame or a hand-picked cover is never overwritten."""
     await db.execute(
         """
-        INSERT INTO thumbnails (part_id, mime, data) VALUES (?, ?, ?)
-        ON CONFLICT(part_id) DO UPDATE SET mime = excluded.mime, data = excluded.data
+        INSERT INTO thumbnails (part_id, mime, data, source) VALUES (?, ?, ?, ?)
+        ON CONFLICT(part_id) DO UPDATE
+           SET mime = excluded.mime, data = excluded.data, source = excluded.source
         """,
-        [part_id, mime, data_b64],
+        [part_id, mime, data_b64, source],
     )

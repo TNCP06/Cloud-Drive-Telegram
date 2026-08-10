@@ -243,7 +243,14 @@ async def post_init(app: Application):
         # thumb_missing: lets the hourly thumbnail sweep give up on a part Telegram will never
         # thumbnail, instead of forwarding it to the owner (a notification) every hour forever.
         await db.execute("ALTER TABLE parts ADD COLUMN IF NOT EXISTS thumb_missing INTEGER NOT NULL DEFAULT 0")
-        log.info("Migration: ensured file_id/thumb_missing on parts and is_private on upload_jobs")
+        # thumbnails.source: marks a cover as Telegram's (blurry for video, replaceable), an
+        # ffmpeg frame, or a manual upload — the streamer's poster backfill only touches the
+        # first. schema.sql has it for a fresh volume; this adds it to an existing database.
+        await db.execute(
+            "ALTER TABLE thumbnails ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'telegram'"
+        )
+        log.info("Migration: ensured file_id/thumb_missing on parts, is_private on upload_jobs, "
+                 "source on thumbnails")
     except Exception as e:
         pass
 

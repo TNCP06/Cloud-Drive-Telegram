@@ -71,7 +71,12 @@ CREATE TABLE IF NOT EXISTS item_tags (
 CREATE TABLE IF NOT EXISTS thumbnails (
     part_id BIGINT PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
     mime    TEXT NOT NULL DEFAULT 'image/jpeg',
-    data    TEXT NOT NULL                          -- base64
+    data    TEXT NOT NULL,                         -- base64
+    -- Where this image came from, which decides whether the streamer may replace it:
+    --   'telegram' — Telegram's own thumbnail (a video's is capped at ~320 px, so blurry)
+    --   'ffmpeg'   — a frame taken from the video itself (stream_poster.py); already sharp
+    --   'manual'   — a cover the user uploaded from the dashboard; never overwritten
+    source  TEXT NOT NULL DEFAULT 'telegram'
 );
 
 -- Tombstones for permanently deleted (purged) channel messages. Two jobs in one table:

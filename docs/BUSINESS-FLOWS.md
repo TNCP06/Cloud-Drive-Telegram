@@ -233,6 +233,15 @@ on the VPS and its contents are re-stored as normal items — the video then str
    web uploader's default kind `media`) is never forwarded at all, and a forward that comes back
    without a thumbnail flags `parts.thumb_missing = 1` (only once the part is >1 h old, so a video
    Telegram is still processing keeps its retries). Flagged parts are excluded from the sweep query.
+   For a **video**, that Telegram thumbnail is only ~320 px (the Bot API offers no larger
+   variant), so it looks soft on a grid card. It is a placeholder: the **streamer** replaces it
+   with a real frame from the video as soon as it has the file on disk — `_ensure_poster()` →
+   `stream_poster.store_poster()` (ffmpeg seeks `POSTER_SEEK_RATIO` into the video, scales the
+   longest edge to `POSTER_MAX_EDGE`, WebP with a JPEG fallback) — and `_poster_backfill_loop()`
+   works through videos indexed before this existed, one at a time, pausing while anything is
+   being streamed and deleting each download right after. `thumbnails.source` decides who may
+   overwrite what: `'telegram'` is replaceable, `'ffmpeg'` is done, `'manual'` (a cover uploaded
+   from the dashboard) is never touched.
 4. Albums (multiple files sent together) are **split** — each member becomes its **own**
    single-part item (slug `m<media_group_id>-<msgid>`), with tags kept identical across the
    members via `sync_album_tags`. They are no longer merged into one multi-part item.

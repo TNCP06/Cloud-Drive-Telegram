@@ -128,8 +128,11 @@ export async function reharvestThumbnail(
         data_b64 = Buffer.from(await dlRes.arrayBuffer()).toString("base64");
       }
       await db.execute({
-        sql: `INSERT INTO thumbnails (part_id, mime, data) VALUES (?, ?, ?)
-         ON CONFLICT(part_id) DO UPDATE SET mime = excluded.mime, data = excluded.data`,
+        // Back to 'telegram': this IS Telegram's own thumbnail, so re-harvesting a part that had
+        // a sharp ffmpeg poster must also hand it back to the backfill to re-poster later.
+        sql: `INSERT INTO thumbnails (part_id, mime, data, source) VALUES (?, ?, ?, 'telegram')
+         ON CONFLICT(part_id) DO UPDATE
+            SET mime = excluded.mime, data = excluded.data, source = 'telegram'`,
         args: [partId, "image/jpeg", data_b64],
       });
       harvested++;
@@ -173,9 +176,12 @@ export async function uploadThumbnail(
   let updated = 0;
   for (const row of rs.rows) {
     const partId = Number(row[0]);
+    // 'manual' pins this cover: the streamer's poster backfill replaces only Telegram's own
+    // thumbnails, so a picture chosen here is never silently swapped for a video frame.
     await db.execute({
-      sql: `INSERT INTO thumbnails (part_id, mime, data) VALUES (?, ?, ?)
-            ON CONFLICT(part_id) DO UPDATE SET mime = excluded.mime, data = excluded.data`,
+      sql: `INSERT INTO thumbnails (part_id, mime, data, source) VALUES (?, ?, ?, 'manual')
+            ON CONFLICT(part_id) DO UPDATE
+               SET mime = excluded.mime, data = excluded.data, source = 'manual'`,
       args: [partId, mime, dataB64],
     });
     updated++;
