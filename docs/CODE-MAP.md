@@ -207,7 +207,9 @@ this replaces it wherever the streamer already has the file. In the streamer: `_
 (called from `_fetch_local_original`, skips parts already `'ffmpeg'`/`'manual'`), and
 `_next_poster_part`/`_poster_backfill_one`/`_poster_backfill_loop` — the retroactive pass over older
 videos, one at a time, paused while `_active_downloads` is non-empty and deleting each download
-straight after (`POSTER_BACKFILL*` env).
+straight after (`POSTER_BACKFILL*` env). The subtitle and poster backfills share
+`_backfill_download_lock` so only one whole-video download runs at a time, and the subtitle pass
+takes the poster off its own download rather than fetching the same video twice.
 `stream` serves the original on the first view (instant) while transcoding in the background; later views
 serve the compressed copy. The served variant is **pinned per playback** (`_serving_variant`: a fresh load /
 `bytes=0-` re-evaluates and prefers compressed once ready; seeks reuse the pin) so file size never changes
