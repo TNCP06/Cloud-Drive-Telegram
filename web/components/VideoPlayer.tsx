@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+// plyr 3.8.4 resolves to its untyped source here, and `tsc` and `next build` disagree over whether
+// that is an error — so suppress with `@ts-ignore` (never "unused") rather than `@ts-expect-error`.
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore
 import type Plyr from "plyr";
 import "plyr/dist/plyr.css";
 
@@ -159,6 +163,8 @@ export function VideoPlayer({
     const subBase = partId != null ? `/api/subtitles/${partId}` : undefined;
 
     (async () => {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore — see the import at the top of the file
       const PlyrCtor = (await import("plyr")).default;
       if (destroyed || !videoRef.current) return;
 

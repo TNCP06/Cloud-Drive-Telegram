@@ -145,15 +145,32 @@ export function PreviewDrawer({
   const scrollStrip = (dir: number) =>
     stripRef.current?.scrollBy({ left: dir * Math.max(240, stripRef.current.clientWidth * 0.8), behavior: "smooth" });
   // Floating chrome (title bar, control float-row, nav arrows) slides away when the cursor leaves
-  // the window, and — in fullscreen — after the mouse sits idle for a few seconds.
+  // the window, and — in fullscreen — after the mouse sits idle for a few seconds. On touch it is
+  // the tap on the media that toggles it (see handleTouchEnd), gallery-app style.
   const [chromeHidden, setChromeHidden] = useState(false);
+  // Collapse state to put back when leaving fullscreen, if entering it folded the strip away.
+  const preFullscreenCollapsed = useRef<boolean | null>(null);
   // Fullscreen the WHOLE viewer (not just the media) so the title, controls and filmstrip stay
   // visible in fullscreen — otherwise an expanded strip would vanish on entering fullscreen.
   const toggleFullscreen = () => {
     const el = viewerRef.current;
     if (!el) return;
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-    else el.requestFullscreen?.().catch(() => {});
+    else el.requestFullscreen?.().then(lockToMediaOrientation).catch(() => {});
+  };
+  // On a phone, a landscape photo/video in fullscreen is otherwise letterboxed into a sliver of a
+  // portrait screen. Turn the screen to match the media instead. Best-effort by design: the API
+  // needs fullscreen, is Android-only in practice (iOS Safari has no lock), and rejects outright
+  // when the OS rotation lock is on — every one of those is a no-op here, never an error.
+  const lockToMediaOrientation = async () => {
+    if (!matchMedia("(hover: none)").matches) return;
+    const media = viewerRef.current?.querySelector<HTMLVideoElement | HTMLImageElement>("video, img");
+    const w = media instanceof HTMLVideoElement ? media.videoWidth : media?.naturalWidth ?? 0;
+    const h = media instanceof HTMLVideoElement ? media.videoHeight : media?.naturalHeight ?? 0;
+    if (!w || !h) return;
+    // `lock`/`unlock` predate this TS lib's ScreenOrientation and are absent on iOS at runtime.
+    const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+    try { await orientation.lock?.(w > h ? "landscape" : "portrait"); } catch {}
   };
   // Toggle native looping on the current <video> (the "P" shortcut), remembered for the next video.
   const toggleVideoLoop = () => {
@@ -217,11 +234,26 @@ export function PreviewDrawer({
       if (!e.relatedTarget && e.clientY <= 0) setChromeHidden(true);
     };
     const onOver = () => setChromeHidden(false);
-    const onFsChange = () => { clearIdle(); setChromeHidden(false); };
+    const onFsChange = () => {
+      clearIdle();
+      setChromeHidden(false);
+      if (document.fullscreenElement) {
+        // A filmstrip costs 60–95px of a phone screen that fullscreen exists to give back, so fold
+        // it away on entry — remembering the choice so leaving fullscreen restores it untouched.
+        if (matchMedia("(max-width: 800px)").matches) {
+          setCollapsed((prev) => { preFullscreenCollapsed.current = prev; return true; });
+        }
+      } else {
+        if (preFullscreenCollapsed.current !== null) {
+          setCollapsed(preFullscreenCollapsed.current);
+          preFullscreenCollapsed.current = null;
+        }
+        try { (screen.orientation as ScreenOrientation & { unlock?: () => void }).unlock?.(); } catch {}
+      }
+    };
 
     document.addEventListener("mousemove", onMove);
     document.addEventListener("pointermove", onMove);
-    document.addEventListener("touchstart", onMove, { passive: true });
     document.addEventListener("mouseout", onOut);
     document.addEventListener("mouseover", onOver);
     document.addEventListener("fullscreenchange", onFsChange);
@@ -229,7 +261,6 @@ export function PreviewDrawer({
       clearIdle();
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("touchstart", onMove);
       document.removeEventListener("mouseout", onOut);
       document.removeEventListener("mouseover", onOver);
       document.removeEventListener("fullscreenchange", onFsChange);
@@ -512,7 +543,12 @@ export function PreviewDrawer({
     if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2) {
       if (dx < 0) go(1);
       else go(-1);
+      return;
     }
+    // A tap that went nowhere = the gallery gesture: clear the chrome off the media, tap to bring
+    // it back. Video is left out on purpose — Plyr already does exactly this with its own controls
+    // on touch (tap shows, 3s of stillness hides), and the CSS mirrors our chrome onto that signal.
+    if (!isVideoStage && Math.abs(dx) < 10 && Math.abs(dy) < 10) setChromeHidden((c) => !c);
   };
 
   const save = () => {

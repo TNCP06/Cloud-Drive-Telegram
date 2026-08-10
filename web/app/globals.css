@@ -753,6 +753,7 @@ button { font-family: inherit; }
   /* Media is pulled flush to the very top (title bar floats over it) AND flush to the bottom box —
      no padding/gap on either edge. When the box is collapsed (no .has-bottom) the media fills fully. */
   padding: 0 16px; cursor: default;
+  transition: padding-bottom .25s ease;
 }
 .viewer.has-nav .viewer-stage { padding-left: 60px; padding-right: 60px; }
 .viewer.has-bottom .viewer-stage { padding-bottom: 85px; }
@@ -849,6 +850,26 @@ button { font-family: inherit; }
     opacity: 1 !important;
     pointer-events: auto !important;
   }
+  /* Except when Plyr itself has hidden them. On touch Plyr already behaves like a gallery app — a
+     tap reveals the controls, 3s of stillness clears them — so follow that signal rather than
+     pinning the controls on, and take the rest of the floating chrome along with it. */
+  .viewer-video .plyr--hide-controls .plyr__controls {
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+  .viewer.has-video-stage:has(.plyr--hide-controls) .viewer-top {
+    transform: translateY(-100%);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .viewer.has-video-stage:has(.plyr--hide-controls) .viewer-floatbar {
+    opacity: 0;
+    visibility: hidden;
+  }
+  .viewer.has-video-stage:has(.plyr--hide-controls) .viewer-nav {
+    opacity: 0;
+    pointer-events: none;
+  }
 }
 
 /* Subtitles: they must move ONLY when the seek bar is actually shown — not on every mouse move.
@@ -944,6 +965,15 @@ button { font-family: inherit; }
 .viewer.chrome-hidden .viewer-top { transform: translateY(-100%); opacity: 0; pointer-events: none; }
 .viewer.chrome-hidden .viewer-floatbar { transform: translateY(150%); opacity: 0; pointer-events: none; }
 .viewer.chrome-hidden .viewer-nav { opacity: 0; pointer-events: none; }
+/* On touch the chrome is cleared by a deliberate tap, so the filmstrip goes too and the photo takes
+   the freed space — the gallery-app "immersive" view. Deliberately touch-only: on a desktop the
+   same class fires when the cursor merely leaves the window, and resizing the media on mouse-out
+   reads as the picture moving by itself. Video is excluded for the same reason — its trigger is a
+   3s idle timer, and a video that resizes every time you stop moving is worse than a visible strip. */
+@media (hover: none) {
+  .viewer.chrome-hidden:not(.has-video-stage) .viewer-bottom { transform: translateY(100%); }
+  .viewer.chrome-hidden:not(.has-video-stage).has-bottom .viewer-stage { padding-bottom: 0; }
+}
 .viewer-name { flex: 1; min-width: 0; color: #fff; font-size: 13px; font-weight: 600; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .92; }
 .viewer-tools { flex: none; display: flex; align-items: center; gap: 6px; }
 .viewer-sep { flex: none; width: 1px; height: 20px; margin: 0 3px; background: color-mix(in oklab, #fff 24%, transparent); }
@@ -1073,6 +1103,7 @@ button { font-family: inherit; }
 .viewer-bottom {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
   background: #0b0b0c;
+  transition: transform .25s ease;
 }
 .viewer-strip {
   display: flex; gap: 0; justify-content: safe center; flex-wrap: nowrap;
