@@ -993,7 +993,7 @@ def _start_prefetch(part_id: int, channel_msg_id: int,
 async def _fetch_part_row(part_id: int) -> dict | None:
     """Look up one part's download metadata; returns None if it's gone or not a video file."""
     rs = await db.execute(
-        "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id "
+        "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id, p.file_size "
         "FROM parts p JOIN items i ON i.id = p.item_id "
         "WHERE p.id = ? AND i.deleted_at IS NULL",
         [part_id],
@@ -1007,6 +1007,7 @@ async def _fetch_part_row(part_id: int) -> dict | None:
             "channel_msg_id": int(row[1]),
             "file_name": row[2] or "",
             "file_id": row[3],
+            "file_size": int(row[4] or 0),
         }
     return None
 
@@ -1052,7 +1053,7 @@ async def _next_backfill_part() -> dict | None:
             return part
     # 2. Fresh pass: an indexed video with no subtitles yet.
     rs = await db.execute(
-        "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id "
+        "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id, p.file_size "
         "FROM parts p JOIN items i ON i.id = p.item_id "
         "WHERE i.kind = 'media' AND i.deleted_at IS NULL "
         "AND p.id NOT IN (SELECT part_id FROM subtitles) "
@@ -1072,6 +1073,7 @@ async def _next_backfill_part() -> dict | None:
             "channel_msg_id": int(row[1]),
             "file_name": row[2] or "",
             "file_id": row[3],
+            "file_size": int(row[4] or 0),
         }
     return None
 
@@ -1088,7 +1090,10 @@ async def _download_part_original(part: dict) -> str:
         if TELEGRAM_API_URL:
             if not file_id:
                 file_id = await resolve_file_id_via_forwarding(channel_msg_id, part_id)
-            _evict_local_api_cache_if_needed(0)
+            # Reserve the file's OWN size, not 0: a backfill pulls whole videos (up to a couple of
+            # GB each) onto a 30 GB disk shared with other projects, so the eviction/free-floor
+            # check has to know what is about to land — otherwise it only ever looks at the past.
+            _evict_local_api_cache_if_needed(int(part.get("file_size") or 0))
             try:
                 return await download_via_local_bot_api(file_id)
             except Exception as e:  # noqa: BLE001
@@ -1234,7 +1239,7 @@ async def _next_poster_part() -> dict | None:
     """The next video whose cover is still Telegram's ~320 px thumbnail (or missing entirely).
     Newest first — those are the ones the user is most likely to be looking at."""
     rs = await db.execute(
-        "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id "
+        "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id, p.file_size "
         "FROM parts p JOIN items i ON i.id = p.item_id "
         "LEFT JOIN thumbnails t ON t.part_id = p.id "
         "WHERE i.kind = 'media' AND i.deleted_at IS NULL "
@@ -1253,6 +1258,7 @@ async def _next_poster_part() -> dict | None:
             "channel_msg_id": int(row[1]),
             "file_name": row[2] or "",
             "file_id": row[3],
+            "file_size": int(row[4] or 0),
         }
     return None
 
