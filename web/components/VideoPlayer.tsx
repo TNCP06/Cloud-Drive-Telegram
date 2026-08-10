@@ -385,6 +385,11 @@ export function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
 
+    // On touch a tap means "show me the controls", not play/pause — that is what every mobile
+    // player does, and Plyr already implements it (tap shows, 3s of stillness hides). Bow out and
+    // let it: pausing here instead would both stop the video AND raise the controls on one tap.
+    if (matchMedia("(hover: none)").matches) return;
+
     let vw = video.videoWidth;
     let vh = video.videoHeight;
     if (!vw || !vh) {
