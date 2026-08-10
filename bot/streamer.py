@@ -1064,7 +1064,7 @@ async def _next_backfill_part() -> dict | None:
         if part_id in _backfill_failed:
             continue
         ext = os.path.splitext(row[2] or "")[1].lower()
-        if ext not in MIME_MAP:  # only real video files
+        if ext not in VIDEO_EXTS:  # only real video files — MIME_MAP also carries images/docs
             continue
         if is_subtitled_done(part_id):  # e.g. processed but no-speech (.done, no rows)
             continue
@@ -1226,7 +1226,7 @@ async def _ensure_poster(part_id: int, src_path: str) -> None:
         if not rs.rows:
             return
         file_name, source = rs.rows[0][0], rs.rows[0][1]
-        if os.path.splitext(str(file_name or ""))[1].lower() not in MIME_MAP:
+        if os.path.splitext(str(file_name or ""))[1].lower() not in VIDEO_EXTS:
             return
         if source is not None and str(source) in ("ffmpeg", "manual"):
             return
@@ -1251,7 +1251,7 @@ async def _next_poster_part() -> dict | None:
         if part_id in _poster_failed:
             continue
         # Videos only: a photo's stored thumbnail is already the full-size image downscaled.
-        if os.path.splitext(row[2] or "")[1].lower() not in MIME_MAP:
+        if os.path.splitext(row[2] or "")[1].lower() not in VIDEO_EXTS:
             continue
         return {
             "part_id": part_id,
