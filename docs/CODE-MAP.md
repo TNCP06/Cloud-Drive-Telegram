@@ -200,7 +200,9 @@ transcode can't collide with a big unpack/download on the shared 30 GB disk),
 Endpoints: `GET /seek-preview/{part_id}` (VTT) and `GET /seek-preview/{part_id}/sprite` (JPEG sprite sheet).
 `_schedule_seekpreview` (fire-and-forget, dedup'd by part_id).
 **Video cover frames** live in **`stream_poster.py`**: `generate_poster` (ffmpeg seeks
-`POSTER_SEEK_RATIO` into the file, scales the longest edge to `POSTER_MAX_EDGE`, WebP → base64 with a
+`POSTER_SEEK_RATIO` into the file, scores `POSTER_CANDIDATE_FRAMES` frames with the `thumbnail`
+filter and keeps the most representative one — a single grabbed frame lands on a fade or a black cut
+too often — then Lanczos-scales the longest edge to `POSTER_MAX_EDGE`, WebP → base64 with a
 JPEG fallback for an ffmpeg build without libwebp), `store_poster` (writes it to `thumbnails` with
 `source='ffmpeg'`), `init_poster_semaphore`. Telegram's own video thumbnail is capped at ~320 px, so
 this replaces it wherever the streamer already has the file. In the streamer: `_ensure_poster`

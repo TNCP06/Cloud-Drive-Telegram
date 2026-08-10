@@ -33,8 +33,13 @@ POSTER_MAX_EDGE = int(os.environ.get("POSTER_MAX_EDGE", "1280"))
 # Where in the video to grab the frame, as a fraction of duration. Not 0: the first frames are
 # very often a black fade-in or a title card, which makes for a useless cover.
 POSTER_SEEK_RATIO = float(os.environ.get("POSTER_SEEK_RATIO", "0.1"))
-# WebP quality — same 80 the Pillow path uses for Telegram thumbnails.
-POSTER_QUALITY = int(os.environ.get("POSTER_QUALITY", "80"))
+# WebP quality. Higher than the 80 the Telegram-thumbnail path uses: this image is the cover in
+# every grid and the still behind a video, and the extra few KB buy visibly cleaner gradients.
+POSTER_QUALITY = int(os.environ.get("POSTER_QUALITY", "88"))
+# How many consecutive frames ffmpeg's `thumbnail` filter weighs before picking the most
+# representative one. A single grabbed frame is a gamble — it lands on a fade, a motion blur or a
+# black cut often enough to matter; scoring a couple of seconds' worth costs one extra decode.
+POSTER_CANDIDATE_FRAMES = int(os.environ.get("POSTER_CANDIDATE_FRAMES", "100"))
 
 # Retroactive pass over videos indexed before posters existed. Each one costs a full download
 # of the original, so it is paced, runs one at a time, and yields to anything the user is
@@ -44,11 +49,13 @@ POSTER_BACKFILL_START_DELAY_S = int(os.environ.get("POSTER_BACKFILL_START_DELAY_
 POSTER_BACKFILL_INTERVAL_S = int(os.environ.get("POSTER_BACKFILL_INTERVAL_S", "60"))
 POSTER_BACKFILL_IDLE_S = int(os.environ.get("POSTER_BACKFILL_IDLE_S", "3600"))
 
-# Fit the longest edge to POSTER_MAX_EDGE without ever upscaling, keeping both sides even
-# (-2) so any encoder accepts the frame.
-_SCALE = (
+# Pick the best of N frames, then fit the longest edge to POSTER_MAX_EDGE without ever upscaling,
+# keeping both sides even (-2) so any encoder accepts the frame. Lanczos because this is a
+# downscale of a single still — the sharpest resampler here costs nothing at one frame.
+_VF = (
+    f"thumbnail={POSTER_CANDIDATE_FRAMES},"
     f"scale='if(gt(iw,ih),min({POSTER_MAX_EDGE},iw),-2)':"
-    f"'if(gt(iw,ih),-2,min({POSTER_MAX_EDGE},ih))'"
+    f"'if(gt(iw,ih),-2,min({POSTER_MAX_EDGE},ih))':flags=lanczos"
 )
 
 # One poster at a time, so a backfill never fights the transcode/sprite ffmpegs for CPU.
@@ -93,15 +100,19 @@ async def generate_poster(part_id: int, src_path: str, tmp_dir: str = "/tmp") ->
 
         tmp = Path(tmp_dir) / f"poster_{part_id}.tmp"
         for mime, args in (
-            ("image/webp", ["-c:v", "libwebp", "-quality", str(POSTER_QUALITY), "-f", "webp"]),
-            ("image/jpeg", ["-q:v", "3", "-f", "mjpeg"]),
+            # `-preset picture` tunes libwebp for photographic stills rather than its default
+            # mixed-content profile; `-compression_level 6` spends more encoder time for a smaller
+            # file at the same quality, which is free here (one frame, off the request path).
+            ("image/webp", ["-c:v", "libwebp", "-quality", str(POSTER_QUALITY),
+                            "-preset", "picture", "-compression_level", "6", "-f", "webp"]),
+            ("image/jpeg", ["-q:v", "2", "-f", "mjpeg"]),
         ):
             tmp.unlink(missing_ok=True)
             # `-ss` BEFORE `-i` seeks by keyframe without decoding everything up to it — the
             # difference between instant and minutes on a long video.
             ok = await _run_ffmpeg([
                 "ffmpeg", "-y", "-ss", f"{seek:.3f}", "-i", src_path,
-                "-frames:v", "1", "-vf", _SCALE, *args, str(tmp),
+                "-frames:v", "1", "-vf", _VF, *args, str(tmp),
             ])
             if ok and tmp.exists() and tmp.stat().st_size > 0:
                 try:
