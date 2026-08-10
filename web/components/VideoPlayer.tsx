@@ -116,10 +116,12 @@ export function VideoPlayer({
   src,
   poster,
   partId,
+  onToggleFullscreen,
 }: {
   src: string;
   poster?: string;
   partId?: number;
+  onToggleFullscreen?: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const posterDims = useRef<{ w: number; h: number } | null>(null);
@@ -229,27 +231,30 @@ export function VideoPlayer({
         clickToPlay: false, // we split frame-click (play) vs letterbox-click (close)
         keyboard: { focused: true, global: true },
         storage: { enabled: false }, // we manage volume/mute + caption-lang persistence ourselves
-        fullscreen: { enabled: false }, // the viewer owns fullscreen (keeps the strip/controls visible)
+        fullscreen: { enabled: true, fallback: false },
         captions: { active: chosenLang != null, language: chosenLang ?? "auto", update: true },
         controls: [
           "play-large",
           "play",
-          "progress",
-          "current-time",
-          "duration",
           "mute",
           "volume",
+          "current-time",
+          "duration",
+          "progress",
           "captions",
           "settings",
           "pip",
-          // No "fullscreen" here: the viewer owns fullscreen (the ✕/strip/controls must stay
-          // visible and consistent), toggled by its own button or the "F" key. Plyr's own "f" is
-          // swallowed by the viewer's capture-phase key handler before Plyr can act on it.
+          "fullscreen",
         ],
         tooltips: { controls: true, seek: true },
         previewThumbnails:
           previewReady && partId ? { enabled: true, src: `/api/seek-preview/${partId}` } : { enabled: false },
       });
+
+      // Delegate Plyr's fullscreen toggle to the viewer's toggleFullscreen so topbar, filmstrip and controls stay consistent
+      player.fullscreen.toggle = () => {
+        onToggleFullscreen?.();
+      };
 
       player.on("ready", () => {
         const { volume, muted } = readSavedVolume();

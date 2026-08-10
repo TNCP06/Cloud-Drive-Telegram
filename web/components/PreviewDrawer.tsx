@@ -535,6 +535,7 @@ export function PreviewDrawer({
                   src={`/api/stream/${activePart!.partId}`}
                   poster={activePart!.thumb || undefined}
                   partId={activePart!.partId}
+                  onToggleFullscreen={toggleFullscreen}
                 />
               ) : isDocStage ? (
                 <DocPreview
@@ -598,7 +599,7 @@ export function PreviewDrawer({
                 >
                   <Icon name="kebab" size={17} />
                 </button>
-                {(isImageStage || isVideoStage || isDocStage) && (
+                {(isImageStage || isDocStage) && (
                   <button
                     className="viewer-iconbtn"
                     onClick={toggleFullscreen}

@@ -791,18 +791,36 @@ button { font-family: inherit; }
 .viewer-video .plyr video { object-fit: contain; background: transparent; }
 .viewer-video .plyr__video-wrapper { background: transparent; height: 100%; }
 
-/* Custom player controls visibility and spacing */
+/* Custom player controls visibility and layout (seek bar 100% full-width on top row) */
 .viewer-video .plyr__controls {
-  padding-top: 6px !important;
-  padding-bottom: 12px !important;
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  padding: 6px 14px 10px !important;
   opacity: 0 !important;
   pointer-events: none !important;
   transition: opacity .25s ease, transform .25s ease !important;
 }
-.viewer-video .plyr:hover .plyr__controls,
-.viewer-video .plyr.plyr--user-active .plyr__controls {
+.viewer-video .plyr__controls .plyr__progress__container,
+.viewer-video .plyr__controls .plyr__progress {
+  order: -1 !important;
+  flex: 0 0 100% !important;
+  width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  margin-bottom: 6px !important;
+  left: 0 !important;
+}
+.viewer-video .plyr__controls .plyr__controls__item:first-child,
+.viewer-video .plyr__controls > :first-child {
+  margin-right: 0 !important;
+}
+.viewer-video .plyr__controls .plyr__time--duration,
+.viewer-video .plyr__controls .plyr__time:last-of-type {
+  margin-right: auto !important;
+}
+.viewer-video .plyr:hover .plyr__controls {
   pointer-events: auto !important;
-  opacity: 1 !important;
 }
 .viewer-video .plyr__controls:hover,
 .viewer-video .plyr__controls:focus-within {
@@ -833,9 +851,8 @@ button { font-family: inherit; }
 /* Lift ONLY while the seek bar is actually visible — the SAME `:hover` signal that reveals it.
    Deliberately NOT `:focus-within`: after clicking play, the strip keeps focus, which would stick
    the subtitles up long after the cursor left — read by the user as "moving on its own". */
-.viewer-video .plyr:has(.plyr__controls:hover) .plyr__captions,
-.viewer-video .plyr.plyr--user-active .plyr__captions {
-  bottom: 56px;
+.viewer-video .plyr:has(.plyr__controls:hover) .plyr__captions {
+  bottom: 74px;
 }
 
 /* Seek-preview thumbnail popup (Plyr's previewThumbnails) — polished look */
@@ -876,7 +893,6 @@ button { font-family: inherit; }
   transition: opacity .25s ease;
 }
 .viewer:not(.has-bottom).has-video-stage:has(.plyr__controls:hover) .viewer-floatcenter,
-.viewer:not(.has-bottom).has-video-stage:has(.plyr--user-active) .viewer-floatcenter,
 .viewer:not(.has-bottom).has-video-stage .viewer-floatbar:hover .viewer-floatcenter {
   opacity: 1;
   pointer-events: auto;
