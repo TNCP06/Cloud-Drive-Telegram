@@ -25,8 +25,8 @@ function readSavedVolume(): { volume: number | null; muted: boolean | null } {
   }
 }
 
-// Looping is remembered globally (toggled by the "P" shortcut in the viewer) so the next video
-// keeps the same loop setting.
+// Looping is remembered globally (toggled by the loop button in the control bar, or the viewer's
+// "P" shortcut) so the next video keeps the same loop setting.
 function readLoopPref(): boolean {
   try {
     return localStorage.getItem("video-loop") === "true";
@@ -251,6 +251,22 @@ export function VideoPlayer({
           "fullscreen",
         ],
         tooltips: { controls: true, seek: true },
+        // One tooltip scheme for the whole bar: "<what it does> (<key>)", so no button is the odd
+        // one out. Fullscreen deliberately reads the same in BOTH directions — we delegate Plyr's
+        // toggle to the viewer (see below), so Plyr never learns it is in fullscreen and its default
+        // "Enter fullscreen" label would keep claiming that while already fullscreen.
+        i18n: {
+          play: "Play (K)",
+          pause: "Pause (K)",
+          mute: "Mute (M)",
+          unmute: "Unmute (M)",
+          enableCaptions: "Captions (C)",
+          disableCaptions: "Captions (C)",
+          enterFullscreen: "Fullscreen (F)",
+          exitFullscreen: "Fullscreen (F)",
+          pip: "Miniplayer (I)",
+          settings: "Settings",
+        },
         previewThumbnails:
           previewReady && partId ? { enabled: true, src: `/api/seek-preview/${partId}` } : { enabled: false },
       });
@@ -260,6 +276,49 @@ export function VideoPlayer({
         onToggleFullscreen?.();
       };
 
+      // Plyr has no loop control of its own (its `loop` settings entry is unimplemented upstream),
+      // so add one to the control bar next to PIP: a toggle that lights up while looping — the
+      // visual answer to "is loop on?", which the shortcut alone never gave.
+      const addLoopButton = () => {
+        const bar = videoRef.current?.closest(".plyr")?.querySelector(".plyr__controls");
+        const vid = videoRef.current;
+        if (!bar || !vid || bar.querySelector(".tcd-loop")) return;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "plyr__controls__item plyr__control tcd-loop";
+        // A `.plyr__tooltip` span, not a `title` attribute: `title` pops the OS tooltip — black and
+        // delayed, nothing like the rest of the bar. One label for both states, matching the scheme
+        // in `i18n` above; the lit-up button is what says whether looping is on.
+        btn.innerHTML =
+          '<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+          'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+          '<path d="M17 2.5l3.5 3.5L17 9.5"/><path d="M3.5 12V9a3 3 0 0 1 3-3h14"/>' +
+          '<path d="M7 21.5L3.5 18 7 14.5"/><path d="M20.5 12v3a3 3 0 0 1-3 3h-14"/></svg>' +
+          '<span class="plyr__tooltip">Loop (P)</span>';
+        const sync = () => {
+          btn.classList.toggle("plyr__control--pressed", vid.loop);
+          btn.setAttribute("aria-pressed", String(vid.loop));
+          btn.setAttribute("aria-label", vid.loop ? "Stop loop" : "Loop");
+        };
+        btn.addEventListener("click", () => {
+          vid.loop = !vid.loop;
+          try {
+            localStorage.setItem("video-loop", String(vid.loop));
+          } catch {}
+          sync();
+        });
+        sync();
+        // Head of the right-hand cluster (loop → captions → settings → pip → fullscreen): it keeps
+        // captions and settings adjacent, the pairing every player puts side by side.
+        bar.insertBefore(
+          btn,
+          bar.querySelector('[data-plyr="captions"]') ??
+            bar.querySelector('[data-plyr="settings"]') ??
+            bar.querySelector('[data-plyr="pip"]') ??
+            bar.querySelector('[data-plyr="fullscreen"]')
+        );
+      };
+
       player.on("ready", () => {
         const { volume, muted } = readSavedVolume();
         if (player) {
@@ -267,6 +326,7 @@ export function VideoPlayer({
           if (muted !== null) player.muted = muted;
         }
         if (videoRef.current) videoRef.current.loop = readLoopPref();
+        addLoopButton();
         videoRef.current?.focus();
       });
 

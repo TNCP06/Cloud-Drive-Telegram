@@ -130,6 +130,20 @@ export function PreviewDrawer({
   const closeDetails = () => setShowDetails(false);
   // Photo viewing affordances (mirror the PikPak bottom box: counter + filmstrip + rotate/fullscreen).
   const [rotation, setRotation] = useState(0);
+  // Pinch/double-tap zoom state for a still image: scale + pan offset, applied as one transform.
+  const [zoom, setZoom] = useState({ s: 1, x: 0, y: 0 });
+  // `smooth` animates the deliberate jumps (rotate, double-tap) but is switched off during a pinch
+  // so the image tracks the fingers instead of lagging a transition behind them.
+  const [smooth, setSmooth] = useState(true);
+  const tapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (tapTimer.current) clearTimeout(tapTimer.current); }, []);
+  // Rotating drops any zoom: the turn refits the photo to the stage, and a stale pan offset would
+  // land it off-centre on the new axis.
+  const rotate = () => {
+    setSmooth(true);
+    setZoom({ s: 1, x: 0, y: 0 });
+    setRotation((r) => (r + 90) % 360);
+  };
   // The bottom box is shown by default; "collapse" hides its filmstrip (chevron or the "E" key).
   // The preference is persisted so a chosen expand/collapse survives reloads & other items.
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -172,15 +186,13 @@ export function PreviewDrawer({
     const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
     try { await orientation.lock?.(w > h ? "landscape" : "portrait"); } catch {}
   };
-  // Toggle native looping on the current <video> (the "P" shortcut), remembered for the next video.
-  const toggleVideoLoop = () => {
-    const video = document.querySelector<HTMLVideoElement>(".viewer-video video");
-    if (!video) return;
-    video.loop = !video.loop;
-    try {
-      localStorage.setItem("video-loop", String(video.loop));
-    } catch {}
-  };
+  // Loop and picture-in-picture both live as buttons in the Plyr control bar, so the shortcuts just
+  // press them: one implementation, and the button's lit/unlit state stays the single source of
+  // truth (a shortcut that flipped `video.loop` behind the button's back would desync the two).
+  const clickPlayerControl = (selector: string) =>
+    document.querySelector<HTMLButtonElement>(`.viewer-video ${selector}`)?.click();
+  const toggleVideoLoop = () => clickPlayerControl(".plyr__control.tcd-loop");
+  const toggleVideoPip = () => clickPlayerControl('.plyr__control[data-plyr="pip"]');
   // Initialise from cache — if the gallery was already loaded (or pre-fetched),
   // all photos appear instantly on first render without a cover flash.
   const [gallery, setGallery] = useState<GalleryPart[] | null>(() =>
@@ -209,9 +221,10 @@ export function PreviewDrawer({
     setThumbMsg(null);
   }, [item.id, item.name, item.kind, item.tags, tags, initialEditing, initialShowDetails]);
 
-  // A fresh photo/part always starts un-rotated.
+  // A fresh photo/part always starts un-rotated and un-zoomed.
   useEffect(() => {
     setRotation(0);
+    setZoom({ s: 1, x: 0, y: 0 });
   }, [item.id, activeIdx]);
 
   // Keep the active thumbnail scrolled into view as the current media changes.
@@ -500,11 +513,21 @@ export function PreviewDrawer({
         return;
       }
 
-      // "P" toggles looping on the current video.
-      if ((e.key === "p" || e.key === "P") && isPartStreamableVideo(activePart, item.kind)) {
+      // "R" turns a still image a quarter turn — the shortcut the rotate button's tooltip promises.
+      if ((e.key === "r" || e.key === "R") && isImageStage) {
         e.preventDefault();
         e.stopPropagation();
-        toggleVideoLoop();
+        rotate();
+        return;
+      }
+
+      // "P" toggles looping on the current video; "I" pops it out into picture-in-picture, matching
+      // YouTube's miniplayer key.
+      if (isPartStreamableVideo(activePart, item.kind) && e.key.length === 1 && "pPiI".includes(e.key)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "i" || e.key === "I") toggleVideoPip();
+        else toggleVideoLoop();
         return;
       }
 
@@ -526,16 +549,65 @@ export function PreviewDrawer({
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose, showDetails, editing, go, item.kind, activePart, detailsOnly, isDocStage, subsOpen]);
+  }, [onClose, showDetails, editing, go, item.kind, activePart, detailsOnly, isDocStage, isImageStage, subsOpen]);
 
-  // Swipe left/right gesture handlers for mobile preview
+  // Swipe left/right gesture handlers for mobile preview — plus pinch/double-tap zoom on a still
+  // image. While zoomed in, a one-finger drag pans instead of paging to the next photo, exactly as
+  // a gallery app behaves; zooming back to 1× hands the swipe back to navigation.
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
+  const panRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const lastTapRef = useRef(0);
+  const touchDist = (t: React.TouchList) =>
+    Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  // Panning is capped at the media's own overflow, so a zoomed photo can never be flung off-stage.
+  const clampPan = (z: { s: number; x: number; y: number }) => {
+    const box = viewerRef.current?.querySelector(".viewer-stage")?.getBoundingClientRect();
+    if (!box) return z;
+    const maxX = (box.width * (z.s - 1)) / 2;
+    const maxY = (box.height * (z.s - 1)) / 2;
+    return { s: z.s, x: Math.max(-maxX, Math.min(maxX, z.x)), y: Math.max(-maxY, Math.min(maxY, z.y)) };
+  };
   const handleTouchStart = (e: React.TouchEvent) => {
+    if (isImageStage && e.touches.length === 2) {
+      pinchRef.current = { dist: touchDist(e.touches), scale: zoom.s };
+      panRef.current = null;
+      touchStartRef.current = null;
+      setSmooth(false);
+      return;
+    }
     if (e.touches.length === 1) {
       touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      if (isImageStage && zoom.s > 1) {
+        panRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, ox: zoom.x, oy: zoom.y };
+        setSmooth(false);
+      }
+    }
+  };
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (pinchRef.current && e.touches.length === 2) {
+      const s = Math.max(1, Math.min(5, (pinchRef.current.scale * touchDist(e.touches)) / pinchRef.current.dist));
+      setZoom((z) => clampPan(s === 1 ? { s: 1, x: 0, y: 0 } : { ...z, s }));
+      return;
+    }
+    const pan = panRef.current;
+    if (pan && e.touches.length === 1) {
+      setZoom((z) =>
+        clampPan({ s: z.s, x: pan.ox + (e.touches[0].clientX - pan.x), y: pan.oy + (e.touches[0].clientY - pan.y) })
+      );
     }
   };
   const handleTouchEnd = (e: React.TouchEvent) => {
+    if (pinchRef.current) {
+      if (e.touches.length === 0) pinchRef.current = null;
+      setSmooth(true);
+      return;
+    }
+    if (panRef.current) {
+      panRef.current = null;
+      setSmooth(true);
+      return;
+    }
     if (!touchStartRef.current || e.changedTouches.length === 0) return;
     const dx = e.changedTouches[0].clientX - touchStartRef.current.x;
     const dy = e.changedTouches[0].clientY - touchStartRef.current.y;
@@ -545,10 +617,26 @@ export function PreviewDrawer({
       else go(-1);
       return;
     }
+    if (Math.abs(dx) >= 10 || Math.abs(dy) >= 10) return;
+    if (isVideoStage) return;
+    // Double-tap on a photo toggles 1× ↔ 2.5×, the gesture every gallery app answers to. The
+    // single-tap action therefore waits out the double-tap window instead of firing first and
+    // flashing the chrome on every zoom.
+    const now = Date.now();
+    if (isImageStage && now - lastTapRef.current < 300) {
+      lastTapRef.current = 0;
+      if (tapTimer.current) clearTimeout(tapTimer.current);
+      setSmooth(true);
+      setZoom((z) => (z.s > 1 ? { s: 1, x: 0, y: 0 } : { s: 2.5, x: 0, y: 0 }));
+      return;
+    }
+    lastTapRef.current = now;
     // A tap that went nowhere = the gallery gesture: clear the chrome off the media, tap to bring
     // it back. Video is left out on purpose — Plyr already does exactly this with its own controls
     // on touch (tap shows, 3s of stillness hides), and the CSS mirrors our chrome onto that signal.
-    if (!isVideoStage && Math.abs(dx) < 10 && Math.abs(dy) < 10) setChromeHidden((c) => !c);
+    if (!isImageStage) { setChromeHidden((c) => !c); return; }
+    if (tapTimer.current) clearTimeout(tapTimer.current);
+    tapTimer.current = setTimeout(() => setChromeHidden((c) => !c), 300);
   };
 
   const save = () => {
@@ -564,7 +652,7 @@ export function PreviewDrawer({
           {/* Backdrop is purely visual now — clicking it must NOT close the viewer. */}
           <div className="viewer-scrim"></div>
           <div ref={viewerRef} className={"viewer" + (!collapsed ? " has-bottom" : "") + (canPrev || canNext ? " has-nav" : "") + (chromeHidden ? " chrome-hidden" : "") + (isVideoStage ? " has-video-stage" : "") + (isPdfStage ? " has-pdf-stage" : "")}>
-            <div className="viewer-stage" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
+            <div className="viewer-stage" onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
               {isVideoStage ? (
                 <VideoPlayer
                   key={`${activePart!.partId}:${subsBump}`}
@@ -592,7 +680,13 @@ export function PreviewDrawer({
                       target.src = activePart.thumb;
                     }
                   }}
-                  style={{ width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 0, cursor: "default", transform: rotation ? `rotate(${rotation}deg)` : undefined, transition: "transform .2s ease" }}
+                  // A quarter turn swaps the fit axis (see .is-quarter-turn) so the rotated photo
+                  // refills the stage instead of keeping its portrait footprint and overflowing.
+                  className={rotation % 180 ? "is-quarter-turn" : undefined}
+                  style={{
+                    transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s}) rotate(${rotation}deg)`,
+                    transition: smooth ? "transform .2s ease" : "none",
+                  }}
                 />
               ) : (
                 <Icon name={ft.icon} size={120} stroke={1.2} style={{ color: ft.tint }} />
@@ -685,7 +779,7 @@ export function PreviewDrawer({
                   <>
                     <button
                       className="viewer-iconbtn"
-                      onClick={() => setRotation((r) => (r + 90) % 360)}
+                      onClick={rotate}
                       title="Rotate (R)"
                     >
                       <Icon name="rotate" size={16} />

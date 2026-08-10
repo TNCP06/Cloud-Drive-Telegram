@@ -130,6 +130,7 @@ export function DriveApp({
   const [view, setView] = useState<View>(initialView);
   const [activeTag, setActiveTag] = useState<number | null>(null);
   const [query, setQuery] = useState("");
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [sortMenu, setSortMenu] = useState<HTMLElement | null>(null);
 
@@ -157,8 +158,6 @@ export function DriveApp({
   const setSortOrder = (next: "asc" | "desc" | ((o: "asc" | "desc") => "asc" | "desc")) =>
     updatePrefs({ sortOrder: typeof next === "function" ? next(prefs.sortOrder) : next });
   const setGroupBy = (key: GroupKey) => updatePrefs({ groupBy: key });
-  const setGroupVersions = (next: boolean | ((v: boolean) => boolean)) =>
-    updatePrefs({ groupVersions: typeof next === "function" ? next(prefs.groupVersions) : next });
   const [menu, setMenu] = useState<{ anchor: HTMLElement; item: DriveFile } | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [manageTags, setManageTags] = useState(false);
@@ -1031,6 +1030,7 @@ export function DriveApp({
     // Quick Search (Ctrl+K or /)
     if (!typing && !overlayOpen && (e.key === "/" || ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")))) {
       e.preventDefault();
+      setMobileSearchOpen(true);
       searchRef.current?.focus();
       searchRef.current?.select();
       return;
@@ -1043,10 +1043,12 @@ export function DriveApp({
       return;
     }
 
-    // Escape -> reset search query or clear selection
+    // Escape -> reset search query, close mobile search, or clear selection
     if (!typing && !overlayOpen && e.key === "Escape") {
-      if (query) {
+      if (query || mobileSearchOpen) {
         setQuery("");
+        setMobileSearchOpen(false);
+        searchRef.current?.blur();
       } else if (selected.length > 0) {
         clearSelection();
       }
@@ -1397,7 +1399,16 @@ export function DriveApp({
             <Icon name="menu" size={20} />
           </button>
           <div className="crumbs">
-            {breadcrumbs ? (
+            {query ? (
+              <>
+                <span className="crumb current" title={`Search: "${query}"`}>
+                  Search results
+                </span>
+                <span className="crumb-count search-count" style={{ marginLeft: 8 }}>
+                  {items.length} {items.length === 1 ? "item" : "items"} found
+                </span>
+              </>
+            ) : breadcrumbs ? (
               breadcrumbs.length <= 3 ? (
                 breadcrumbs.map((crumb, idx) => {
                   const isCurrent = crumb.id === currentFolderId;
@@ -1495,18 +1506,23 @@ export function DriveApp({
             )}
           </div>
 
-          <div className="search">
+          <div className={"search" + (mobileSearchOpen || query ? " mob-open" : "")}>
             <Icon name="search" size={17} className="ico" />
             <input
               ref={searchRef}
               value={query}
               placeholder="Search files…"
               onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => setMobileSearchOpen(true)}
             />
             {query ? (
               <span
                 style={{ cursor: "pointer", color: "var(--faint)", display: "grid" }}
-                onClick={() => setQuery("")}
+                onClick={() => {
+                  setQuery("");
+                  searchRef.current?.focus();
+                }}
+                title="Clear query"
               >
                 <Icon name="close" size={15} />
               </span>
@@ -1516,6 +1532,24 @@ export function DriveApp({
           </div>
 
           <div className="topbar-actions">
+            <button
+              className="iconbtn ghost show-mob-only"
+              onClick={() => {
+                if (mobileSearchOpen || query) {
+                  setQuery("");
+                  setMobileSearchOpen(false);
+                  searchRef.current?.blur();
+                } else {
+                  setMobileSearchOpen(true);
+                  setTimeout(() => searchRef.current?.focus(), 50);
+                }
+              }}
+              title={mobileSearchOpen || query ? "Close search" : "Search files"}
+              aria-label={mobileSearchOpen || query ? "Close search" : "Search files"}
+            >
+              <Icon name={mobileSearchOpen || query ? "close" : "search"} size={18} />
+            </button>
+
             <button
               className="viewbtn hide-mob"
               onClick={(e) => {
@@ -1586,14 +1620,6 @@ export function DriveApp({
             <Icon name="sort" size={16} />
             {SORTS[sort].label}
             <Icon name="chevdown" size={14} />
-          </button>
-          <button
-            className={"sortbtn toggle" + (groupVersions ? " on" : "")}
-            onClick={() => setGroupVersions((v) => !v)}
-            title="Group multiple archive versions into one card"
-          >
-            <Icon name={groupVersions ? "check" : "all"} size={15} />
-            Group versions
           </button>
 
           {/* Upload Button (files / folder) — starts uploading immediately, no form. */}

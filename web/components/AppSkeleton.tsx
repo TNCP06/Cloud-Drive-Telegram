@@ -45,7 +45,7 @@ export function AppSkeleton() {
           <div className="grid">
             {Array.from({ length: 12 }).map((_, i) => (
               <div key={i} className="card">
-                <div className="thumb skel" style={{ height: 104 }} />
+                <div className="thumb skel" />
                 <div className="skel" style={{ height: 13, marginTop: 12, width: "82%" }} />
                 <div className="skel" style={{ height: 11, marginTop: 8, width: "55%" }} />
               </div>

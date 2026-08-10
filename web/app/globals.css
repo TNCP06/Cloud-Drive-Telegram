@@ -9,6 +9,10 @@
   --surface:      #F1ECE5;
   --card:         #F7F5F0;
   --card-2:       #EFECE4;
+  /* mat behind a thumbnail shown whole: the letterbox has to read as part of the media tile, so it
+     is clearly deeper than --card-2, which sits within a hair of --surface and made the empty
+     space blend into the page. */
+  --media-mat:    #DCD5C8;
 
   /* ink — rich espresso charcoal for high text contrast */
   --ink:          #1B1914;
@@ -65,6 +69,9 @@
   --surface:      #1C1A14;
   --card:         #232019;
   --card-2:       #2B271F;
+  /* Deeper than the card in dark mode too — a mat goes darker, never lighter, or it glares next
+     to the media it frames. */
+  --media-mat:    #100E0A;
 
   /* ink */
   --ink:          #ECE6DA;
@@ -318,13 +325,13 @@ button { font-family: inherit; }
   font-size: 19px; font-family: var(--ui); font-weight: 600; color: var(--ink);
   white-space: nowrap; border-radius: 6px; line-height: 1.2;
   overflow: hidden; text-overflow: ellipsis; letter-spacing: -.01em;
-  display: inline-block; vertical-align: middle; max-width: 100%; min-width: 0;
+  display: inline-flex; align-items: center; max-width: 100%; min-width: 0;
 }
 .crumb.dim { color: var(--faint); flex-shrink: 1; max-width: 220px; }
 .crumb.crumb-parent { flex-shrink: 1; max-width: 220px; }
 .crumb.current { color: var(--ink); flex-shrink: 2; max-width: 480px; }
 .crumb:hover { color: var(--accent); }
-.crumb-home-icon { width: 20px; height: 20px; flex: none; display: inline-block; vertical-align: middle; }
+.crumb-home-icon { width: 20px; height: 20px; flex: none; display: block; }
 .crumb-count { font-family: var(--ui); font-size: 12.5px; color: var(--faint); margin-left: 4px; align-self: center; white-space: nowrap; flex-shrink: 0 !important; }
 
 .spacer { display: none; }
@@ -435,7 +442,10 @@ button { font-family: inherit; }
 .card:hover { box-shadow: var(--sh-2); border-color: var(--line-2); }
 .card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .card .thumb {
-  height: 104px; border-radius: var(--r-md);
+  /* Ratio, not a fixed height, so the thumb grows with the column. 3/2 sits between the two shapes
+     the library actually holds — 16/9 video and portrait photos — so neither gets a big letterbox
+     (the images are shown whole here; see the `contain` rule below). */
+  aspect-ratio: 3 / 2; border-radius: var(--r-md);
   display: grid; place-items: center; margin-bottom: 12px;
   position: relative; overflow: hidden;
 }
@@ -749,6 +759,9 @@ button { font-family: inherit; }
    foto tampil utuh tanpa perlu zoom. Flex + min-0 menjamin gambar mengecil pas. */
 .viewer-stage {
   position: absolute; inset: 0; z-index: 1;
+  /* Size container: a quarter-turned photo is refitted against the stage's OTHER axis (see
+     .viewer-stage img.is-quarter-turn), which needs cqw/cqh to resolve against this box. */
+  container-type: size;
   display: flex; align-items: center; justify-content: center;
   /* Media is pulled flush to the very top (title bar floats over it) AND flush to the bottom box —
      no padding/gap on either edge. When the box is collapsed (no .has-bottom) the media fills fully. */
@@ -761,6 +774,17 @@ button { font-family: inherit; }
   width: 100%; height: 100%;
   max-width: 100%; max-height: 100%; min-width: 0; min-height: 0;
   object-fit: contain; border-radius: 0; cursor: default;
+  /* Pinch/double-tap zoom is handled in JS (PreviewDrawer touch handlers); the browser's own
+     page-zoom and scroll gestures would fight it, so hand every touch on the photo to us. Scoped
+     to the image — a PDF/text preview on the same stage still needs its native touch scrolling. */
+  touch-action: none;
+}
+/* Rotated a quarter turn: the box's axes are swapped by the rotation, so swap the box itself and
+   `contain` refits the photo to the whole stage instead of leaving it at its pre-turn footprint
+   (a portrait photo would otherwise stay portrait-sized and spill past the stage's left/right). */
+.viewer-stage img.is-quarter-turn {
+  width: 100cqh; height: 100cqw;
+  max-width: 100cqh; max-height: 100cqw;
 }
 /* Fullscreen the whole viewer (not just the media) so the title + filmstrip stay visible.
    The scrim sibling isn't part of the fullscreen element, so paint our own black backdrop. */
@@ -833,6 +857,11 @@ button { font-family: inherit; }
     margin-right: auto !important;
   }
 }
+/* Our injected loop toggle (VideoPlayer adds it next to PIP — Plyr ships no loop control). Plyr's
+   own icons are 18px sprite symbols; match that, and light the button up while looping so the
+   state is visible instead of hiding in the "L" shortcut. */
+.viewer-video .plyr__control.tcd-loop svg { width: 18px; height: 18px; }
+.viewer-video .plyr__control.tcd-loop.plyr__control--pressed { color: var(--accent); }
 .viewer-video .plyr:hover .plyr__controls {
   pointer-events: auto !important;
 }
@@ -1212,17 +1241,20 @@ button { font-family: inherit; }
 .topbar-actions { display: flex; align-items: center; gap: 4px; }
 .home-icon { width: 22px; height: 22px; }
 
+.crumb-count.search-count { display: inline-block !important; font-weight: 500; }
+
 @media (max-width: 640px) {
   .topbar { display: flex; flex-wrap: wrap; align-items: center; row-gap: 8px; padding: 10px 12px; }
   .hamburger { order: 1; flex: none; }
   .crumbs { order: 2; flex: 1; min-width: 0; max-width: none !important; overflow: hidden; }
   .crumbs .crumb-item { flex-shrink: 1; min-width: 0; }
-  .crumbs .crumb { max-width: 130px; font-size: 17px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; display: inline-block; vertical-align: middle; }
+  .crumbs .crumb { max-width: 130px; font-size: 17px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; display: inline-flex; align-items: center; }
   .crumbs .crumb.dim { max-width: 70px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
-  .crumbs .crumb-home-icon { width: 18px; height: 18px; display: inline-block; vertical-align: middle; }
+  .crumbs .crumb-home-icon { width: 18px; height: 18px; display: block; }
   .topbar-actions { order: 3; flex: none; gap: 2px; }
   .spacer { display: none; }
-  .search { order: 10; flex: 0 0 100%; width: 100% !important; max-width: 100% !important; margin-top: 2px; }
+  .search { display: none; }
+  .search.mob-open { display: flex; order: 10; flex: 0 0 100%; width: 100% !important; max-width: 100% !important; margin-top: 2px; }
 }
 @media (min-width: 861px) {
   .show-mob-only { display: none !important; }
@@ -1237,8 +1269,9 @@ button { font-family: inherit; }
 /* ===========================================================================
    Telegram Cloud Drive — adaptasi grid ke data asli (Milestone 4)
    =========================================================================== */
-/* thumbnail media (base64): tampilkan utuh (contain) agar tidak terpotong */
-.card .thumb { background: var(--card-2); cursor: pointer; }
+/* thumbnail media (base64): tampilkan utuh (contain) agar tidak terpotong — in EVERY layout,
+   gallery included: a 16/9 video and a portrait photo are both fully visible, never cropped. */
+.card .thumb { background: var(--media-mat); cursor: pointer; }
 .card .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 /* preview drawer: gambar besar utuh */
 .drawer .dv-tile { background: var(--card-2); overflow: hidden; }
@@ -1867,17 +1900,17 @@ body:has(.viewer) .fup { display: none; }
 /* ---- Icon-grid layouts (xl / large / medium / small). Desktop-gated so phones keep
    their own .grid sizing from the mobile media query. medium == base .grid. ---- */
 @media (min-width: 861px) {
+  /* Each layout keeps its own COLUMN width; the thumb ratio comes from the base rule (4/3, or 1/1
+     for the gallery layout), so a bigger layout means a bigger thumb without a second height knob. */
   .grid[data-layout="xl"] { grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 16px; }
-  .grid[data-layout="xl"] .card .thumb { height: 196px; }
   .grid[data-layout="xl"] .card .thumb svg { width: 64px; height: 64px; }
 
   .grid[data-layout="large"] { grid-template-columns: repeat(auto-fill, minmax(216px, 1fr)); }
-  .grid[data-layout="large"] .card .thumb { height: 150px; }
   .grid[data-layout="large"] .card .thumb svg { width: 50px; height: 50px; }
 
   .grid[data-layout="small"] { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 11px; }
   .grid[data-layout="small"] .card { padding: 10px; }
-  .grid[data-layout="small"] .card .thumb { height: 74px; margin-bottom: 9px; }
+  .grid[data-layout="small"] .card .thumb { margin-bottom: 9px; }
   .grid[data-layout="small"] .card .thumb svg { width: 30px; height: 30px; }
 }
 
@@ -1892,16 +1925,12 @@ body:has(.viewer) .fup { display: none; }
 }
 
 .grid[data-layout="xl"] .card:not(.folder) .thumb {
-  height: 150px; /* default/mobile height */
+  /* Gallery cards are square: with the thumb shown whole, the square is the shape that wastes the
+     least on both a portrait photo and a 16/9 video, and it keeps the wall on a clean tile grid. */
+  aspect-ratio: 1 / 1;
   margin-bottom: 0;
   border-radius: var(--r-lg);
   width: 100%;
-}
-
-@media (min-width: 861px) {
-  .grid[data-layout="xl"] .card:not(.folder) .thumb {
-    height: 196px; /* desktop height override */
-  }
 }
 
 .grid[data-layout="xl"] .card:not(.folder) .fname {
@@ -2082,7 +2111,8 @@ body:has(.viewer) .fup { display: none; }
 .app.compact { --row-h: 34px; }
 .app.compact .grid { gap: 8px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
 .app.compact .card { padding: 8px; }
-.app.compact .card .thumb { height: 72px; margin-bottom: 6px; }
+/* Compact trades some thumb height for density, so it keeps a wider ratio than the 4/3 default. */
+.app.compact .card .thumb { aspect-ratio: 16 / 10; margin-bottom: 6px; }
 .app.compact .card .title { font-size: 13px; line-height: 1.25; }
 .app.compact .tiles, .app.compact .content-rows { gap: 4px; }
 .app.compact .tile { padding: 6px 8px; font-size: 13px; }

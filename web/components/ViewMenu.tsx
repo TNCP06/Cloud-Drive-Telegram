@@ -82,6 +82,12 @@ export function ViewMenu({
         />
         <MenuItem
           icon="all"
+          label="Group versions"
+          check={prefs.groupVersions}
+          onClick={() => onChange({ groupVersions: !prefs.groupVersions })}
+        />
+        <MenuItem
+          icon="all"
           label="Detail items"
           check={prefs.showDetailItems}
           onClick={() => onChange({ showDetailItems: !prefs.showDetailItems })}

@@ -381,9 +381,11 @@ export function FileCard({
   return (
     <div className={`card ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
       <div style={{ position: "relative" }}>
+        {/* Thumb fit comes from CSS (`contain` — nothing cropped), not from an inline `objectFit`,
+            which would override it in every layout. */}
         <div className="thumb">
           {item.thumb ? (
-            <Image src={item.thumb!} alt="" fill unoptimized style={{ objectFit: "cover" }} />
+            <Image src={item.thumb!} alt="" fill unoptimized />
           ) : (
             <TypeTile item={item} size={40} />
           )}
