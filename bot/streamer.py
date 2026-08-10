@@ -1210,8 +1210,20 @@ async def _ensure_poster(part_id: int, src_path: str) -> None:
     already carries an 'ffmpeg' poster or a cover the user picked.
     """
     try:
-        rs = await db.execute("SELECT source FROM thumbnails WHERE part_id = ?", [part_id])
-        if rs.rows and str(rs.rows[0][0]) in ("ffmpeg", "manual"):
+        # The file name comes from the DB, not from `src_path`: a local Bot API download is stored
+        # under an extension-less name (`…/photos/file_37`), so the path can't tell a video from a
+        # photo — and a photo's stored thumbnail is already the full-size image downscaled.
+        rs = await db.execute(
+            "SELECT p.file_name, t.source FROM parts p "
+            "LEFT JOIN thumbnails t ON t.part_id = p.id WHERE p.id = ?",
+            [part_id],
+        )
+        if not rs.rows:
+            return
+        file_name, source = rs.rows[0][0], rs.rows[0][1]
+        if os.path.splitext(str(file_name or ""))[1].lower() not in MIME_MAP:
+            return
+        if source is not None and str(source) in ("ffmpeg", "manual"):
             return
         await store_poster(db, part_id, src_path)
     except Exception:  # noqa: BLE001
