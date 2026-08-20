@@ -24,7 +24,7 @@ from datetime import time as dtime
 
 import httpx
 from pg_db import create_client
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault, ForceReply
+from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault, ForceReply
 from telegram.ext import (
     Application,
     CommandHandler,
