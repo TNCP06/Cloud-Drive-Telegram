@@ -53,6 +53,7 @@ from pg_db import create_client
 
 from bot_config import PIKPAK_MAX_BYTES
 import tg_botapi_upload as botapi
+import tg_import
 import unpack
 
 load_dotenv()
@@ -822,6 +823,9 @@ async def main():
         # Archive-unpack worker shares this process's Telethon client + p7zip.
         await unpack.ensure_schema(db)
         asyncio.create_task(unpack.worker_loop(client, channel, db))
+        # Telegram-link-import worker shares this process's Telethon client (worker.session).
+        await tg_import.ensure_schema(db)
+        asyncio.create_task(tg_import.worker_loop(client, db))
         # Finishes purges the bot is not allowed to make (see purge_worker).
         asyncio.create_task(purge_worker(client, channel, db))
         print("Polling upload_jobs… (Ctrl+C to stop)")

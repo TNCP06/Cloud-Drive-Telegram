@@ -24,8 +24,8 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 | Component | Runs on | File(s) | Responsibility |
 |---|---|---|---|
 | **Storage channel** | Telegram | — | Holds the actual file bytes (one message per part). Bot is admin. |
-| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake; **remote-download** (`bot/pikpak.py`: `/pikpak` + `/baidu` and other registry drives via OpenList/WebDAV, `_ls`/`_jobs` + a ☁️ PikPak inline-button browser + in-process rclone worker → hands off to `upload_jobs` at any size). |
-| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. **Videos over the cap are never raw-split** — ffmpeg cuts them into keyframe-aligned parts that each still play (`split_video`). |
+| **Bot (indexer/server)** | Any always-on host (VPS or laptop) | `bot/bot.py` | Index `channel_post` → Postgres; serve downloads via `copy_message`; daily trash purge; daily DB backup → Telegram; Bot Drop intake; **remote-download** (`bot/pikpak.py`: `/pikpak` + `/baidu` and other registry drives via OpenList/WebDAV, `_ls`/`_jobs` + a ☁️ PikPak inline-button browser + in-process rclone worker → hands off to `upload_jobs` at any size); **Telegram link import** (`/import <link>`, queues `tg_import_jobs`). |
+| **Watcher** | Laptop **or** server (VPS/EC2) | `bot/watcher.py` | Polls `upload_jobs`. `local` jobs read a path (7-Zip split for archives); `upload` jobs read a browser-staged file and **raw streaming split** it (<2 GB/part, no 7-Zip), deleting each part + the staged file as it goes. **Videos over the cap are never raw-split** — ffmpeg cuts them into keyframe-aligned parts that each still play (`split_video`). Also hosts background workers: archive unpack (`unpack.py`), purges (`purge_worker`), and **Telegram link import** (`tg_import.py`, downloads media from public/private channels via MTProto user session bypassing `noforwards`). |
 | **History Indexer** | Laptop **or** server (watcher container) | `bot/index_history.py` | Standalone script that logs in via Telethon and back-indexes channel messages to Postgres; runs automatically on watcher container startup. |
 | **Streamer** | Server/VPS (Docker) | `bot/streamer.py` (+ `stream_compress.py`, `stream_subtitles.py`, `stream_seekpreview.py`, `stream_poster.py`) | Video streaming: if local Bot API server is configured, downloads files on-the-fly to a shared disk cache and streams directly; else falls back to Telethon `iter_download` with sparse 1 MB chunk cache & prefetch. Also runs background **H.264 compression** (deletes the original once done), background **subtitle generation** (Groq Whisper STT → original + EN + ID WebVTT), background **seek-preview sprite-sheet generation** (ffmpeg thumbnails → Plyr progress-bar hover), and **video cover frames** (ffmpeg poster → `thumbnails`, replacing Telegram's ~320 px video thumbnail; includes a paced backfill over older videos). |
 | **Web dashboard** | Vercel (or localhost) | `web/` (Next.js 15) | Browse/search/edit/delete metadata; trigger download/upload; stream video; Bot Drop form. Streaming/subtitles/seek-preview are **proxied** to the streamer at `STREAMER_URL` (default internal `http://streamer:8080`; the Cloudflare-Tunnel hostname when hosted on Vercel), forwarding the optional `X-Streamer-Secret`. |
@@ -39,11 +39,10 @@ auto-indexing work is a single **caption contract**: `Title | part/total | tag1,
 > **Live updates stay in-band too.** The dashboard is kept fresh by Postgres `LISTEN/NOTIFY`,
 > not by any process calling another: statement-level triggers raise `NOTIFY drive_changed`
 > (`notify_drive_change`, on items/folders/tags), `NOTIFY upload_changed` (`notify_upload_change`,
-> on `upload_jobs`), and `NOTIFY pikpak_changed` (`notify_pikpak_change`, on `download_jobs` — the
-> PikPak remote-download queue) in `schema.sql`; the web's `/api/events` SSE endpoint holds one shared `LISTEN`
-> connection (both channels) and pushes a signal to every open browser — `drive` → the grid
-> refreshes, `upload` → the /upload page refreshes. So a file the bot indexes (or an upload's
-> progress) appears in the dashboard live, still purely through PG — no polling.
+> on `upload_jobs`), `NOTIFY pikpak_changed` (`notify_pikpak_change`, on `download_jobs`), and
+> `NOTIFY tg_import_changed` (`notify_tg_import_change`, on `tg_import_jobs`) in `schema.sql`;
+> the web's `/api/events` SSE endpoint holds one shared `LISTEN` connection and pushes a signal
+> to open clients.
 
 ---
 

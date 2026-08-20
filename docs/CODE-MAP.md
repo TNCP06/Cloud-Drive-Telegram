@@ -163,6 +163,16 @@ download → extract → stage → cleanup; **keeps the original archive**).
 marker-guarded), `worker_loop`. Password: never logged, passed to 7z via `-p`
 (argv, single-user VPS).
 
+### `tg_import.py` — Telegram link import worker (in the **watcher** process, Telethon MTProto)
+Allows authorized users to import videos/files from public and private Telegram channels — bypassing
+`noforwards` / Restrict Saving Content proteksi using the MTProto worker session (`worker.session`).
+- `parse_tg_links` / `parse_import_command`: parses public (`https://t.me/channel/42`), private (`https://t.me/c/1234567890/42`), topic threads, and batch ranges (`10-15`), extracting optional custom title and tags.
+- `_download_part_stream`: chunked MTProto stream download using `client.iter_download` with flood-wait resilience (`FloodError` retry) and live progress tracking (speed EMA, ETA, byte counter).
+- `_safe_edit`: throttled progress message updater editing the user's progress message in Telegram via Bot API HTTP.
+- `_track_upload_job`: monitors the handed-off `upload_jobs` row to completion, updating `tg_import_jobs` status to `done` or `failed`.
+- `ensure_schema`: auto-creates `tg_import_jobs` table, index, and `tg_import_changed` trigger.
+- `worker_loop`: background task in `watcher.py` polling `tg_import_jobs`.
+
 ### `index_history.py` — manual/automatic history back-indexer (Telethon, **laptop or server**)
 Utility to fetch channel messages using Telethon (via `worker.session`) and sync them back to the Postgres catalog. Runs on-demand or automatically inside the watcher container on startup to back-fill any updates missed while the bot was offline.
 

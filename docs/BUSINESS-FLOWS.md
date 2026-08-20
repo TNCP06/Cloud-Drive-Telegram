@@ -213,6 +213,29 @@ on the VPS and its contents are re-stored as normal items — the video then str
 
 ---
 
+## A5. Import via Telegram Message Link (Protected & Restricted Channels)
+
+Imports files/videos from public or private Telegram channels — bypassing `noforwards` / Restrict
+Saving Content proteksi using the MTProto worker session (`worker.session`).
+
+1. **Trigger**:
+   - User types `/import <link> [Custom Title] [| tag1, tag2]` or simply pastes any `https://t.me/...` link into the bot PM.
+   - Supports public (`https://t.me/channel/42`), private (`https://t.me/c/1234567890/42`), topics (`https://t.me/c/1234567890/10/42`), and batch message ranges (`https://t.me/c/1234567890/10-15`).
+   - Bot validates user authorization, sends an initial progress message, and inserts row(s) into `tg_import_jobs` (`status='queued'`).
+2. **MTProto Worker** (`bot/tg_import.py`, runs inside `watcher.py` process):
+   - Claims the queued job (`status='running'`).
+   - Fetches the message entity and media via Telethon MTProto user account (`client.get_messages`).
+   - Extracts file metadata (filename, size, title from caption or filename, tags).
+   - Downloads the file into staging (`/staging/tgimport_<jid>/`) using chunked `iter_download` with flood-wait resilience and live byte/speed progress reporting back to Telegram.
+3. **Handoff to Upload Pipeline**:
+   - Inserts `upload_jobs` row (`origin='upload'`, `cleanup_source=1`).
+   - The watcher splits/segments if > 2 GB or uploads whole if <= 2 GB into the storage channel.
+   - The bot indexes the channel post into `items` & `parts`.
+   - The worker marks `tg_import_jobs` status as `done` and updates the bot's progress message with full details.
+
+
+---
+
 ## B. Upload media directly (from phone, no watcher host path)
 
 1. Post the photo/video/document to the channel **as media** (not an archive), optionally with

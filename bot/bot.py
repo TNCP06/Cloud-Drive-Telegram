@@ -99,6 +99,7 @@ from pikpak import (  # noqa: F401  (remote-download feature: PikPak + WebDAV dr
     ensure_schema as ensure_pikpak_schema,
     start_workers as start_pikpak_workers,
 )
+import tg_import
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +358,13 @@ async def post_init(app: Application):
     except Exception as e:
         log.warning("Migration failed for download_jobs: %s", e)
 
+    # Auto-migration: Telegram link import queue (tg_import_jobs table + NOTIFY trigger)
+    try:
+        await tg_import.ensure_schema(db)
+        log.info("Migration: ensured tg_import_jobs table schema")
+    except Exception as e:
+        log.warning("Migration failed for tg_import_jobs: %s", e)
+
     # Initialize bot_settings table & web_url configuration
     try:
         await db.execute("CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)")
@@ -379,6 +387,7 @@ async def post_init(app: Application):
         default_commands = [
             BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
+            BotCommand("import", "Import from Telegram link: /import <link>"),
             BotCommand("auth", "Authorize yourself using password"),
             BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
             BotCommand("pikpak_ls", "Browse PikPak: /pikpak_ls [folder]"),
@@ -393,6 +402,7 @@ async def post_init(app: Application):
         owner_commands = [
             BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
+            BotCommand("import", "Import from Telegram link: /import <link>"),
             BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
             BotCommand("pikpak_ls", "Browse PikPak: /pikpak_ls [folder]"),
             BotCommand("pikpak_jobs", "Recent download jobs"),
@@ -1126,6 +1136,60 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_next_in_queue(update, context)
 
 
+# ---------------------------------------------------------------------------
+# Telegram Message Link Import (/import <link>)
+# ---------------------------------------------------------------------------
+async def on_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not message or not user:
+        return
+
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        return
+
+    text = message.text or ""
+    targets, title, tags = tg_import.parse_import_command(text)
+    if not targets:
+        await message.reply_text(
+            "📥 <b>Import dari Link Telegram (Termasuk Channel Terproteksi)</b>\n\n"
+            "Format:\n"
+            "<code>/import &lt;link_pesan&gt; [Custom Title] [| tag1, tag2]</code>\n\n"
+            "Contoh:\n"
+            "• <code>/import https://t.me/c/1234567890/42</code>\n"
+            "• <code>/import https://t.me/c/1234567890/42 Judul Video | series, eps1</code>\n"
+            "• <code>/import https://t.me/c/1234567890/10-15</code> <i>(Batch import range)</i>\n"
+            "• <code>/import https://t.me/namachannel/100</code>\n\n"
+            "<i>Catatan: Akun worker harus sudah bergabung (join) ke channel target.</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    for t in targets:
+        target_chat = t["target_chat"]
+        target_msg_id = t["target_msg_id"]
+        raw_link = t["raw_link"]
+
+        status_msg = await message.reply_text(
+            f"📥 <b>Telegram Import Queued</b>\n"
+            f"• Source: <code>{target_chat} / {target_msg_id}</code>\n"
+            f"• Status: <i>Menunggu worker…</i>",
+            parse_mode="HTML",
+        )
+
+        try:
+            await db.execute(
+                "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, title, tags, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
+                [raw_link, target_chat, target_msg_id, message.chat_id, status_msg.message_id, title, tags],
+            )
+            log.info("Queued tg_import job: %s / %s for user %s", target_chat, target_msg_id, user.id)
+        except Exception as e:
+            log.exception("Failed to insert tg_import_job")
+            await status_msg.edit_text(f"❌ Database error: {e}")
+
+
 async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     user = update.effective_user
@@ -1156,9 +1220,36 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = context.user_data.get("upload_state")
     if not state:
+        # Check if user sent a telegram message link directly in chat
+        msg_text = message.text or ""
+        tg_links = tg_import.parse_tg_links(msg_text)
+        if tg_links:
+            targets, title, tags = tg_import.parse_import_command(msg_text)
+            for t in targets:
+                target_chat = t["target_chat"]
+                target_msg_id = t["target_msg_id"]
+                raw_link = t["raw_link"]
+                status_msg = await message.reply_text(
+                    f"📥 <b>Telegram Import Queued</b>\n"
+                    f"• Source: <code>{target_chat} / {target_msg_id}</code>\n"
+                    f"• Status: <i>Menunggu worker…</i>",
+                    parse_mode="HTML",
+                )
+                try:
+                    await db.execute(
+                        "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, title, tags, status) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
+                        [raw_link, target_chat, target_msg_id, message.chat_id, status_msg.message_id, title, tags],
+                    )
+                    log.info("Queued tg_import job via direct link: %s / %s", target_chat, target_msg_id)
+                except Exception as e:
+                    log.exception("Failed to insert tg_import_job")
+                    await status_msg.edit_text(f"❌ Database error: {e}")
+            return
+
         if message.text and not message.text.startswith("/"):
             await message.reply_text(
-                "Send a file (Photo, Video, or Document) to upload it to the cloud drive!"
+                "Send a file (Photo, Video, or Document) or paste a Telegram message link to import it to the cloud drive!"
             )
         return
 
@@ -1222,6 +1313,16 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pikpak_cancel_download(query, db, data.split(":", 1)[1])
         return
 
+    # Telegram link import cancel button
+    if data.startswith("tgi_cancel:"):
+        jid = int(data.split(":", 1)[1])
+        await db.execute(
+            "UPDATE tg_import_jobs SET status='cancelled', error='Cancelled by user', updated_at=now_text() WHERE id=?",
+            [jid],
+        )
+        await query.message.edit_text("✖️ <b>Import Dibatalkan</b>", parse_mode="HTML")
+        return
+
     if data == "upload:cancel":
         # Clean the questionnaire trail; keep THIS message (we edit it into the cancelled notice).
         flow_ids = list((context.user_data.get("upload_file") or {}).get("flow_msg_ids", []))
@@ -1254,12 +1355,15 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "menu:upload_guide":
         text = (
-            "📥 <b>How to Upload Files:</b>\n\n"
-            "1. Send or <b>forward</b> any file (video, photo, document, animation) directly to this private chat.\n"
-            "2. The bot will ask you for a <b>Title</b> (suggesting a derived title from filename or caption).\n"
-            "3. The bot will ask you for <b>Tags</b> (optional).\n"
-            "4. The bot will automatically format the caption contract and copy the file to the storage channel, indexing it instantly into the website.\n\n"
-            "⚠️ Use <code>/cancel</code> if you need to abort an active upload questionnaire."
+            "📥 <b>How to Upload & Import Files:</b>\n\n"
+            "<b>Option A — Direct Drop / Forward:</b>\n"
+            "1. Send or <b>forward</b> any file (video, photo, document, animation) directly to this chat.\n"
+            "2. Set Title & Tags when prompted (or skip).\n\n"
+            "<b>Option B — Telegram Message Link Import (Protected Channels):</b>\n"
+            "1. Copy message link from any public or private channel.\n"
+            "2. Send <code>/import &lt;link&gt;</code> or paste the link directly into this chat.\n"
+            "3. The MTProto worker will download the media (even from channels with restricted saving) and save it to your drive.\n\n"
+            "⚠️ Use <code>/cancel</code> if you need to abort an active questionnaire."
         )
         keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")]]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
@@ -1432,6 +1536,9 @@ def main():
     # Command handlers
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(CommandHandler("auth", on_auth))
+    app.add_handler(CommandHandler("import", on_import))
+    app.add_handler(CommandHandler("save", on_import))
+    app.add_handler(CommandHandler("dl", on_import))
     app.add_handler(CommandHandler("approve", on_approve))
     app.add_handler(CommandHandler("revoke", on_revoke))
     app.add_handler(CommandHandler("list_users", on_list_users))
