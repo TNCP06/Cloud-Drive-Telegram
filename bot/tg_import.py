@@ -6,8 +6,9 @@ pasting the message link (e.g. `https://t.me/c/1234567890/42` or `https://t.me/c
 
 Runs the MTProto worker inside the watcher process (shares the Telethon worker.session).
 The bot process inserts rows into `tg_import_jobs`, sends the initial progress message,
-and the watcher worker downloads the media via Telethon MTProto chunk stream, saves it to
-staging, and hands it off to `upload_jobs` to be uploaded to the user's storage channel.
+and the watcher worker downloads the media (including multi-file albums/media groups)
+via Telethon MTProto chunk stream, saves it to staging, and hands it off to `upload_jobs`
+to be uploaded to the user's storage channel.
 """
 
 import asyncio
@@ -40,14 +41,6 @@ _MEDIA_EXTS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp3", ".m4a", ".flac", ".wav", ".ogg",
 }
 
-# Regex for Telegram message links:
-# Matches:
-# - https://t.me/c/1234567890/42
-# - https://t.me/c/1234567890/10/42 (forum/topic thread)
-# - https://t.me/c/1234567890/42-45 (message range)
-# - https://t.me/channel_name/42
-# - https://t.me/channel_name/42-45
-# - t.me/c/...
 TG_LINK_RE = re.compile(
     r"(?:https?://)?t\.me/(?:c/(\d+)|([a-zA-Z0-9_]+))/(?:(\d+)/)?(\d+)(?:-(\d+))?"
 )
@@ -322,7 +315,7 @@ async def _process(client, db, job):
 
     cancel_kb = {
         "inline_keyboard": [
-            [{"text": "✖️ Cancel Import", "callback_data": f"tgi_cancel:{jid}"}]
+            [{"text": "✖️ Cancel Import", "callback_data": f"tgi_cancel_ask:{jid}"}]
         ]
     }
 
@@ -331,8 +324,6 @@ async def _process(client, db, job):
         "last_edit": 0.0,
         "last_db": 0.0,
         "start_time": time.monotonic(),
-        "last_bytes": 0,
-        "speed_ema": 0.0,
     }
 
     try:
@@ -360,118 +351,176 @@ async def _process(client, db, job):
         if not msg.media:
             raise TgImportError(f"Pesan ID {target_msg_id} tidak memiliki file / video / media untuk diunduh.")
 
-        # 2. Extract metadata
-        fname = getattr(msg.file, "name", None)
-        if not fname:
-            ext = getattr(msg.file, "ext", None) or ".mp4"
-            if not ext.startswith("."):
-                ext = f".{ext}"
-            if msg.video:
-                fname = f"video_{target_msg_id}{ext}"
-            elif msg.photo:
-                fname = f"photo_{target_msg_id}.jpg"
-            elif msg.audio or msg.voice:
-                fname = f"audio_{target_msg_id}{ext}"
-            else:
-                fname = f"file_{target_msg_id}{ext}"
+        # Check if this message is part of an album / media group
+        messages_to_fetch = [msg]
+        if getattr(msg, "grouped_id", None):
+            try:
+                min_id = max(1, target_msg_id - 15)
+                max_id = target_msg_id + 15
+                surrounding = await client.get_messages(entity, min_id=min_id, max_id=max_id)
+                album_msgs = [m for m in surrounding if getattr(m, "grouped_id", None) == msg.grouped_id and m.media]
+                if not any(m.id == msg.id for m in album_msgs):
+                    album_msgs.append(msg)
+                album_msgs.sort(key=lambda m: m.id)
+                if len(album_msgs) > 1:
+                    messages_to_fetch = album_msgs
+                    log.info("Detected album with %s items for msg %s", len(album_msgs), target_msg_id)
+            except Exception as e:
+                log.warning("Album check failed for msg %s: %s", target_msg_id, e)
 
-        size = int(getattr(msg.file, "size", 0) or getattr(msg, "size", 0) or 0)
+        # 2. Extract metadata & Caption
+        caption_text = ""
+        for m in messages_to_fetch:
+            if m.message and m.message.strip():
+                caption_text = m.message.strip()
+                break
 
-        # Title & Tags
         title = custom_title
         tags = custom_tags
         if not title:
-            if msg.message:
-                parsed = parse_caption(msg.message)
+            if caption_text:
+                parsed = parse_caption(caption_text)
                 if parsed:
                     title = parsed["title"]
                     if not tags:
                         tags = ", ".join(parsed["tags"])
-                elif len(msg.message.strip()) <= 100 and "\n" not in msg.message:
-                    title = msg.message.strip()
+                elif len(caption_text.strip()) <= 100 and "\n" not in caption_text:
+                    title = caption_text.strip()
             if not title:
-                title = os.path.splitext(fname)[0]
+                first_fname = getattr(messages_to_fetch[0].file, "name", None) or f"item_{target_msg_id}"
+                title = os.path.splitext(first_fname)[0]
 
         tags = tags or ""
 
         # 3. Create staging destination
         os.makedirs(dst_dir, exist_ok=True)
-        target_path = os.path.join(dst_dir, fname)
+        total_batch_size = sum(int(getattr(m.file, "size", 0) or getattr(m, "size", 0) or 0) for m in messages_to_fetch)
+        first_fname = getattr(messages_to_fetch[0].file, "name", None) or f"item_{target_msg_id}.mp4"
 
         await db.execute(
             "UPDATE tg_import_jobs SET status='downloading', filename=?, title=?, tags=?, size=?, updated_at=now_text() WHERE id=?",
-            [fname, title, tags, size, jid],
+            [first_fname if len(messages_to_fetch) == 1 else f"Album ({len(messages_to_fetch)} files)", title, tags, total_batch_size, jid],
         )
 
         # 4. Download media with progress tracking
-        async def on_progress(done_bytes, total_bytes):
-            if await _is_cancelled(db, jid):
-                raise asyncio.CancelledError("Import cancelled by user")
+        batch_done_base = 0
+        for idx, m in enumerate(messages_to_fetch, start=1):
+            m_fname = getattr(m.file, "name", None)
+            if not m_fname:
+                ext = getattr(m.file, "ext", None) or ".mp4"
+                if not ext.startswith("."):
+                    ext = f".{ext}"
+                if m.video:
+                    m_fname = f"video_{m.id}{ext}"
+                elif m.photo:
+                    m_fname = f"photo_{m.id}.jpg"
+                elif m.audio or m.voice:
+                    m_fname = f"audio_{m.id}{ext}"
+                else:
+                    m_fname = f"file_{m.id}{ext}"
 
-            now = time.monotonic()
-            total = total_bytes or size or 1
-            pct = min(100, int(done_bytes * 100 / total))
+            target_path = os.path.join(dst_dir, m_fname)
+            if os.path.exists(target_path):
+                target_path = os.path.join(dst_dir, f"{idx}_{m_fname}")
 
-            dt = now - state["last_edit"]
-            if dt > 0.5:
-                inst_speed = (done_bytes - state["last_bytes"]) / dt
-                state["speed_ema"] = 0.7 * inst_speed + 0.3 * state["speed_ema"] if state["speed_ema"] else inst_speed
-                state["last_bytes"] = done_bytes
+            m_size = int(getattr(m.file, "size", 0) or getattr(m, "size", 0) or 0)
 
-            spd_text = f"{human_size(state['speed_ema']).replace(' ', '')}/s" if state["speed_ema"] > 0 else ""
-            rem_bytes = max(0, total - done_bytes)
-            eta_text = _fmt_eta(rem_bytes / state["speed_ema"]) if state["speed_ema"] > 0 else "..."
+            async def on_progress(done_bytes, _part_total, current_idx=idx, total_items=len(messages_to_fetch), fname=m_fname):
+                if await _is_cancelled(db, jid):
+                    raise asyncio.CancelledError("Import cancelled by user")
 
-            if now - state["last_db"] >= DB_THROTTLE_S:
-                state["last_db"] = now
-                await db.execute(
-                    "UPDATE tg_import_jobs SET progress=?, speed=?, updated_at=now_text() WHERE id=?",
-                    [pct, f"{spd_text} · ETA {eta_text}", jid],
-                )
+                now = time.monotonic()
+                overall_done = batch_done_base + done_bytes
+                total = total_batch_size or 1
+                pct = min(100, int(overall_done * 100 / total))
 
-            if now - state["last_edit"] >= PROGRESS_THROTTLE_S:
-                state["last_edit"] = now
-                edit_text = (
-                    f"⬇️ <b>Downloading from Telegram:</b>\n"
-                    f"• File: <code>{html.escape(fname)}</code>\n"
-                    f"• Progress: <code>{pct}%</code> ({human_size(done_bytes)} / {human_size(total)})\n"
-                    f"• Speed: <code>{spd_text}</code> · ETA <code>{eta_text}</code>"
-                )
-                await _safe_edit(chat_id, msg_id, edit_text, kb=cancel_kb)
+                elapsed = max(0.001, now - state["start_time"])
+                avg_speed = overall_done / elapsed
+                spd_text = f"{human_size(avg_speed).replace(' ', '')}/s" if avg_speed > 0 else ""
+                rem_bytes = max(0, total - overall_done)
+                eta_text = _fmt_eta(rem_bytes / avg_speed) if avg_speed > 0 else "..."
 
-        await _download_part_stream(client, msg, target_path, on_progress)
+                if now - state["last_db"] >= DB_THROTTLE_S:
+                    state["last_db"] = now
+                    await db.execute(
+                        "UPDATE tg_import_jobs SET progress=?, speed=?, updated_at=now_text() WHERE id=?",
+                        [pct, f"{spd_text} · ETA {eta_text}", jid],
+                    )
 
-        if not os.path.exists(target_path) or os.path.getsize(target_path) == 0:
-            raise TgImportError("Download selesai tetapi file kosong.")
+                if now - state["last_edit"] >= PROGRESS_THROTTLE_S:
+                    state["last_edit"] = now
+                    item_note = f" (File {current_idx}/{total_items})" if total_items > 1 else ""
+                    edit_text = (
+                        f"⬇️ <b>Downloading from Telegram:</b>\n"
+                        f"• File: <code>{html.escape(fname)}</code>{item_note}\n"
+                        f"• Progress: <code>{pct}%</code> ({human_size(overall_done)} / {human_size(total)})\n"
+                        f"• Speed: <code>{spd_text}</code> · ETA <code>{eta_text}</code>"
+                    )
+                    await _safe_edit(chat_id, msg_id, edit_text, kb=cancel_kb)
 
-        real_size = os.path.getsize(target_path)
+            await _download_part_stream(client, m, target_path, on_progress)
+            batch_done_base += m_size
 
         # 5. Hand off to upload_jobs
-        kind = "media" if _is_media(fname) else "archive"
-        part_size = DRIVE_SPLIT_PART_MB if real_size > PIKPAK_MAX_BYTES else 4096
+        downloaded_files = [
+            f for f in sorted(os.listdir(dst_dir))
+            if os.path.isfile(os.path.join(dst_dir, f)) and os.path.getsize(os.path.join(dst_dir, f)) > 0
+        ]
+        if not downloaded_files:
+            raise TgImportError("Download selesai tetapi tidak ada file yang tersimpan.")
 
-        rs = await db.execute(
-            "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) "
-            "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'pending') RETURNING id",
-            [kind, title, tags, dst_dir, part_size, real_size],
-        )
-        upload_id = rs.rows[0][0] if rs.rows else None
+        upload_ids = []
+        if len(downloaded_files) == 1:
+            f = downloaded_files[0]
+            real_size = os.path.getsize(os.path.join(dst_dir, f))
+            kind = "media" if _is_media(f) else "archive"
+            part_size = DRIVE_SPLIT_PART_MB if real_size > PIKPAK_MAX_BYTES else 4096
 
+            rs = await db.execute(
+                "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) "
+                "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'pending') RETURNING id",
+                [kind, title, tags, dst_dir, part_size, real_size],
+            )
+            if rs.rows:
+                upload_ids.append(rs.rows[0][0])
+        else:
+            # Multi-file album: stage each file into its own single-item subfolder
+            for idx, f in enumerate(downloaded_files, start=1):
+                fpath = os.path.join(dst_dir, f)
+                sub_dir = os.path.join(dst_dir, f"item_{idx}")
+                os.makedirs(sub_dir, exist_ok=True)
+                new_path = os.path.join(sub_dir, f)
+                shutil.move(fpath, new_path)
+                fsize = os.path.getsize(new_path)
+                fkind = "media" if _is_media(f) else "archive"
+                fpart_size = DRIVE_SPLIT_PART_MB if fsize > PIKPAK_MAX_BYTES else 4096
+                item_title = title if len(downloaded_files) == 1 else f"{title} (Part {idx})"
+
+                rs = await db.execute(
+                    "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) "
+                    "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'pending') RETURNING id",
+                    [fkind, item_title, tags, sub_dir, fpart_size, fsize],
+                )
+                if rs.rows:
+                    upload_ids.append(rs.rows[0][0])
+
+        last_upload_id = upload_ids[-1] if upload_ids else None
         await db.execute(
             "UPDATE tg_import_jobs SET status='uploading', upload_id=?, progress=100, updated_at=now_text() WHERE id=?",
-            [upload_id, jid],
+            [last_upload_id, jid],
         )
 
         await _safe_edit(
             chat_id, msg_id,
             f"⬆️ <b>Menyimpan ke Cloud Drive:</b>\n"
             f"• Title: <b>{html.escape(title)}</b>\n"
-            f"• Size: <code>{human_size(real_size)}</code>\n"
+            f"• Total Files: <code>{len(downloaded_files)} file(s)</code>\n"
+            f"• Total Size: <code>{human_size(total_batch_size)}</code>\n"
             f"<i>Sedang diproses oleh watcher (upload/segmentasi jika &gt;2GB)…</i>"
         )
 
-        if upload_id:
-            await _track_upload_job(db, jid, upload_id, chat_id, msg_id, title, real_size, tags, dst_dir)
+        for uid in upload_ids:
+            await _track_upload_job(db, jid, uid, chat_id, msg_id, title, total_batch_size, tags, dst_dir)
 
     except (asyncio.CancelledError, TgImportError) as e:
         shutil.rmtree(dst_dir, ignore_errors=True)

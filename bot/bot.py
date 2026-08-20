@@ -1058,6 +1058,35 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = context.bot_data["db"]
     total_parts = len(message_ids)
 
+    if upload_file.get("is_link_import"):
+        raw_link = upload_file["raw_link"]
+        target_chat = upload_file["target_chat"]
+        target_msg_id = upload_file["target_msg_id"]
+
+        status_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📥 <b>Telegram Import Queued</b>\n"
+                 f"• Title: <b>{html.escape(title)}</b>\n"
+                 f"• Tags: <code>{html.escape(tags_str if tags_str else 'none')}</code>\n"
+                 f"• Source: <code>{target_chat} / {target_msg_id}</code>\n"
+                 f"• Status: <i>Menunggu worker…</i>",
+            parse_mode="HTML",
+        )
+        try:
+            await db.execute(
+                "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, title, tags, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
+                [raw_link, target_chat, target_msg_id, chat_id, status_msg.message_id, title, tags_str],
+            )
+            log.info("Queued tg_import job via questionnaire: %s / %s (Title: %s)", target_chat, target_msg_id, title)
+        except Exception as e:
+            log.exception("Failed to insert tg_import_job from questionnaire")
+            await status_msg.edit_text(f"❌ Database error: {e}")
+        finally:
+            await _delete_messages(context, chat_id, upload_file.get("flow_msg_ids"))
+            await process_next_in_queue(update, context)
+        return
+
     # Send status message
     status_msg = await context.bot.send_message(
         chat_id=chat_id,
@@ -1139,6 +1168,51 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # Telegram Message Link Import (/import <link>)
 # ---------------------------------------------------------------------------
+async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT_TYPE, raw_link: str, target_chat: str, target_msg_id: int):
+    """Start interactive Title/Tags questionnaire for a Telegram link (reusing standard flow)."""
+    msg_id = message.message_id
+    chat_id = message.chat_id
+
+    auto_title = f"video_{target_msg_id}"
+    auto_tags = []
+
+    context.user_data["upload_file"] = {
+        "is_link_import": True,
+        "raw_link": raw_link,
+        "target_chat": target_chat,
+        "target_msg_id": target_msg_id,
+        "message_ids": [msg_id],
+        "messages": [message],
+        "chat_id": chat_id,
+        "kind": "media",
+        "file_name": f"msg_{target_msg_id}",
+        "file_size": 0,
+        "auto_title": auto_title,
+        "auto_tags": auto_tags,
+    }
+    context.user_data["upload_state"] = "WAITING_TITLE"
+
+    btn_title = auto_title
+    if len(btn_title) > 40:
+        btn_title = btn_title[:37] + "..."
+
+    keyboard = [
+        [InlineKeyboardButton(f"✨ Use Auto Title: {btn_title}", callback_data="upload:skip_title")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    prompt = await message.reply_text(
+        f"📥 <b>Telegram Link Received!</b>\n"
+        f"• Source: <code>{target_chat} / {target_msg_id}</code>\n\n"
+        f"Please reply with a <b>Title</b> for this upload.\n"
+        f"Or click the button below to use the Auto Title.",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+    context.user_data["upload_file"].setdefault("flow_msg_ids", []).append(prompt.message_id)
+
+
 async def on_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.message
@@ -1166,6 +1240,13 @@ async def on_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # If single link with NO title/tags provided, prompt for title & tags interactively
+    if len(targets) == 1 and not title and not tags:
+        t = targets[0]
+        await start_link_import_flow(message, context, t["raw_link"], t["target_chat"], t["target_msg_id"])
+        return
+
+    # Fast Mode / Batch Mode: directly queue
     for t in targets:
         target_chat = t["target_chat"]
         target_msg_id = t["target_msg_id"]
@@ -1225,6 +1306,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tg_links = tg_import.parse_tg_links(msg_text)
         if tg_links:
             targets, title, tags = tg_import.parse_import_command(msg_text)
+            if len(targets) == 1 and not title and not tags:
+                t = targets[0]
+                await start_link_import_flow(message, context, t["raw_link"], t["target_chat"], t["target_msg_id"])
+                return
             for t in targets:
                 target_chat = t["target_chat"]
                 target_msg_id = t["target_msg_id"]
@@ -1313,8 +1398,27 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pikpak_cancel_download(query, db, data.split(":", 1)[1])
         return
 
-    # Telegram link import cancel button
-    if data.startswith("tgi_cancel:"):
+    # Telegram link import cancel confirmation flow
+    if data.startswith("tgi_cancel_ask:"):
+        jid = data.split(":", 1)[1]
+        confirm_kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔴 Ya, Batalkan", callback_data=f"tgi_cancel_yes:{jid}"),
+                InlineKeyboardButton("🟢 Lanjutkan", callback_data=f"tgi_cancel_no:{jid}"),
+            ]
+        ])
+        await query.message.edit_reply_markup(reply_markup=confirm_kb)
+        return
+
+    if data.startswith("tgi_cancel_no:"):
+        jid = data.split(":", 1)[1]
+        normal_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✖️ Cancel Import", callback_data=f"tgi_cancel_ask:{jid}")]
+        ])
+        await query.message.edit_reply_markup(reply_markup=normal_kb)
+        return
+
+    if data.startswith("tgi_cancel_yes:"):
         jid = int(data.split(":", 1)[1])
         await db.execute(
             "UPDATE tg_import_jobs SET status='cancelled', error='Cancelled by user', updated_at=now_text() WHERE id=?",
