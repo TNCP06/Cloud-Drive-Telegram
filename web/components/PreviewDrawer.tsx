@@ -210,8 +210,6 @@ export function PreviewDrawer({
   // is added so the new language appears in the CC menu without reopening the video.
   const [subsOpen, setSubsOpen] = useState(false);
   const [subsBump, setSubsBump] = useState(0);
-  // High-res stream load tracking for instant thumbnail placeholder swap.
-  const [fullLoadedId, setFullLoadedId] = useState<number | null>(null);
 
   // Reset form when the opened item changes (or when leaving edit mode).
   useEffect(() => {
@@ -398,8 +396,7 @@ export function PreviewDrawer({
     docPartId > 0 &&
     (ft.preview === "pdf" || ft.preview === "text" || ft.preview === "word" || ft.preview === "sheet");
   const isPdfStage = isDocStage && ft.preview === "pdf";
-  const isImageStage = (!!activePart?.thumb || ft.preview === "image") && !isVideoStage && !isDocStage;
-  const isFullLoaded = activePart?.partId ? fullLoadedId === activePart.partId : true;
+  const isImageStage = !!activePart?.thumb && !isVideoStage && !isDocStage;
 
   // Prefetch adjacent photos (+1 and -1 in album, and neighboring nav files) for instant navigation
   useEffect(() => {
@@ -710,58 +707,24 @@ export function PreviewDrawer({
                   onDownload={onDownload}
                 />
               ) : isImageStage ? (
-                <>
-                  {activePart?.thumb && (
-                    <img
-                      src={activePart.thumb}
-                      alt=""
-                      aria-hidden="true"
-                      className={rotation % 180 ? "is-quarter-turn" : undefined}
-                      style={{
-                        position: "absolute",
-                        transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s}) rotate(${rotation}deg)`,
-                        transition: smooth ? "transform .2s ease, opacity .2s ease" : "opacity .2s ease",
-                        filter: isFullLoaded ? "none" : "blur(2px)",
-                        opacity: isFullLoaded ? 0 : 1,
-                        pointerEvents: "none",
-                      }}
-                    />
-                  )}
-                  {activePart?.partId ? (
-                    <img
-                      key={activePart.partId}
-                      src={`/api/stream/${activePart.partId}`}
-                      alt={item.name}
-                      onLoad={() => setFullLoadedId(activePart.partId)}
-                      onError={(e) => {
-                        const target = e.currentTarget as HTMLImageElement;
-                        if (activePart?.thumb && target.src !== activePart.thumb) {
-                          target.src = activePart.thumb;
-                        }
-                      }}
-                      className={rotation % 180 ? "is-quarter-turn" : undefined}
-                      style={{
-                        position: activePart.thumb ? "relative" : "static",
-                        zIndex: 2,
-                        opacity: isFullLoaded || !activePart.thumb ? 1 : 0,
-                        transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s}) rotate(${rotation}deg)`,
-                        transition: smooth ? "transform .2s ease, opacity .2s ease" : "opacity .2s ease",
-                      }}
-                    />
-                  ) : (
-                    activePart?.thumb && (
-                      <img
-                        src={activePart.thumb}
-                        alt={item.name}
-                        className={rotation % 180 ? "is-quarter-turn" : undefined}
-                        style={{
-                          transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s}) rotate(${rotation}deg)`,
-                          transition: smooth ? "transform .2s ease" : "none",
-                        }}
-                      />
-                    )
-                  )}
-                </>
+                <img
+                  src={activePart?.partId ? `/api/stream/${activePart.partId}` : activePart!.thumb!}
+                  alt={item.name}
+                  onError={(e) => {
+                    // Fallback to thumbnail if stream fails
+                    const target = e.currentTarget as HTMLImageElement;
+                    if (activePart?.thumb && target.src !== activePart.thumb) {
+                      target.src = activePart.thumb;
+                    }
+                  }}
+                  // A quarter turn swaps the fit axis (see .is-quarter-turn) so the rotated photo
+                  // refills the stage instead of keeping its portrait footprint and overflowing.
+                  className={rotation % 180 ? "is-quarter-turn" : undefined}
+                  style={{
+                    transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s}) rotate(${rotation}deg)`,
+                    transition: smooth ? "transform .2s ease" : "none",
+                  }}
+                />
               ) : (
                 <Icon name={ft.icon} size={120} stroke={1.2} style={{ color: ft.tint }} />
               )}
