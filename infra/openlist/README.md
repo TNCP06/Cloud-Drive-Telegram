@@ -144,7 +144,7 @@ Then in Telegram: `/baidu_ls` to browse, `/baidu <path>` to download.
 - **Reverse-engineered drivers.** OpenList's Chinese-drive drivers track undocumented web APIs and
   can break when a provider changes theirs; a driver fix means updating the `openlistteam/openlist`
   image.
-- **Large non-media files are split.** Files > 2 GB that aren't streamable media are uploaded as
+- **Large non-media files are split.** Files > 2000 MiB that aren't streamable media are uploaded as
   sequential binary parts (`name.001`, `name.002`, …), one logical item with N parts. Download all
   parts in order and reassemble with a plain concatenation:
 
@@ -153,4 +153,6 @@ Then in Telegram: `/baidu_ls` to browse, `/baidu <path>` to download.
   copy /b name.001+name.002+name.003 name       # Windows
   ```
 
-  Media files > 2 GB are **rejected** instead (a binary-split video can't be streamed or played).
+- **Large videos are segmented.** Videos > 2000 MiB are cut by ffmpeg into independently playable,
+  keyframe-aligned segments below Telegram's per-file limit. They remain one logical item with
+  multiple parts and can be streamed in the dashboard.

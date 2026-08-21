@@ -17,7 +17,7 @@ Files are stored as messages in a private Telegram channel (free, no size cap fo
 - **Optimistic web dashboard** — grid/list browse, search, favorites, trash + restore, folders, tag library, **light & dark mode**. Rename / star / move / trash / create-folder update instantly (optimistic UI), reconciling with the server in the background.
 - **Daily database backups to Telegram** — every night the bot `pg_dump`s the metadata DB, gzips it, and uploads it to the channel, auto-indexed in the dashboard under **Backup → CDT DB** (dated filename, history kept).
 - **Upload from anywhere** — resumable browser upload (single file, **multiple files, or a whole folder**), Bot Drop via PM, or a host-path picker in laptop mode. Folders are recreated as nested folders in the app.
-- **PikPak remote-download** — from Telegram, pull a file off a PikPak (rclone) remote onto the server and feed it into the normal upload pipeline. Browse & download entirely by **inline buttons** (`/menu` → ☁️ PikPak), or type `/pikpak <path>`; live download `%` in the bot chat, `/pikpak_ls` to browse, `/pikpak_jobs` to track. Lands in a `pikpak/` folder mirroring the remote path. Oversized files (> 2 GB) are rejected up front — no splitting.
+- **Remote-download** — from Telegram, pull files from PikPak or configured OpenList/WebDAV drives onto the server and feed them into the normal upload pipeline. Browse and download with inline buttons (`/menu` → **Cloud Drives**), or use the drive command; progress is tracked in the bot chat and recent jobs view. Files land in a drive-named folder mirroring the remote path. Oversized videos are segmented into playable parts; other oversized files are binary-split below Telegram's per-file limit.
 - **YouTube-style video streaming** — HTTP range streaming with a disk cache; with a local Bot API server it bypasses Telegram's download throttle.
 - **Background video compression** — first view streams the original instantly while a background job transcodes a smaller, same-resolution H.264 copy; later views serve the compressed one to save bandwidth.
 - **WebP thumbnails**, **case-insensitive tags**, soft-delete with a 7-day purge, and shared-password auth.
@@ -88,7 +88,7 @@ cd cloud-drive
 setup.bat
 ```
 
-`setup.bat` installs Python + web dependencies, creates `bot/.env` and `web/.env.local` (opens them in Notepad to fill in), asks MVP vs full (writes `VIDEO_COMPRESS` / `SUBTITLE_GEN` into `bot/.env`; `setup.bat --mvp|--full` skips the question), runs the Telethon logins, and points you at a local/remote PostgreSQL (`DATABASE_URL`). Then start:
+`setup.bat` installs Python + web dependencies, creates `bot/.env` and `web/.env.local` (opens them in Notepad to fill in), asks MVP vs full (writes the streamer feature flags into `bot/.env`; `setup.bat --mvp|--full` skips the question), applies the PostgreSQL schema, runs the Telethon logins, and points you at a local/remote PostgreSQL (`DATABASE_URL`). Then start:
 
 ```bat
 bot\run-all.cmd            REM bot + watcher + streamer (minimized)

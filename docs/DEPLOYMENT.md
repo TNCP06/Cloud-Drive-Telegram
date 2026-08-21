@@ -18,12 +18,13 @@ browser. It's written for anyone deploying their own copy — not just the origi
 | `telegram-bot-api` | 8081 (internal) | Local Telegram Bot API server in `--local` mode → bypasses the 3 Mbps download throttle; shares a data volume with bot/web/streamer |
 | `bot` | — | Indexes channel posts, serves downloads (`copy_message`), Bot Drop, daily purge, PikPak remote-download (`/pikpak` via rclone → upload queue) |
 | `watcher` | — | Runs `index_history.py` (back-fill) then `watcher.py` (executes the upload queue via MTProto) |
-| `streamer` | 8080 (internal) | Range-streams video; background H.264 compression to a persistent volume |
+| `streamer` | 8080 (internal) | Range-streams media; background H.264 compression, subtitles, posters, and seek previews |
 
-**Volumes:** `pgdata` (**persistent** PostgreSQL data), `staging` (browser uploads + PikPak
+**Volumes:** `pgdata` (**persistent** PostgreSQL data), `staging` (browser uploads + remote/import/unpack
 downloads, shared by web/watcher/**bot**), `cache` (expendable video chunks), `compressed`
-(**persistent** compressed videos), `telegram-bot-api-data` (local Bot API files, shared by
-bot/web/streamer). The `bot` also bind-mounts the host `rclone.conf` (`RCLONE_CONFIG_DIR`) for the
+(**persistent** compressed videos), `subtitles` (persistent WebVTT tracks), `seekpreviews` (persistent
+seek-preview sprites), and `telegram-bot-api-data` (local Bot API files, shared by bot/web/streamer).
+The `bot` also bind-mounts the host `rclone.conf` (`RCLONE_CONFIG_DIR`) for the
 optional PikPak feature. File bytes live in
 Telegram; the only user-critical disk state is `pgdata`, which the bot **backs up daily to Telegram**
 (folder Backup → CDT DB) — so the VPS stays effectively disposable.

@@ -35,6 +35,8 @@ if errorlevel 1 (
   echo [X] Node.js not found. Install Node 18+ from https://nodejs.org and re-run.
   pause & exit /b 1
 )
+for /f "tokens=1" %%v in ('node --version') do set "NODE_VERSION=%%v"
+echo [ok] Node.js !NODE_VERSION! found. Node 20 LTS is recommended.
 where npm >nul 2>&1
 if errorlevel 1 (
   echo [X] npm not found (comes with Node.js). Re-install Node and re-run.
@@ -59,13 +61,21 @@ echo [ok] Python dependencies installed.
 
 REM --- 2. Env files ---------------------------------------------------------
 if not exist bot\.env (
+  if not exist bot\.env.example (
+    echo [X] bot\.env.example is missing. Run this script from a complete repository checkout.
+    pause & exit /b 1
+  )
   copy /y bot\.env.example bot\.env >nul
   echo [!] Created bot\.env - FILL IN the values (BOT_TOKEN, TG_API_ID/HASH, STORAGE_CHANNEL_ID, OWNER_USER_ID, DATABASE_URL).
   set NEED_EDIT=1
 )
 if not exist web\.env.local (
+  if not exist web\.env.local.example (
+    echo [X] web\.env.local.example is missing. Run this script from a complete repository checkout.
+    pause & exit /b 1
+  )
   copy /y web\.env.local.example web\.env.local >nul
-  echo [!] Created web\.env.local - FILL IN the values (DATABASE_URL, NEXT_PUBLIC_BOT_USERNAME, BOT_TOKEN, STORAGE_CHANNEL_ID).
+  echo [!] Created web\.env.local - FILL IN the values (DATABASE_URL, NEXT_PUBLIC_BOT_USERNAME, BOT_TOKEN, STORAGE_CHANNEL_ID, OWNER_USER_ID).
   set NEED_EDIT=1
 )
 if defined NEED_EDIT (
@@ -136,6 +146,10 @@ call :setflag SUBTITLE_GEN 0
 
 REM --- 3. Telethon logins (one-time) ---------------------------------------
 echo.
+if exist bot\worker.session\NUL (
+  echo [X] bot\worker.session is a directory. Remove it and re-run setup.
+  pause & exit /b 1
+)
 if not exist bot\worker.session (
   echo --^> Telethon login for the WATCHER (phone + code; 2FA if enabled)...
   pushd bot
@@ -145,6 +159,10 @@ if not exist bot\worker.session (
   if not "!RC!"=="0" ( echo [X] Telethon login for the watcher failed. & pause & exit /b 1 )
 ) else (
   echo [ok] bot\worker.session already exists.
+)
+if exist bot\streamer.session\NUL (
+  echo [X] bot\streamer.session is a directory. Remove it and re-run setup.
+  pause & exit /b 1
 )
 if not exist bot\streamer.session (
   echo --^> Telethon login for the STREAMER...

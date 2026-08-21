@@ -153,7 +153,7 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    (auth/not-found) or give-up → job `failed`, **staging wiped**.
 4. **Handoff**: on success the worker inserts an `upload_jobs` row — `origin='upload'`,
    `cleanup_source=1`, `status='pending'`, `title='<drive folder>/<remote subdirs>/<name>'`. The
-   **`part_size`** encodes the split policy: media / non-media ≤ 2 GB → `4096` (single part,
+    **`part_size`** encodes the split policy: media / non-media ≤ 2000 MiB → `4096` (single part,
    unchanged); non-media > 2 GB → **`DRIVE_SPLIT_PART_MB`** (default 1900) so the **watcher**
    raw-splits it into sequential binary parts `<name>.001`, `.002`, … (Flow A2 "stream" split) —
    one logical `item`, N `parts` rows. Reassemble by ordered `cat`. A **video > 2 GB ignores
@@ -304,7 +304,7 @@ Triggered by any new `channel_post` in `STORAGE_CHANNEL_ID` ([`bot/bot.py`](../b
    - Match → index.
    - No match **and** `media` → `derive_media_meta()`, index anyway.
    - No match **and** `archive` → `warn_owner()` DM, **do not index**.
-3. Compute `slug` + `part_number` (see kind table in ARCHITECTURE §5).
+3. Compute `slug` + `part_number` (see the invariants in [`ARCHITECTURE.md`](./ARCHITECTURE.md)).
 4. `upsert_item` (resolves folders recursively and extracts the final title segment if the title has a `/` path, e.g., "Movies/Sci-Fi/Inception" creates "Movies" -> "Sci-Fi" folders and saves the item with title "Inception" under the "Sci-Fi" folder ID) → `upsert_part` (keyed on `channel_msg_id`, which deletes the old item if it becomes an orphan after part reassignment) → `recompute_totals` →
    `sync_tags` → (media) `harvest_thumbnail`. All idempotent.
 5. `set_title=has_caption` guards title overwrites: a captionless media member won't overwrite
@@ -550,7 +550,8 @@ A parallel drive distinguished by `items.is_private` / `folders.is_private` (def
 
 ## G. Tag / category management (web, pure Postgres)
 
-All in [`web/app/actions.ts`](../web/app/actions.ts), no Telegram involved:
+All in the web action modules under [`web/app/actions/`](../web/app/actions/), re-exported by
+[`web/app/actions.ts`](../web/app/actions.ts); no Telegram is involved:
 
 - `listTags` / `createTag` / `recolorTag` / `deleteTag`.
 - `renameTag` is merge-aware: renaming onto an existing name re-points `item_tags` to the

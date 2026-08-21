@@ -46,18 +46,16 @@ Three files know the demo exists, and that is the whole surface:
    [`middleware.ts`](../web/middleware.ts) disables the login gate, which is what a public demo
    wants.
 
-3. **Skip rebuilds for backend-only commits.** Already committed — [`web/vercel.json`](../web/vercel.json):
+3. **Optionally skip rebuilds for backend-only commits.** In Vercel's project settings, set Root
+   Directory to `web` and the Ignored Build Step to:
 
-   ```json
-   { "ignoreCommand": "git diff --quiet HEAD^ HEAD -- ." }
+   ```bash
+   git diff --quiet HEAD^ HEAD -- .
    ```
 
-   It runs from the Root Directory (`web/`), so it exits 0 — "skip this build" — whenever a commit
-   touched nothing under `web/`. A change to `bot/`, `docs/` or compose costs zero deploys. (The
-   dashboard equivalent is *Settings → Build and Deployment → Ignored Build Step*; Vercel has moved
-   it between sections over time, which is the other reason to keep it in the repo.) On a first
-   deploy `HEAD^` may not resolve — the command then exits non-zero and the build runs, which is the
-   behaviour you want.
+   Because the command runs from the `web/` root, it exits 0 (skip this build) when a commit touched
+   nothing under `web/`. A change limited to `bot/`, `docs/`, or Compose then costs zero deploys.
+   On a first deploy `HEAD^` may not resolve; the command fails and the build runs, which is correct.
 
 That's it. No demo branch to keep in sync, no cherry-picking UI fixes into a fork that quietly
 rots.
