@@ -289,7 +289,12 @@ export function DriveApp({
      update). The connection itself is network-resilient — see lib/useLiveRefresh. */
   const pendingRef = useRef(isPending);
   pendingRef.current = isPending;
-  useLiveRefresh("drive", { debounceMs: 400, canRefresh: () => !pendingRef.current });
+  // Preview navigation is entirely client-side. Defer live RSC refreshes while the drawer is open,
+  // otherwise an unrelated NOTIFY/focus event can re-request the page data during photo switching.
+  useLiveRefresh("drive", {
+    debounceMs: 400,
+    canRefresh: () => !pendingRef.current && previewId == null,
+  });
 
   const menuClosedTimeRef = useRef<number>(0);
   const previewClosedTimeRef = useRef<number>(0);

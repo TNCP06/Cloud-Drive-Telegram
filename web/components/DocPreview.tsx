@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/lib/icons";
 import type { FileType } from "@/lib/fileType";
 import { fmtSize } from "@/lib/format";
+import { getCachedDocument, loadCachedDocument } from "@/lib/preview-cache";
 
 // Inline document preview for single-part files. PDFs render in a native <iframe>;
 // text/code is fetched and shown as <pre>; Word (.docx) is converted to HTML with
@@ -16,10 +17,9 @@ const MAX_OFFICE_BYTES = 30 * 1024 * 1024; // 30 MB
 
 // Range bytes=0- forces the streamer to return the WHOLE file in both serving modes
 // (a plain GET returns only the first chunk in Telethon-fallback mode).
-async function fetchPart(partId: number, signal: AbortSignal): Promise<Response> {
+async function fetchPart(partId: number): Promise<Response> {
   const resp = await fetch(`/api/stream/${partId}`, {
     headers: { Range: "bytes=0-" },
-    signal,
   });
   if (!resp.ok && resp.status !== 206) {
     throw new Error(`Failed to load file (HTTP ${resp.status}).`);
@@ -118,8 +118,9 @@ function TextPreview({
   ft: FileType;
   onDownload?: () => void;
 }) {
-  const [state, setState] = useState<{ text?: string; error?: string; loading: boolean }>({
-    loading: true,
+  const [state, setState] = useState<{ text?: string; error?: string; loading: boolean }>(() => {
+    const text = getCachedDocument<string>("text", partId);
+    return text === undefined ? { loading: true } : { text, loading: false };
   });
   const [showAll, setShowAll] = useState(false);
 
@@ -128,16 +129,18 @@ function TextPreview({
       setState({ loading: false });
       return;
     }
-    const controller = new AbortController();
     let alive = true;
+    const cached = getCachedDocument<string>("text", partId);
+    if (cached !== undefined) {
+      setState({ text: cached, loading: false });
+      return () => { alive = false; };
+    }
     setState({ loading: true });
-    fetchPart(partId, controller.signal)
-      .then((r) => r.text())
+    loadCachedDocument("text", partId, () => fetchPart(partId).then((r) => r.text()))
       .then((text) => alive && setState({ text, loading: false }))
       .catch((e) => alive && e.name !== "AbortError" && setState({ error: String(e.message ?? e), loading: false }));
     return () => {
       alive = false;
-      controller.abort();
     };
   }, [partId, size]);
 
@@ -181,8 +184,9 @@ function WordPreview({
   ft: FileType;
   onDownload?: () => void;
 }) {
-  const [state, setState] = useState<{ html?: string; error?: string; loading: boolean }>({
-    loading: true,
+  const [state, setState] = useState<{ html?: string; error?: string; loading: boolean }>(() => {
+    const html = getCachedDocument<string>("word", partId);
+    return html === undefined ? { loading: true } : { html, loading: false };
   });
 
   useEffect(() => {
@@ -190,25 +194,23 @@ function WordPreview({
       setState({ loading: false });
       return;
     }
-    const controller = new AbortController();
     let alive = true;
+    const cached = getCachedDocument<string>("word", partId);
+    if (cached !== undefined) {
+      setState({ html: cached, loading: false });
+      return () => { alive = false; };
+    }
     setState({ loading: true });
-    (async () => {
-      try {
-        const resp = await fetchPart(partId, controller.signal);
-        const buf = await resp.arrayBuffer();
-        const mammoth = await import("mammoth/mammoth.browser.js");
-        const result = await mammoth.convertToHtml({ arrayBuffer: buf });
-        if (alive) setState({ html: result.value || "<p><em>Empty document.</em></p>", loading: false });
-      } catch (e) {
-        if (alive && !(e instanceof DOMException && e.name === "AbortError")) {
-          setState({ error: e instanceof Error ? e.message : String(e), loading: false });
-        }
-      }
-    })();
+    loadCachedDocument("word", partId, async () => {
+      const resp = await fetchPart(partId);
+      const buf = await resp.arrayBuffer();
+      const mammoth = await import("mammoth/mammoth.browser.js");
+      const result = await mammoth.convertToHtml({ arrayBuffer: buf });
+      return result.value || "<p><em>Empty document.</em></p>";
+    }).then((html) => alive && setState({ html, loading: false }))
+      .catch((e) => alive && setState({ error: e instanceof Error ? e.message : String(e), loading: false }));
     return () => {
       alive = false;
-      controller.abort();
     };
   }, [partId, size]);
 
@@ -242,7 +244,10 @@ function SheetPreview({
     sheets?: { name: string; html: string }[];
     error?: string;
     loading: boolean;
-  }>({ loading: true });
+  }>(() => {
+    const sheets = getCachedDocument<{ name: string; html: string }[]>("sheet", partId);
+    return sheets === undefined ? { loading: true } : { sheets, loading: false };
+  });
   const [active, setActive] = useState(0);
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -251,29 +256,26 @@ function SheetPreview({
       setState({ loading: false });
       return;
     }
-    const controller = new AbortController();
     let alive = true;
+    const cached = getCachedDocument<{ name: string; html: string }[]>("sheet", partId);
+    if (cached !== undefined) {
+      setState({ sheets: cached, loading: false });
+      return () => { alive = false; };
+    }
     setState({ loading: true });
-    (async () => {
-      try {
-        const resp = await fetchPart(partId, controller.signal);
-        const buf = await resp.arrayBuffer();
-        const XLSX = await import("xlsx");
-        const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
-        const sheets = wb.SheetNames.map((name) => ({
-          name,
-          html: XLSX.utils.sheet_to_html(wb.Sheets[name], { id: "" }),
-        }));
-        if (alive) setState({ sheets, loading: false });
-      } catch (e) {
-        if (alive && !(e instanceof DOMException && e.name === "AbortError")) {
-          setState({ error: e instanceof Error ? e.message : String(e), loading: false });
-        }
-      }
-    })();
+    loadCachedDocument("sheet", partId, async () => {
+      const resp = await fetchPart(partId);
+      const buf = await resp.arrayBuffer();
+      const XLSX = await import("xlsx");
+      const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+      return wb.SheetNames.map((name) => ({
+        name,
+        html: XLSX.utils.sheet_to_html(wb.Sheets[name], { id: "" }),
+      }));
+    }).then((sheets) => alive && setState({ sheets, loading: false }))
+      .catch((e) => alive && setState({ error: e instanceof Error ? e.message : String(e), loading: false }));
     return () => {
       alive = false;
-      controller.abort();
     };
   }, [partId, size]);
 

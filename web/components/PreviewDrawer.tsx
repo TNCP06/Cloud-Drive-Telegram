@@ -8,6 +8,7 @@ import { KINDS, TAG_COLORS } from "@/lib/kinds";
 import { fileTypeFor } from "@/lib/fileType";
 import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import { getCachedGallery, loadGallery } from "@/lib/gallery-cache";
+import { getCachedPreviewSrc, loadPreviewImage } from "@/lib/preview-cache";
 import { TagPicker } from "./TagPicker";
 import { VideoPlayer } from "./VideoPlayer";
 import { DocPreview } from "./DocPreview";
@@ -406,25 +407,19 @@ export function PreviewDrawer({
       setLoadedStreamSrc(null);
       return;
     }
-    const streamUrl = `/api/stream/${activePart.partId}`;
-    let cancelled = false;
+    const cached = getCachedPreviewSrc(activePart.partId);
+    if (cached) {
+      setLoadedStreamSrc(cached);
+      return;
+    }
+    let active = true;
     setLoadedStreamSrc(null);
-
-    const img = new window.Image();
-    img.src = streamUrl;
-    img.onload = () => {
-      if (!cancelled) setLoadedStreamSrc(streamUrl);
-    };
-    img.onerror = () => {
-      if (!cancelled) setLoadedStreamSrc(null);
-    };
+    loadPreviewImage(activePart.partId)
+      .then((src) => active && setLoadedStreamSrc(src))
+      .catch(() => active && setLoadedStreamSrc(null));
 
     return () => {
-      cancelled = true;
-      // Detach the source so a rapid part switch stops the old image download.
-      img.src = "";
-      img.onload = null;
-      img.onerror = null;
+      active = false;
     };
   }, [activePart?.partId, isImageStage, detailsOnly]);
 
