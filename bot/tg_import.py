@@ -558,7 +558,7 @@ async def _process(client, db, job):
             f"<i>Sedang diproses oleh watcher (upload/segmentasi jika &gt;2GB)…</i>"
         )
 
-        await _track_upload_jobs(db, jid, upload_ids, chat_id, msg_id, title, total_batch_size, tags, dst_dir)
+        asyncio.create_task(_track_upload_jobs(db, jid, upload_ids, chat_id, msg_id, title, total_batch_size, tags, dst_dir))
 
     except (asyncio.CancelledError, TgImportError) as e:
         shutil.rmtree(dst_dir, ignore_errors=True)

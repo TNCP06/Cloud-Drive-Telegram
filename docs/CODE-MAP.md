@@ -29,13 +29,13 @@ extension-based type detection can distinguish them from photos, which legitimat
 file name), `derive_media_meta` (media caption fallback),
 `pick_thumb_file_id`, `encode_thumbnail`/`encode_thumbnail_async` (raw image bytes → compact **WebP** base64 via
 Pillow, downscaled to `THUMB_MAX_EDGE` px on the long edge first — a photo's source is the
-full-size image, which the drawer also shows as the preview — JPEG passthrough fallback), `human_size` (byte formatting), `format_eta` (ETA formatting). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
+full-size image, which the drawer also shows as the preview — JPEG passthrough fallback), `human_size` (byte formatting), `format_eta` (ETA formatting), `VIDEO_EXTS`/`IMAGE_EXTS`/`AUDIO_EXTS`/`MEDIA_EXTS` (canonical extension sets — all modules import from here). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
 Postgres ops (`db_ops.py`, idempotent): `resolve_folders` (`A/B/C` title path → folder id; prefers a
 live folder over a trashed one of the same name and revives the one it indexes into; a new subfolder
 inherits the parent's `is_private`), `tombstone_messages` (record purged `channel_msg_id`s in
 `purged_messages` → blocks re-indexing, queues the watcher's delete), `upsert_item` (`set_title` guard;
 preserves user-modified metadata on conflict; a new item inherits its folder's `is_private`), `upsert_part` (keyed on
-`channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**: reuses an existing tag that differs only in capitalization),
+`channel_msg_id`, cleans up orphan items if a part is reassigned), `recompute_totals`, `sync_tags` (**case-insensitive**, batch-optimized: uses `ANY(CAST(? AS text[]))` + `unnest` to reduce N+1 loops to 3 queries total),
 `sync_album_tags` (keeps tags identical across the individual items split from one media album — slug prefix `m<media_group_id>-`),
 `split_media_albums` (one-shot migration: splits any pre-existing multi-part **media** item into N single-part items, preserving tags/folder/privacy/favorite + per-part thumbnails; run from `post_init`, marker-guarded), `upsert_thumbnail`, `is_user_authorized`.
 `index_bot_copy` (`indexing.py`): indexes a channel post the **bot created itself** (`copy_message`/`copy_messages`)

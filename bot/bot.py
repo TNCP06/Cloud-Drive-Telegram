@@ -208,14 +208,7 @@ async def purge_job(context: ContextTypes.DEFAULT_TYPE):
             # Tombstone either way: index_history.py must never re-index a purged message.
             await tombstone_messages(db, [row[0]], tg_deleted=deleted)
             await asyncio.sleep(0.2)
-        # Explicit hard delete (not relying on PRAGMA foreign_keys).
-        # thumbnails has a FK to parts → delete thumbnails first.
-        await db.execute(
-            "DELETE FROM thumbnails WHERE part_id IN (SELECT id FROM parts WHERE item_id = ?)",
-            [item_id],
-        )
-        await db.execute("DELETE FROM parts WHERE item_id = ?", [item_id])
-        await db.execute("DELETE FROM item_tags WHERE item_id = ?", [item_id])
+        # PostgreSQL cascades: items → parts → thumbnails, items → item_tags.
         await db.execute("DELETE FROM items WHERE id = ?", [item_id])
         purged += 1
 

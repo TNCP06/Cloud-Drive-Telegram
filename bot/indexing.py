@@ -19,6 +19,8 @@ from tg_helpers import (
     encode_thumbnail,
     encode_thumbnail_async,
     slugify,
+    VIDEO_EXTS,
+    IMAGE_EXTS,
 )
 from db_ops import (
     upsert_item,
@@ -32,10 +34,7 @@ from db_ops import (
 
 # Extensions Telegram can produce a thumbnail for. Anything else indexed as kind='media'
 # (e.g. a .srt subtitle uploaded with the web uploader's default kind) can never yield one.
-THUMBNAILABLE_EXTS = {
-    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp", ".mpg", ".mpeg",
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic",
-}
+THUMBNAILABLE_EXTS = VIDEO_EXTS | IMAGE_EXTS
 
 
 async def _mark_thumb_missing(db, part_id: int, *, force: bool = False) -> None:

@@ -195,21 +195,43 @@ async def sync_tags(db, item_id, tags):
     Case-insensitive: a tag that differs from an existing one only in capitalization
     reuses that tag instead of creating a duplicate (e.g. "game" → existing "Game").
     """
+    valid_names = {}
     for name in tags:
-        name = (name or "").strip()
-        if not name:
-            continue
-        rs = await db.execute("SELECT id FROM tags WHERE lower(name) = lower(?)", [name])
-        if rs.rows:
-            tag_id = rs.rows[0][0]
-        else:
-            await db.execute("INSERT INTO tags (name) VALUES (?)", [name])
-            rs = await db.execute("SELECT id FROM tags WHERE name = ?", [name])
-            tag_id = rs.rows[0][0]
+        n = (name or "").strip()
+        if n:
+            lower_n = n.lower()
+            if lower_n not in valid_names:
+                valid_names[lower_n] = n
+                
+    if not valid_names:
+        return
+        
+    lower_tags = list(valid_names.keys())
+    
+    # 1. Fetch existing tags to prevent inserting case variants.
+    # The DB UNIQUE constraint is on `name`, not `lower(name)`.
+    rs = await db.execute(
+        "SELECT lower(name) FROM tags WHERE lower(name) = ANY(CAST(? AS text[]))",
+        [lower_tags]
+    )
+    existing_lower = {r[0] for r in rs.rows}
+    
+    new_tags = [name for lower_name, name in valid_names.items() if lower_name not in existing_lower]
+    
+    # 2. Batch insert new tags
+    if new_tags:
         await db.execute(
-            "INSERT INTO item_tags (item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-            [item_id, tag_id],
+            "INSERT INTO tags (name) SELECT unnest(CAST(? AS text[])) ON CONFLICT DO NOTHING",
+            [new_tags]
         )
+        
+    # 3. Batch link all tags to the item
+    await db.execute(
+        "INSERT INTO item_tags (item_id, tag_id) "
+        "SELECT ?, id FROM tags WHERE lower(name) = ANY(CAST(? AS text[])) "
+        "ON CONFLICT DO NOTHING",
+        [item_id, lower_tags]
+    )
 
 
 async def sync_album_tags(db, mgid, parsed_tags):

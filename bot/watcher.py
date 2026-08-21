@@ -201,8 +201,10 @@ async def _store_thumbnails(db, thumb_b64: str, thumb_mime: str, channel_msg_ids
 # ---------------------------------------------------------------------------
 async def claim_next(db):
     rs = await db.execute(
-        "SELECT id, kind, title, tags, source_path, part_size, origin, cleanup_source, parts_done "
-        "FROM upload_jobs WHERE status='pending' ORDER BY id LIMIT 1"
+        "UPDATE upload_jobs SET status='running', message='starting...', "
+        "updated_at=now_text() "
+        "WHERE id = (SELECT id FROM upload_jobs WHERE status='pending' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
+        "RETURNING id, kind, title, tags, source_path, part_size, origin, cleanup_source, parts_done"
     )
     if not rs.rows:
         return None
@@ -212,12 +214,6 @@ async def claim_next(db):
         "tags": r[3], "path": r[4], "part_size": r[5],
         "origin": r[6] or "local", "cleanup_source": r[7] or 0, "parts_done": r[8] or 0,
     }
-    # Keep parts_done so a retried/resumed job continues from its checkpoint.
-    await db.execute(
-        "UPDATE upload_jobs SET status='running', message='starting...', "
-        "updated_at=now_text() WHERE id=? AND status='pending'",
-        [job["id"]],
-    )
     return job
 
 
@@ -753,6 +749,20 @@ async def process(client, db, channel, job):
             pass
         await set_status(db, jid, "error", str(e)[:300])
         print(f"  ✗ Job #{jid} failed: {e}")
+    finally:
+        if temp_parts:
+            for p in temp_parts:
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except OSError:
+                    pass
+        if source_dir_to_delete:
+            try:
+                if os.path.exists(source_dir_to_delete):
+                    shutil.rmtree(source_dir_to_delete, ignore_errors=True)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -778,10 +788,10 @@ async def purge_worker(client, channel, db, interval: int = 30):
     the deletion with the account that posted it.
     """
     from db_ops import ensure_purge_schema
+    await ensure_purge_schema(db)
 
     while True:
         try:
-            await ensure_purge_schema(db)
             rs = await db.execute(
                 "SELECT channel_msg_id FROM purged_messages WHERE tg_deleted = 0 "
                 "ORDER BY channel_msg_id LIMIT 100"
@@ -821,25 +831,28 @@ async def purge_worker(client, channel, db, interval: int = 30):
 
 async def main():
     db = create_client()
-    async with TelegramClient(SESSION, API_ID, API_HASH) as client:
-        channel = await resolve_channel(client)
-        print(f"Watcher ready. Channel: {getattr(channel, 'title', channel)}")
-        print(f"Split output: {OUT_DIR}")
-        # Archive-unpack worker shares this process's Telethon client + p7zip.
-        await unpack.ensure_schema(db)
-        asyncio.create_task(unpack.worker_loop(client, channel, db))
-        # Telegram-link-import worker shares this process's Telethon client (worker.session).
-        await tg_import.ensure_schema(db)
-        asyncio.create_task(tg_import.worker_loop(client, db))
-        # Finishes purges the bot is not allowed to make (see purge_worker).
-        asyncio.create_task(purge_worker(client, channel, db))
-        print("Polling upload_jobs… (Ctrl+C to stop)")
-        while True:
-            job = await claim_next(db)
-            if job:
-                await process(client, db, channel, job)
-            else:
-                await asyncio.sleep(POLL_INTERVAL)
+    try:
+        async with TelegramClient(SESSION, API_ID, API_HASH) as client:
+            channel = await resolve_channel(client)
+            print(f"Watcher ready. Channel: {getattr(channel, 'title', channel)}")
+            print(f"Split output: {OUT_DIR}")
+            # Archive-unpack worker shares this process's Telethon client + p7zip.
+            await unpack.ensure_schema(db)
+            asyncio.create_task(unpack.worker_loop(client, channel, db))
+            # Telegram-link-import worker shares this process's Telethon client (worker.session).
+            await tg_import.ensure_schema(db)
+            asyncio.create_task(tg_import.worker_loop(client, db))
+            # Finishes purges the bot is not allowed to make (see purge_worker).
+            asyncio.create_task(purge_worker(client, channel, db))
+            print("Polling upload_jobs… (Ctrl+C to stop)")
+            while True:
+                job = await claim_next(db)
+                if job:
+                    await process(client, db, channel, job)
+                else:
+                    await asyncio.sleep(POLL_INTERVAL)
+    finally:
+        await db.close()
 
 
 if __name__ == "__main__":
