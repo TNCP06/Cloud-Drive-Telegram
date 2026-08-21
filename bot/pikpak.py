@@ -49,6 +49,7 @@ from bot_config import (
     log,
 )
 from db_ops import is_user_authorized
+from tg_helpers import human_size, format_eta as _fmt_eta, MEDIA_EXTS as _MEDIA_EXTS
 
 UNPACK_STAGING = os.path.join(os.path.dirname(PIKPAK_STAGING_DIR), "_unpack")
 
@@ -72,13 +73,6 @@ _LOG_PREFIX = re.compile(r"^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\s+\S+\s*:\s*")
 _STATUS_ICON = {
     "queued": "🕒", "downloading": "⬇️", "downloaded": "📦",
     "uploading": "⬆️", "done": "✅", "failed": "❌", "paused": "⏸",
-}
-# media kind → watcher uploads whole as media (streamable video / photo → thumbnail + preview);
-# everything else → document. The watcher normalises awkward photo formats (e.g. AVIF saved as
-# .jpg) so images keep their thumbnail/preview instead of falling back to a bare document.
-_MEDIA_EXTS = {
-    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp",
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp3", ".m4a", ".flac", ".wav", ".ogg",
 }
 
 
@@ -108,28 +102,8 @@ _PAUSED_KB = InlineKeyboardMarkup([[
 ]])
 
 
-# ---------------------------------------------------------------------------
-# Small helpers
-# ---------------------------------------------------------------------------
-def human_size(n) -> str:
-    n = float(n or 0)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.2f} {unit}"
-        n /= 1024
-
-
 def _is_media(fname: str) -> bool:
     return os.path.splitext(fname)[1].lower() in _MEDIA_EXTS
-
-
-def _fmt_eta(secs: float) -> str:
-    secs = int(secs)
-    if secs >= 3600:
-        return f"{secs // 3600}h {secs % 3600 // 60}m"
-    if secs >= 60:
-        return f"{secs // 60}m {secs % 60}s"
-    return f"{secs}s"
 
 
 def _drive_title(remote_path: str, fname: str, drive: dict) -> str:

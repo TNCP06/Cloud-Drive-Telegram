@@ -17,6 +17,7 @@ from tg_helpers import (
     get_file_id,
     pick_thumb_file_id,
     encode_thumbnail,
+    encode_thumbnail_async,
     slugify,
 )
 from db_ops import (
@@ -141,14 +142,18 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _read_local_file(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
 async def download_file_content(tg_file) -> bytes:
     """Read a local file directly if the path starts with '/' or exists locally,
     otherwise download it to memory (fallback for non-local bot API)."""
     path = tg_file.file_path
     if path and (path.startswith("/") or os.path.exists(path)):
         log.info("Reading local file for thumbnail: %s", path)
-        with open(path, "rb") as f:
-            return f.read()
+        return await asyncio.to_thread(_read_local_file, path)
     else:
         log.info("Downloading file over HTTP (fallback): %s", path)
         buf = io.BytesIO()
@@ -175,7 +180,7 @@ async def harvest_via_forward(bot, db, part_id: int, channel_msg_id: int) -> boo
             return False
         tg_file = await bot.get_file(file_id)
         data_bytes = await download_file_content(tg_file)
-        mime, data_b64 = encode_thumbnail(data_bytes)
+        mime, data_b64 = await encode_thumbnail_async(data_bytes)
         await upsert_thumbnail(db, part_id, mime, data_b64)
         log.info("Thumbnail harvested for part_id=%s (msg %s)", part_id, channel_msg_id)
         return True
@@ -273,7 +278,7 @@ async def harvest_thumbnail(context, db, part_id, message, channel_msg_id=None):
         return
     tg_file = await context.bot.get_file(file_id)
     data_bytes = await download_file_content(tg_file)
-    mime, data_b64 = encode_thumbnail(data_bytes)
+    mime, data_b64 = await encode_thumbnail_async(data_bytes)
     await upsert_thumbnail(db, part_id, mime, data_b64)
 
 

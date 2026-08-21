@@ -41,17 +41,15 @@ import math
 import re
 import os
 import shutil
-import subprocess
 import tempfile
 import time
-
-_VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp"}
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from pg_db import create_client
 
 from bot_config import PIKPAK_MAX_BYTES
+from tg_helpers import VIDEO_EXTS as _VIDEO_EXTS, encode_thumbnail, encode_thumbnail_async
 import tg_botapi_upload as botapi
 import tg_import
 import unpack
@@ -69,6 +67,33 @@ POLL_INTERVAL = 5
 # (Telegram's ~2 GB cap): the segment muxer can only cut on a keyframe, so a real segment
 # always lands a little above the target. Tune it here if your keyframe interval is huge.
 VIDEO_SEGMENT_MB = int(os.environ.get("VIDEO_SEGMENT_MB", 1800))
+
+
+async def _run_proc(cmd: list[str], timeout: float | None = None) -> tuple[int, str, str]:
+    """Run an external process asynchronously to avoid blocking the Telethon event loop."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await (
+            asyncio.wait_for(proc.communicate(), timeout=timeout)
+            if timeout
+            else proc.communicate()
+        )
+        return (
+            proc.returncode or 0,
+            stdout_bytes.decode("utf-8", errors="replace"),
+            stderr_bytes.decode("utf-8", errors="replace"),
+        )
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        await proc.wait()
+        raise TimeoutError(f"Command timed out after {timeout}s: {' '.join(cmd)}")
 
 
 # ---------------------------------------------------------------------------
@@ -130,43 +155,22 @@ def _volume_no(path: str) -> "int | None":
     return int(m.group(1)) if m else None
 
 
-def make_video_thumbnail(path: str) -> "str | None":
+async def make_video_thumbnail(path: str) -> "str | None":
     """Extract a frame at 1 s via ffmpeg. Returns temp JPEG path, or None if unavailable/failed."""
     if os.path.splitext(path)[1].lower() not in _VIDEO_EXTS:
         return None
+    thumb_path = path + ".thumb.jpg"
     try:
-        thumb_path = path + ".thumb.jpg"
-        subprocess.run(
+        ret, _, _ = await _run_proc(
             ["ffmpeg", "-ss", "1", "-i", path,
              "-vframes", "1", "-vf", "scale=320:-2", "-q:v", "5", "-y", thumb_path],
-            capture_output=True, timeout=30, check=True,
+            timeout=30,
         )
-        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
+        if ret == 0 and os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
             return thumb_path
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+    except (FileNotFoundError, TimeoutError, OSError):
         pass
     return None
-
-
-def _encode_webp(img_bytes: bytes) -> "tuple[str, str]":
-    """Re-encode raw image bytes to compact WebP base64 → (mime, base64).
-
-    Falls back to JPEG passthrough if Pillow is unavailable or decoding fails, so a
-    thumbnail is never lost. Mirrors bot.encode_thumbnail (kept local to avoid
-    importing bot.py, which requires BOT_TOKEN at import time).
-    """
-    try:
-        from PIL import Image
-        import io as _io
-
-        with Image.open(_io.BytesIO(img_bytes)) as img:
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            out = _io.BytesIO()
-            img.save(out, format="WEBP", quality=80, method=6)
-            return "image/webp", base64.b64encode(out.getvalue()).decode("ascii")
-    except Exception:  # noqa: BLE001
-        return "image/jpeg", base64.b64encode(img_bytes).decode("ascii")
 
 
 async def _store_thumbnails(db, thumb_b64: str, thumb_mime: str, channel_msg_ids: list):
@@ -244,17 +248,17 @@ async def set_status(db, jid, status, message, pct=None):
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-def split_archive(path, title, part_mb):
+async def split_archive(path, title, part_mb):
     os.makedirs(OUT_DIR, exist_ok=True)
     archive = os.path.join(OUT_DIR, f"{safe_name(title)}.7z")
     cmd = [SEVENZIP, "a", f"-v{part_mb}m", "-mx=0", "-y", archive, path]
     print("→ Split:", " ".join(cmd))
     try:
-        subprocess.run(cmd, check=True)
+        ret, _, stderr = await _run_proc(cmd)
+        if ret != 0:
+            raise RuntimeError(f"7-Zip failed (exit {ret}): {stderr.strip()[-200:]}")
     except FileNotFoundError:
         raise RuntimeError(f"7-Zip not found: '{SEVENZIP}'. Set SEVENZIP_PATH in .env.")
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"7-Zip failed (exit {e.returncode}).")
     parts = collect_parts(archive)
     if not parts:
         raise RuntimeError("Split finished but no parts found.")
@@ -264,20 +268,22 @@ def split_archive(path, title, part_mb):
 # ---------------------------------------------------------------------------
 # Video split — playable segments, not raw byte slices
 # ---------------------------------------------------------------------------
-def video_duration(path: str) -> float:
+async def video_duration(path: str) -> float:
     """Container duration in seconds via ffprobe (0.0 if unreadable)."""
     try:
-        out = subprocess.run(
+        ret, stdout, _ = await _run_proc(
             ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
              "-of", "default=nw=1:nk=1", path],
-            capture_output=True, text=True, timeout=60, check=True,
-        ).stdout.strip()
-        return float(out)
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+            timeout=60,
+        )
+        if ret == 0 and stdout.strip():
+            return float(stdout.strip())
+        return 0.0
+    except (FileNotFoundError, TimeoutError, ValueError, OSError):
         return 0.0
 
 
-def split_video(path: str) -> list:
+async def split_video(path: str) -> list:
     """Cut a video too big for Telegram into segments that EACH PLAY ON THEIR OWN.
 
     A raw byte split (split_archive / write_window) makes parts 2..N un-decodable, so a big
@@ -293,7 +299,7 @@ def split_video(path: str) -> list:
     result is re-cut with more segments (bounded) rather than failing the upload.
     """
     size = os.path.getsize(path)
-    duration = video_duration(path)
+    duration = await video_duration(path)
     if duration <= 0:
         raise RuntimeError("ffprobe could not read the video duration.")
 
@@ -324,9 +330,9 @@ def split_video(path: str) -> list:
                "-f", "segment", "-segment_time", f"{duration / n:.3f}",
                "-reset_timestamps", "1", pattern]
         print(f"→ Video split ({n} segments):", " ".join(cmd))
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg segment failed: {proc.stderr.strip()[-300:]}")
+        ret, _, stderr = await _run_proc(cmd)
+        if ret != 0:
+            raise RuntimeError(f"ffmpeg segment failed: {stderr.strip()[-300:]}")
         parts = sorted(glob.glob(found))
         if not parts:
             raise RuntimeError("ffmpeg produced no segments.")
@@ -338,14 +344,14 @@ def split_video(path: str) -> list:
     raise RuntimeError("Could not cut this video into parts under the 2 GB cap.")
 
 
-def plan_media(staged: str) -> tuple:
+async def plan_media(staged: str) -> tuple:
     """Upload plan for a media file: whole if it fits, playable segments if it's a big video,
     raw streaming split otherwise (huge non-video media — stored, not streamable)."""
     if os.path.getsize(staged) <= PIKPAK_MAX_BYTES:
         return ("list", [staged], False)
     if os.path.splitext(staged)[1].lower() in _VIDEO_EXTS:
         try:
-            return ("list", split_video(staged), False)
+            return ("list", await split_video(staged), False)
         except RuntimeError as e:
             # Never lose the file to a split failure — fall back to raw parts (downloadable,
             # just not streamable) exactly like an oversized archive.
@@ -485,9 +491,8 @@ async def _send_file_smart(client, channel, path, caption, as_document, thumb, c
         print(f"  [smart] photo send failed ({e}); converting to JPEG and retrying…")
         jpg = f"{path}.conv.jpg"
         try:
-            subprocess.run(["ffmpeg", "-y", "-i", path, "-frames:v", "1", jpg],
-                           capture_output=True, timeout=60, check=True)
-            if os.path.exists(jpg) and os.path.getsize(jpg) > 0:
+            ret, _, _ = await _run_proc(["ffmpeg", "-y", "-i", path, "-frames:v", "1", jpg], timeout=60)
+            if ret == 0 and os.path.exists(jpg) and os.path.getsize(jpg) > 0:
                 return await client.send_file(
                     channel, jpg, caption=caption,
                     force_document=False, supports_streaming=False,
@@ -569,7 +574,7 @@ async def process(client, db, channel, job):
             if cleanup_source:
                 source_dir_to_delete = path if os.path.isdir(path) else None
             if kind == "media":
-                plan = plan_media(staged)
+                plan = await plan_media(staged)
                 if plan[0] == "list" and plan[1] != [staged]:
                     temp_parts = plan[1]      # ffmpeg segments — ours to delete
                     video_segments = True
@@ -586,12 +591,12 @@ async def process(client, db, channel, job):
             if kind == "archive":
                 if not os.path.exists(path):
                     raise RuntimeError(f"Path not found: {path}")
-                temp_parts = split_archive(path, title, part_mb)
+                temp_parts = await split_archive(path, title, part_mb)
                 plan = ("list", temp_parts, True)
             else:
                 if not os.path.isfile(path):
                     raise RuntimeError(f"Media file not found: {path}")
-                plan = plan_media(path)
+                plan = await plan_media(path)
                 if plan[0] == "list" and plan[1] != [path]:
                     temp_parts = plan[1]
                     video_segments = True
@@ -620,13 +625,13 @@ async def process(client, db, channel, job):
         # slug), so each one gets a cover cut from its OWN first frame — a shared cover would
         # show part 1's frame on every part in the grid.
         thumb_path = None if video_segments else (
-            make_video_thumbnail(first_file) if kind == "media" else None)
+            (await make_video_thumbnail(first_file)) if kind == "media" else None)
         thumb_b64 = None
         thumb_mime = "image/webp"
         if thumb_path:
             try:
                 with open(thumb_path, "rb") as f:
-                    thumb_mime, thumb_b64 = _encode_webp(f.read())
+                    thumb_mime, thumb_b64 = await encode_thumbnail_async(f.read())
                 print(f"  Thumbnail generated: {os.path.basename(thumb_path)}")
             except OSError:
                 thumb_path = None
@@ -675,7 +680,7 @@ async def process(client, db, channel, job):
                         # its own title + a 1/1 part count. No '/' in the suffix — upsert_item
                         # splits titles on '/' into folders.
                         part_title, part_no, part_total = f"{title} — Part {i}", 1, 1
-                        own_thumb = make_video_thumbnail(p)
+                        own_thumb = await make_video_thumbnail(p)
                     else:
                         part_no = _volume_no(p) or i
                         part_title, part_total = title, max(total, part_no)
@@ -691,7 +696,7 @@ async def process(client, db, channel, job):
                         if own_thumb:
                             try:
                                 with open(own_thumb, "rb") as f:
-                                    mime, b64 = _encode_webp(f.read())
+                                    mime, b64 = await encode_thumbnail_async(f.read())
                                 asyncio.create_task(_store_thumbnails(db, b64, mime, [msg_id]))
                             except OSError:
                                 pass

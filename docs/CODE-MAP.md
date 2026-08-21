@@ -27,9 +27,9 @@ kept in sync with the TS twin in `web/app/upload-bot/actions.ts`), `parse_captio
 that lack a `file_name` get a **synthetic name** (`video.mp4`/`animation.mp4`) so the web's
 extension-based type detection can distinguish them from photos, which legitimately have no
 file name), `derive_media_meta` (media caption fallback),
-`pick_thumb_file_id`, `encode_thumbnail` (raw image bytes → compact **WebP** base64 via
+`pick_thumb_file_id`, `encode_thumbnail`/`encode_thumbnail_async` (raw image bytes → compact **WebP** base64 via
 Pillow, downscaled to `THUMB_MAX_EDGE` px on the long edge first — a photo's source is the
-full-size image, which the drawer also shows as the preview — JPEG passthrough fallback). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
+full-size image, which the drawer also shows as the preview — JPEG passthrough fallback), `human_size` (byte formatting), `format_eta` (ETA formatting). `process_next_in_queue` (Bot-Drop queue helper, in `bot.py`).
 Postgres ops (`db_ops.py`, idempotent): `resolve_folders` (`A/B/C` title path → folder id; prefers a
 live folder over a trashed one of the same name and revives the one it indexes into; a new subfolder
 inherits the parent's `is_private`), `tombstone_messages` (record purged `channel_msg_id`s in

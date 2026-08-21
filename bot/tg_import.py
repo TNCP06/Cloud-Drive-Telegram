@@ -30,16 +30,11 @@ from bot_config import (
     TELEGRAM_API_URL,
     log,
 )
-from tg_helpers import parse_caption
+from tg_helpers import parse_caption, human_size, format_eta as _fmt_eta, MEDIA_EXTS as _MEDIA_EXTS
 
 POLL_INTERVAL = 3
 PROGRESS_THROTTLE_S = 4.0
 DB_THROTTLE_S = 5.0
-
-_MEDIA_EXTS = {
-    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp",
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp3", ".m4a", ".flac", ".wav", ".ogg",
-}
 
 TG_LINK_RE = re.compile(
     r"(?:https?://)?t\.me/(?:c/(\d+)|([a-zA-Z0-9_]+))/(?:(\d+)/)?(\d+)(?:-(\d+))?"
@@ -48,24 +43,6 @@ TG_LINK_RE = re.compile(
 
 class TgImportError(Exception):
     """User-facing import failure message."""
-
-
-def human_size(n) -> str:
-    n = float(n or 0)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.2f} {unit}"
-        n /= 1024
-    return f"{n:.2f} TB"
-
-
-def _fmt_eta(secs: float) -> str:
-    secs = int(secs)
-    if secs >= 3600:
-        return f"{secs // 3600}h {secs % 3600 // 60}m"
-    if secs >= 60:
-        return f"{secs // 60}m {secs % 60}s"
-    return f"{secs}s"
 
 
 def _is_media(fname: str) -> bool:

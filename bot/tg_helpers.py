@@ -1,11 +1,16 @@
-"""Pure helpers (no I/O): caption parsing, message inspection, thumbnail encoding."""
-
+import asyncio
 import base64
 import hashlib
 import io
 import os
 import re
 import unicodedata
+
+# Common extension sets
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp", ".mpg", ".mpeg"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"}
+AUDIO_EXTS = {".mp3", ".m4a", ".flac", ".wav", ".ogg"}
+MEDIA_EXTS = VIDEO_EXTS | IMAGE_EXTS | AUDIO_EXTS
 
 # Caption contract: "Title | part/total | tag1, tag2"
 CAPTION_RE = re.compile(
@@ -169,3 +174,31 @@ def encode_thumbnail(data_bytes: bytes) -> tuple[str, str]:
             return "image/webp", base64.b64encode(out.getvalue()).decode("ascii")
     except Exception:  # noqa: BLE001
         return "image/jpeg", base64.b64encode(data_bytes).decode("ascii")
+
+
+async def encode_thumbnail_async(data_bytes: bytes) -> tuple[str, str]:
+    """Async wrapper that offloads Pillow CPU-intensive image resizing/WebP encoding to a worker thread."""
+    return await asyncio.to_thread(encode_thumbnail, data_bytes)
+
+
+def human_size(n) -> str:
+    """Format bytes into human-readable string (B, KB, MB, GB, TB)."""
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.2f} {unit}"
+        n /= 1024
+    return f"{n:.2f} TB"
+
+
+def format_eta(secs: float) -> str:
+    """Format seconds into human-readable ETA string (e.g. '1h 20m', '3m 45s', '30s')."""
+    secs = int(secs)
+    if secs >= 3600:
+        return f"{secs // 3600}h {secs % 3600 // 60}m"
+    if secs >= 60:
+        return f"{secs // 60}m {secs % 60}s"
+    return f"{secs}s"
+
+
+fmt_eta = format_eta

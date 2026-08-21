@@ -9,6 +9,7 @@ target, and asserts the parts are REAL playable videos that add back up to the o
 Stubs watcher's heavy imports (telethon / pg_db / dotenv / worker) like test_volume_no.py.
 """
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -59,24 +60,24 @@ try:
     watcher.VIDEO_SEGMENT_MB = 1
     watcher.PIKPAK_MAX_BYTES = 1024 * 1024
 
-    parts = watcher.split_video(src)
+    parts = asyncio.run(watcher.split_video(src))
     assert len(parts) >= 2, f"expected multiple segments, got {parts}"
     assert parts == sorted(parts), "segments must come back in playback order"
 
     total = 0.0
     for p in parts:
         assert os.path.getsize(p) <= watcher.PIKPAK_MAX_BYTES, f"{p} is over the cap"
-        d = watcher.video_duration(p)          # 0.0 for anything ffprobe can't open
+        d = asyncio.run(watcher.video_duration(p))          # 0.0 for anything ffprobe can't open
         assert d > 0, f"segment is not a playable video: {p}"
         total += d
     assert abs(total - DURATION) < 1.5, f"segments cover {total:.2f}s of {DURATION}s"
 
     # The plan builder must route an oversized video through the splitter (as media, NOT as a
     # document), and hand a file that already fits straight to a single-part upload.
-    kind, files, as_doc = watcher.plan_media(src)
+    kind, files, as_doc = asyncio.run(watcher.plan_media(src))
     assert kind == "list" and files != [src] and as_doc is False, (kind, as_doc)
     watcher.PIKPAK_MAX_BYTES = 2000 * 1024 * 1024
-    assert watcher.plan_media(src) == ("list", [src], False)
+    assert asyncio.run(watcher.plan_media(src)) == ("list", [src], False)
 
     print(f"OK — {len(parts)} playable segments, {total:.2f}s total")
 finally:
