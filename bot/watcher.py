@@ -35,7 +35,6 @@ archives only), WORKER_OUT_DIR (temp split parts).
 """
 
 import asyncio
-import base64
 import glob
 import math
 import re
@@ -49,7 +48,7 @@ from telethon import TelegramClient
 from pg_db import create_client
 
 from bot_config import PIKPAK_MAX_BYTES
-from tg_helpers import VIDEO_EXTS as _VIDEO_EXTS, encode_thumbnail, encode_thumbnail_async
+from tg_helpers import VIDEO_EXTS as _VIDEO_EXTS, encode_thumbnail_async
 import tg_botapi_upload as botapi
 import tg_import
 import unpack
@@ -674,7 +673,7 @@ async def process(client, db, channel, job):
                     # jobs; number the part from the volume suffix, not the loop index,
                     # so sibling volumes do not collide on (item_id, part_number).
                     # ponytail: caption total may read "2/2" vs "1/1" across jobs;
-                    # recompute_totals GREATEST(total_parts, COUNT(*)) self-heals it.
+                    # recompute_totals derives the current count after indexing.
                     if video_segments:
                         # Each segment is a standalone video AND a standalone item, so it carries
                         # its own title + a 1/1 part count. No '/' in the suffix — upsert_item

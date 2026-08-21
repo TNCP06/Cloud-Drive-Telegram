@@ -2,7 +2,7 @@
 
 import { useActionState } from "react";
 import { Icon } from "@/lib/icons";
-import { login } from "./actions";
+import { login } from "@/app/actions/auth";
 import type { LoginState } from "@/lib/auth";
 
 export function LoginForm({ from }: { from: string }) {

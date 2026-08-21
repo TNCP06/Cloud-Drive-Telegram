@@ -22,30 +22,33 @@ import type { DriveFile, Folder, Kind, Tag } from "./types";
 // client `router.refresh()`es — so bot-indexed files appear without a manual reload. Pages stay
 // `force-dynamic` so the DB is never queried at build time.
 export function getDriveData(
-  space: "main" | "private" = "main"
+  space: "main" | "private" = "main",
+  view: "active" | "trash" = "active"
 ): Promise<{ files: DriveFile[]; tags: Tag[]; folders: Folder[] }> {
-  return unstable_cache(() => fetchDriveData(space), ["drive-data", space], {
+  return unstable_cache(() => fetchDriveData(space, view), ["drive-data", space, view], {
     revalidate: 15,
     tags: [`drive-${space}`],
   })();
 }
 
 async function fetchDriveData(
-  space: "main" | "private"
+  space: "main" | "private",
+  view: "active" | "trash"
 ): Promise<{ files: DriveFile[]; tags: Tag[]; folders: Folder[] }> {
   const priv = space === "private" ? 1 : 0;
+  const trash = view === "trash" ? "IS NOT NULL" : "IS NULL";
   const [itemsRs, tagsRs, itemTagsRs, thumbsRs, streamRs, foldersRs] = await Promise.all([
     db.execute(
-      `SELECT id, slug, title, kind, total_parts, total_size, is_favorite, date_added, updated_at, deleted_at, folder_id FROM items WHERE is_private = ${priv}`
+      `SELECT id, slug, title, kind, total_parts, total_size, is_favorite, date_added, updated_at, deleted_at, folder_id FROM items WHERE is_private = ${priv} AND deleted_at ${trash}`
     ),
     db.execute(
       `SELECT id, name, color FROM tags
-       WHERE id IN (SELECT DISTINCT it.tag_id FROM item_tags it JOIN items i ON i.id = it.item_id WHERE i.is_private = ${priv})
+       WHERE id IN (SELECT DISTINCT it.tag_id FROM item_tags it JOIN items i ON i.id = it.item_id WHERE i.is_private = ${priv} AND i.deleted_at ${trash})
        ORDER BY lower(name)`
     ),
     db.execute(
       `SELECT it.item_id AS item_id, it.tag_id AS tag_id FROM item_tags it
-       JOIN items i ON i.id = it.item_id WHERE i.is_private = ${priv}`
+        JOIN items i ON i.id = it.item_id WHERE i.is_private = ${priv} AND i.deleted_at ${trash}`
     ),
     // Which items HAVE a cover thumbnail (first part = smallest channel_msg_id). We only fetch
     // existence here, not the bytes: the cover image itself is served lazily & HTTP-cached via
@@ -54,7 +57,7 @@ async function fetchDriveData(
     db.execute(
       `SELECT DISTINCT p.item_id AS item_id
        FROM thumbnails t JOIN parts p ON p.id = t.part_id
-       JOIN items i ON i.id = p.item_id WHERE i.is_private = ${priv}`
+        JOIN items i ON i.id = p.item_id WHERE i.is_private = ${priv} AND i.deleted_at ${trash}`
     ),
     // First part info for EVERY item (single or multi-part). Media uses it for video
     // streaming; non-media uses the first part's file_name to derive a fine-grained
@@ -62,10 +65,10 @@ async function fetchDriveData(
     db.execute(
       `SELECT DISTINCT ON (p.item_id) p.item_id, p.id AS part_id, p.file_name
        FROM parts p JOIN items i ON i.id = p.item_id
-       WHERE i.is_private = ${priv}
+        WHERE i.is_private = ${priv} AND i.deleted_at ${trash}
        ORDER BY p.item_id, p.channel_msg_id ASC`
     ),
-    db.execute(`SELECT id, name, parent_id, created_at, updated_at, deleted_at FROM folders WHERE is_private = ${priv} ORDER BY lower(name)`),
+    db.execute(`SELECT id, name, parent_id, created_at, updated_at, deleted_at FROM folders WHERE is_private = ${priv} AND deleted_at ${trash} ORDER BY lower(name)`),
   ]);
 
   const tags: Tag[] = tagsRs.rows.map((r) => {

@@ -116,16 +116,16 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = get_file_id(message)
 
     try:
-        item_id = await upsert_item(db, slug, title, kind, total, set_title=has_caption)
-        part_id = await upsert_part(db, item_id, part_number, msg_id, file_name, file_size, file_id)
+        async with db.transaction() as tx:
+            item_id = await upsert_item(tx, slug, title, kind, total, set_title=has_caption)
+            part_id = await upsert_part(tx, item_id, part_number, msg_id, file_name, file_size, file_id)
+            await recompute_totals(tx, item_id)
+            await sync_tags(tx, item_id, parsed["tags"])
+            # Keep tags consistent across all individual items split from the same album.
+            if kind == "media" and mgid:
+                await sync_album_tags(tx, mgid, parsed["tags"])
 
-        await recompute_totals(db, item_id)
-        await sync_tags(db, item_id, parsed["tags"])
-        # Keep tags consistent across all individual items split from the same album.
-        if kind == "media" and mgid:
-            await sync_album_tags(db, mgid, parsed["tags"])
-
-        # Harvest thumbnail per-part (media only; each photo/video has its own thumbnail).
+        # Telegram/network work stays outside the DB transaction.
         if kind == "media":
             await harvest_thumbnail(context, db, part_id, message)
 
@@ -299,12 +299,13 @@ async def index_bot_copy(
     if source_message is not None:
         file_name, file_size = get_file_meta(source_message)
 
-    item_id = await upsert_item(db, slug, title, kind, total, set_title=set_title)
-    part_id = await upsert_part(
-        db, item_id, part_number, channel_msg_id, file_name, file_size or 0, file_id=None
-    )
-    await recompute_totals(db, item_id)
-    await sync_tags(db, item_id, tags)
+    async with db.transaction() as tx:
+        item_id = await upsert_item(tx, slug, title, kind, total, set_title=set_title)
+        part_id = await upsert_part(
+            tx, item_id, part_number, channel_msg_id, file_name, file_size or 0, file_id=None
+        )
+        await recompute_totals(tx, item_id)
+        await sync_tags(tx, item_id, tags)
 
     if kind == "media":
         if source_message is not None:

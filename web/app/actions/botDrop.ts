@@ -71,7 +71,7 @@ async function resolveTagId(name: string): Promise<number> {
   });
   if (existing.rows.length) return Number(existing.rows[0].id);
   await db.execute({
-    sql: "INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO NOTHING",
+    sql: "INSERT INTO tags (name) VALUES (?) ON CONFLICT DO NOTHING",
     args: [n],
   });
   const rs = await db.execute({ sql: "SELECT id FROM tags WHERE name = ?", args: [n] });

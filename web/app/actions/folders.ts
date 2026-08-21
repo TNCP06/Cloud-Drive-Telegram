@@ -89,22 +89,22 @@ export async function deleteFolder(id: number) {
 }
 
 export async function restoreParentChain(folderId: number | null) {
-  let curr = folderId;
-  while (curr !== null) {
-    await db.execute({
-      sql: "UPDATE folders SET deleted_at = NULL WHERE id = ?",
-      args: [curr],
-    });
-    const rs = await db.execute({
-      sql: "SELECT parent_id FROM folders WHERE id = ?",
-      args: [curr],
-    });
-    if (rs.rows.length && rs.rows[0].parent_id !== null) {
-      curr = Number(rs.rows[0].parent_id);
-    } else {
-      break;
-    }
-  }
+  if (folderId === null) return;
+  await restoreParentChains([folderId]);
+}
+
+export async function restoreParentChains(folderIds: number[]) {
+  if (folderIds.length === 0) return;
+  await db.execute({
+    sql: `WITH RECURSIVE ancestors AS (
+            SELECT id, parent_id FROM folders WHERE id = ANY(?)
+            UNION ALL
+            SELECT f.id, f.parent_id FROM folders f JOIN ancestors a ON f.id = a.parent_id
+          )
+          UPDATE folders SET deleted_at = NULL
+          WHERE id IN (SELECT id FROM ancestors)`,
+    args: [folderIds],
+  });
 }
 
 export async function restoreFolder(id: number) {

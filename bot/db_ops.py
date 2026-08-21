@@ -138,7 +138,7 @@ async def upsert_item(db, slug, title, kind, total, set_title=True, is_private=N
         ON CONFLICT(slug) DO UPDATE SET
             title       = CASE WHEN ? = 1 THEN excluded.title ELSE items.title END,
             kind        = excluded.kind,
-            total_parts = GREATEST(items.total_parts, excluded.total_parts),
+            total_parts = excluded.total_parts,
             folder_id   = CASE WHEN ? = 1 THEN excluded.folder_id ELSE items.folder_id END,
             updated_at  = now_text()
         """,
@@ -192,7 +192,7 @@ async def recompute_totals(db, item_id):
         """
         UPDATE items SET
             total_size  = (SELECT COALESCE(SUM(file_size), 0) FROM parts WHERE item_id = ?),
-            total_parts = GREATEST(total_parts, (SELECT COUNT(*) FROM parts WHERE item_id = ?)),
+            total_parts = (SELECT COUNT(*) FROM parts WHERE item_id = ?),
             updated_at  = now_text()
         WHERE id = ?
         """,
@@ -219,24 +219,12 @@ async def sync_tags(db, item_id, tags):
         
     lower_tags = list(valid_names.keys())
     
-    # 1. Fetch existing tags to prevent inserting case variants.
-    # The DB UNIQUE constraint is on `name`, not `lower(name)`.
-    rs = await db.execute(
-        "SELECT lower(name) FROM tags WHERE lower(name) = ANY(CAST(? AS text[]))",
-        [lower_tags]
+    # The functional unique index makes this insert race-safe; one query resolves all IDs.
+    await db.execute(
+        "INSERT INTO tags (name) SELECT unnest(CAST(? AS text[])) ON CONFLICT DO NOTHING",
+        [list(valid_names.values())]
     )
-    existing_lower = {r[0] for r in rs.rows}
-    
-    new_tags = [name for lower_name, name in valid_names.items() if lower_name not in existing_lower]
-    
-    # 2. Batch insert new tags
-    if new_tags:
-        await db.execute(
-            "INSERT INTO tags (name) SELECT unnest(CAST(? AS text[])) ON CONFLICT DO NOTHING",
-            [new_tags]
-        )
-        
-    # 3. Batch link all tags to the item
+
     await db.execute(
         "INSERT INTO item_tags (item_id, tag_id) "
         "SELECT ?, id FROM tags WHERE lower(name) = ANY(CAST(? AS text[])) "

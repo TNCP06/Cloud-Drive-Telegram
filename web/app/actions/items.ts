@@ -2,8 +2,8 @@
 
 import { db } from "@/lib/db";
 import type { Kind } from "@/lib/types";
-import { refresh, resolveTagId } from "./_shared";
-import { restoreParentChain } from "./folders";
+import { refresh, resolveTagIds } from "./_shared";
+import { restoreParentChains } from "./folders";
 import { authorizeItem } from "@/lib/resourceAuth";
 
 // Item server actions for Turso metadata (instant, without touching Telegram).
@@ -37,7 +37,7 @@ export async function restore(id: number) {
   if (!(await authorizeItem(id, true))) throw new Error("Item not found.");
   const rs = await db.execute({ sql: "SELECT folder_id FROM items WHERE id = ?", args: [id] });
   if (rs.rows.length && rs.rows[0].folder_id !== null) {
-    await restoreParentChain(Number(rs.rows[0].folder_id));
+    await restoreParentChains([Number(rs.rows[0].folder_id)]);
   }
   await db.execute({
     sql: "UPDATE items SET deleted_at = NULL WHERE id = ?",
@@ -157,12 +157,12 @@ export async function updateMetadata(
     )
   );
 
+  const tagIds = await resolveTagIds(names);
   await db.execute({ sql: "DELETE FROM item_tags WHERE item_id = ?", args: [id] });
-  for (const name of names) {
-    const tagId = await resolveTagId(name);
+  if (tagIds.length) {
     await db.execute({
-      sql: "INSERT INTO item_tags (item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-      args: [id, tagId],
+      sql: "INSERT INTO item_tags (item_id, tag_id) SELECT ?, unnest(CAST(? AS bigint[])) ON CONFLICT DO NOTHING",
+      args: [id, tagIds],
     });
   }
 
@@ -272,9 +272,7 @@ export async function bulkRestore(itemIds: number[]) {
     sql: "SELECT DISTINCT folder_id FROM items WHERE id = ANY(?) AND folder_id IS NOT NULL",
     args: [itemIds],
   });
-  for (const row of rs.rows) {
-    await restoreParentChain(Number(row.folder_id));
-  }
+  await restoreParentChains(rs.rows.map((row) => Number(row.folder_id)));
   await db.execute({
     sql: "UPDATE items SET deleted_at = NULL WHERE id = ANY(?)",
     args: [itemIds],

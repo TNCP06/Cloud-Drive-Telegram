@@ -7,3 +7,6 @@ export * from "./actions/uploads";
 export * from "./actions/thumbnails";
 export * from "./actions/private";
 export * from "./actions/subtitles";
+export * from "./actions/auth";
+export * from "./actions/botDrop";
+export * from "./actions/filesystem";

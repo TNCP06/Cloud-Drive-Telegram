@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/lib/icons";
 import { fmtSize } from "@/lib/format";
-import { listDir } from "@/app/fs-actions";
+import { listDir } from "@/app/actions/filesystem";
 import type { FsListing } from "@/lib/types";
 
 // Laptop file browser modal. Returns the ABSOLUTE PATH to the caller.

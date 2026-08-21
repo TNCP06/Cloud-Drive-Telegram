@@ -15,6 +15,7 @@ poison later statements.
 import asyncio
 import os
 import re
+from contextlib import asynccontextmanager
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -32,6 +33,20 @@ class _Result:
     def __init__(self, rows, rows_affected=0):
         self.rows = rows
         self.rows_affected = rows_affected
+
+
+class _ConnectionClient:
+    """Execute through one checked-out connection inside a caller-owned transaction."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute(self, sql, params=None):
+        async with self._conn.cursor() as cur:
+            await cur.execute(_to_pg(sql), tuple(params) if params else None)
+            rows = await cur.fetchall() if cur.description is not None else []
+            affected = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
+        return _Result(rows, affected)
 
 
 class PgClient:
@@ -62,6 +77,14 @@ class PgClient:
                 rows = await cur.fetchall() if cur.description is not None else []
                 affected = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
         return _Result(rows, affected)
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Run related mutations on one connection and commit or roll back as a unit."""
+        await self._ensure_open()
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                yield _ConnectionClient(conn)
 
     async def close(self):
         if self._opened:

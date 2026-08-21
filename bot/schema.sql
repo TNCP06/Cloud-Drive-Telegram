@@ -203,7 +203,7 @@ CREATE TABLE IF NOT EXISTS tg_import_jobs (
 -- The VTT files live on the streamer's persistent /subtitles volume; this table just
 -- tells the web player which languages are available.
 CREATE TABLE IF NOT EXISTS subtitles (
-    part_id    BIGINT NOT NULL,
+    part_id    BIGINT NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
     lang       TEXT NOT NULL,                  -- ISO-639-1 (en, id, …) or 'orig'
     created_at TEXT NOT NULL DEFAULT now_text(),
     PRIMARY KEY (part_id, lang)
@@ -236,6 +236,19 @@ CREATE INDEX IF NOT EXISTS idx_items_favorite  ON items(is_favorite) WHERE is_fa
 CREATE INDEX IF NOT EXISTS idx_items_private   ON items(is_private);
 CREATE INDEX IF NOT EXISTS idx_folders_private ON folders(is_private);
 CREATE INDEX IF NOT EXISTS idx_subtitles_part  ON subtitles(part_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tags_name_ci ON tags(lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_parent_name_ci
+    ON folders(parent_id, lower(name)) WHERE parent_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_root_name_ci
+    ON folders(lower(name)) WHERE parent_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_upload_jobs_pending_id
+    ON upload_jobs(id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_download_jobs_queued_id
+    ON download_jobs(id) WHERE status IN ('queued','downloaded','uploading');
+CREATE INDEX IF NOT EXISTS idx_unpack_jobs_queued_id
+    ON unpack_jobs(id) WHERE status = 'queued';
+CREATE INDEX IF NOT EXISTS idx_tg_import_jobs_queued_id
+    ON tg_import_jobs(id) WHERE status IN ('queued','downloaded','uploading');
 CREATE UNIQUE INDEX IF NOT EXISTS uq_upload_jobs_staged_path
     ON upload_jobs(source_path) WHERE origin = 'upload';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_unpack_jobs_active_item

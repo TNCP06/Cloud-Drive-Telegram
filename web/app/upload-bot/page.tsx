@@ -2,7 +2,7 @@
 
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { processBotDrop } from "./actions";
+import { processBotDrop } from "@/app/actions/botDrop";
 import { listTags } from "@/app/actions";
 import { TagPicker } from "@/components/TagPicker";
 import type { Tag } from "@/lib/types";

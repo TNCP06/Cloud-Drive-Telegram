@@ -352,6 +352,10 @@ def _evict_if_needed(needed: int) -> None:
         log.info("Evicting cache dir %s (%.1f MB)", part_dir.name, dir_size / 1048576)
         shutil.rmtree(part_dir, ignore_errors=True)
         current -= dir_size
+        try:
+            _clear_part_state(int(part_dir.name.removeprefix("part_")))
+        except ValueError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -990,6 +994,18 @@ def _start_prefetch(part_id: int, channel_msg_id: int,
                          from_chunk, total_chunks, total_size)
     )
     _prefetch_tasks[part_id] = task
+    task.add_done_callback(
+        lambda done, pid=part_id: _prefetch_tasks.pop(pid, None)
+        if _prefetch_tasks.get(pid) is done else None
+    )
+
+
+def _clear_part_state(part_id: int) -> None:
+    """Drop ephemeral request state once a part has no cached files left."""
+    _serving_variant.pop(part_id, None)
+    _last_request_pos.pop(part_id, None)
+    _prefetch_tasks.pop(part_id, None)
+    _local_file_paths.pop(part_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1430,7 +1446,6 @@ async def get_logs():
 
 @app.get("/tasks")
 async def get_tasks():
-    import traceback
     info = []
     for t in asyncio.all_tasks():
         stack = []

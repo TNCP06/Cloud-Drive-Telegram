@@ -6,7 +6,7 @@ import Image from "next/image";
 import { Icon } from "@/lib/icons";
 import { TAG_COLORS } from "@/lib/kinds";
 import type { Tag } from "@/lib/types";
-import { logout } from "@/app/login/actions";
+import { logout } from "@/app/actions/auth";
 import { TagLegend } from "./TagLegend";
 
 export interface Counts {

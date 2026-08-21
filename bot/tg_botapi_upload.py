@@ -92,13 +92,14 @@ async def index_uploaded(
     from tg_helpers import slugify
 
     slug = f"{slugify(title)}-{msg_id}" if kind == "media" else slugify(title)
-    item_id = await upsert_item(
-        db, slug, title, kind, total, set_title=True, is_private=is_private
-    )
-    part_id = await upsert_part(db, item_id, part_no, msg_id, file_name, file_size, file_id)
-    await recompute_totals(db, item_id)
-    if tags:
-        await sync_tags(db, item_id, [t.strip() for t in tags.split(",") if t.strip()])
+    async with db.transaction() as tx:
+        item_id = await upsert_item(
+            tx, slug, title, kind, total, set_title=True, is_private=is_private
+        )
+        part_id = await upsert_part(tx, item_id, part_no, msg_id, file_name, file_size, file_id)
+        await recompute_totals(tx, item_id)
+        if tags:
+            await sync_tags(tx, item_id, [t.strip() for t in tags.split(",") if t.strip()])
     # The caller harvests the thumbnail with `part_id` — this path indexes media without
     # the bot ever seeing it, so nothing else would.
     return item_id, part_id

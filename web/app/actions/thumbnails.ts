@@ -178,19 +178,15 @@ export async function uploadThumbnail(
   if (!rs.rows.length) {
     return { ok: false, updated: 0, error: "No parts found for this item." };
   }
-  let updated = 0;
-  for (const row of rs.rows) {
-    const partId = Number(row[0]);
-    // 'manual' pins this cover: the streamer's poster backfill replaces only Telegram's own
-    // thumbnails, so a picture chosen here is never silently swapped for a video frame.
-    await db.execute({
-      sql: `INSERT INTO thumbnails (part_id, mime, data, source) VALUES (?, ?, ?, 'manual')
-            ON CONFLICT(part_id) DO UPDATE
-               SET mime = excluded.mime, data = excluded.data, source = 'manual'`,
-      args: [partId, mime, dataB64],
-    });
-    updated++;
-  }
+  // One INSERT ... SELECT updates every part while preserving manual precedence.
+  await db.execute({
+    sql: `INSERT INTO thumbnails (part_id, mime, data, source)
+          SELECT id, ?, ?, 'manual' FROM parts WHERE item_id = ?
+          ON CONFLICT(part_id) DO UPDATE
+             SET mime = excluded.mime, data = excluded.data, source = 'manual'`,
+    args: [mime, dataB64, itemId],
+  });
+  const updated = rs.rows.length;
   refresh();
   return { ok: true, updated };
 }

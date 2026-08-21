@@ -29,9 +29,23 @@ export async function resolveTagId(name: string): Promise<number> {
   if (existing.rows.length) return Number(existing.rows[0].id);
   // Persist a deterministic colour at creation so it stays stable across renames.
   await db.execute({
-    sql: "INSERT INTO tags (name, color) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
+    sql: "INSERT INTO tags (name, color) VALUES (?, ?) ON CONFLICT DO NOTHING",
     args: [n, tagColorKey(n)],
   });
   const rs = await db.execute({ sql: "SELECT id FROM tags WHERE name = ?", args: [n] });
   return Number(rs.rows[0].id);
+}
+
+export async function resolveTagIds(names: string[]): Promise<number[]> {
+  const unique = [...new Map(names.map((name) => [name.toLowerCase(), name])).values()];
+  if (unique.length === 0) return [];
+  await db.execute({
+    sql: "INSERT INTO tags (name, color) SELECT unnest(CAST(? AS text[])), unnest(CAST(? AS text[])) ON CONFLICT DO NOTHING",
+    args: [unique, unique.map(tagColorKey)],
+  });
+  const rs = await db.execute({
+    sql: "SELECT id FROM tags WHERE lower(name) = ANY(CAST(? AS text[]))",
+    args: [unique.map((name) => name.toLowerCase())],
+  });
+  return rs.rows.map((row) => Number(row.id));
 }

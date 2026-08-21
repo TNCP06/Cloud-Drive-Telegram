@@ -267,6 +267,18 @@ async def post_init(app: Application):
             "CREATE INDEX IF NOT EXISTS idx_purged_messages_pending "
             "ON purged_messages(channel_msg_id) WHERE tg_deleted = 0"
         )
+        await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_tags_name_ci ON tags(lower(name))")
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_parent_name_ci "
+            "ON folders(parent_id, lower(name)) WHERE parent_id IS NOT NULL"
+        )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_root_name_ci "
+            "ON folders(lower(name)) WHERE parent_id IS NULL"
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_upload_jobs_pending_id ON upload_jobs(id) WHERE status = 'pending'")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_unpack_jobs_queued_id ON unpack_jobs(id) WHERE status = 'queued'")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tg_import_jobs_queued_id ON tg_import_jobs(id) WHERE status IN ('queued','downloaded','uploading')")
         log.info("Migration: ensured file_id/thumb_missing on parts, is_private on upload_jobs, "
                  "source on thumbnails")
     except Exception as e:
