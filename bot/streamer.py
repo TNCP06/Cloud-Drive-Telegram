@@ -1804,7 +1804,7 @@ async def stream(part_id: int, request: Request):
             "Content-Length": str(content_length),
             "Accept-Ranges": "bytes",
             "Content-Type": mime,
-            "Cache-Control": "no-cache",
+            "Cache-Control": "private, max-age=86400",
         },
         media_type=mime,
     )

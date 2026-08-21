@@ -72,9 +72,18 @@ export async function GET(
       "content-length",
       "content-range",
       "accept-ranges",
+      "cache-control",
+      "etag",
+      "last-modified",
     ]) {
       const v = resp.headers.get(key);
       if (v) relay.set(key, v);
+    }
+
+    // Set cache-control for browser caching if upstream didn't set a positive max-age
+    const upstreamCache = relay.get("cache-control");
+    if (!upstreamCache || upstreamCache === "no-cache" || upstreamCache === "no-store") {
+      relay.set("cache-control", "private, max-age=86400");
     }
 
     // Stream the body through safely. We use a TransformStream to catch 

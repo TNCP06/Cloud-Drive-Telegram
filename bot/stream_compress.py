@@ -116,7 +116,7 @@ def _serve_local_file_range(path: str, mime: str, request: Request, range_header
             "Content-Length": str(end - start + 1),
             "Accept-Ranges": "bytes",
             "Content-Type": mime,
-            "Cache-Control": "no-cache",
+            "Cache-Control": "private, max-age=86400",
         },
         media_type=mime,
     )

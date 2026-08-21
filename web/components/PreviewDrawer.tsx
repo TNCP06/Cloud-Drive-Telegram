@@ -210,6 +210,8 @@ export function PreviewDrawer({
   // is added so the new language appears in the CC menu without reopening the video.
   const [subsOpen, setSubsOpen] = useState(false);
   const [subsBump, setSubsBump] = useState(0);
+  // High-res stream load tracking for instant thumbnail placeholder swap.
+  const [fullLoadedId, setFullLoadedId] = useState<number | null>(null);
 
   // Reset form when the opened item changes (or when leaving edit mode).
   useEffect(() => {
@@ -396,7 +398,45 @@ export function PreviewDrawer({
     docPartId > 0 &&
     (ft.preview === "pdf" || ft.preview === "text" || ft.preview === "word" || ft.preview === "sheet");
   const isPdfStage = isDocStage && ft.preview === "pdf";
-  const isImageStage = !!activePart?.thumb && !isVideoStage && !isDocStage;
+  const isImageStage = (!!activePart?.thumb || ft.preview === "image") && !isVideoStage && !isDocStage;
+  const isFullLoaded = activePart?.partId ? fullLoadedId === activePart.partId : true;
+
+  // Prefetch adjacent photos (+1 and -1 in album, and neighboring nav files) for instant navigation
+  useEffect(() => {
+    if (detailsOnly || !activePart) return;
+
+    const candidatePartIds: number[] = [];
+
+    // 1. Next & previous parts in current album
+    const nextPart = partsList[activeIdx + 1];
+    const prevPart = partsList[activeIdx - 1];
+    if (nextPart?.partId && !isPartStreamableVideo(nextPart, item.kind)) {
+      candidatePartIds.push(nextPart.partId);
+    }
+    if (prevPart?.partId && !isPartStreamableVideo(prevPart, item.kind)) {
+      candidatePartIds.push(prevPart.partId);
+    }
+
+    // 2. Neighboring files from nav list
+    if (navFiles && navFiles.length > 0) {
+      const curFileIdx = navFiles.findIndex((f) => f.id === item.id);
+      if (curFileIdx >= 0) {
+        const nextF = navFiles[curFileIdx + 1];
+        const prevF = navFiles[curFileIdx - 1];
+        if (nextF && nextF.kind === "media" && nextF.firstPartId && fileTypeFor(nextF).preview === "image") {
+          candidatePartIds.push(nextF.firstPartId);
+        }
+        if (prevF && prevF.kind === "media" && prevF.firstPartId && fileTypeFor(prevF).preview === "image") {
+          candidatePartIds.push(prevF.firstPartId);
+        }
+      }
+    }
+
+    for (const pid of candidatePartIds) {
+      const img = new window.Image();
+      img.src = `/api/stream/${pid}`;
+    }
+  }, [activeIdx, partsList, activePart, item.id, item.kind, navFiles, detailsOnly]);
 
   // The bottom filmstrip lists the OTHER media in this view (siblings from the parent's nav list).
   // The CURRENTLY-OPEN item expands into its individual parts so an album's photos each show as a
@@ -670,24 +710,58 @@ export function PreviewDrawer({
                   onDownload={onDownload}
                 />
               ) : isImageStage ? (
-                <img
-                  src={activePart?.partId ? `/api/stream/${activePart.partId}` : activePart!.thumb!}
-                  alt={item.name}
-                  onError={(e) => {
-                    // Fallback to thumbnail if stream fails
-                    const target = e.currentTarget as HTMLImageElement;
-                    if (activePart?.thumb && target.src !== activePart.thumb) {
-                      target.src = activePart.thumb;
-                    }
-                  }}
-                  // A quarter turn swaps the fit axis (see .is-quarter-turn) so the rotated photo
-                  // refills the stage instead of keeping its portrait footprint and overflowing.
-                  className={rotation % 180 ? "is-quarter-turn" : undefined}
-                  style={{
-                    transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s}) rotate(${rotation}deg)`,
-                    transition: smooth ? "transform .2s ease" : "none",
-                  }}
-                />
+                <>
+                  {activePart?.thumb && (
+                    <img
+                      src={activePart.thumb}
+                      alt=""
+                      aria-hidden="true"
+                      className={rotation % 180 ? "is-quarter-turn" : undefined}
+                      style={{
+                        position: "absolute",
+                        transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s}) rotate(${rotation}deg)`,
+                        transition: smooth ? "transform .2s ease, opacity .2s ease" : "opacity .2s ease",
+                        filter: isFullLoaded ? "none" : "blur(2px)",
+                        opacity: isFullLoaded ? 0 : 1,
+                        pointerEvents: "none",
+                      }}
+                    />
+                  )}
+                  {activePart?.partId ? (
+                    <img
+                      key={activePart.partId}
+                      src={`/api/stream/${activePart.partId}`}
+                      alt={item.name}
+                      onLoad={() => setFullLoadedId(activePart.partId)}
+                      onError={(e) => {
+                        const target = e.currentTarget as HTMLImageElement;
+                        if (activePart?.thumb && target.src !== activePart.thumb) {
+                          target.src = activePart.thumb;
+                        }
+                      }}
+                      className={rotation % 180 ? "is-quarter-turn" : undefined}
+                      style={{
+                        position: activePart.thumb ? "relative" : "static",
+                        zIndex: 2,
+                        opacity: isFullLoaded || !activePart.thumb ? 1 : 0,
+                        transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s}) rotate(${rotation}deg)`,
+                        transition: smooth ? "transform .2s ease, opacity .2s ease" : "opacity .2s ease",
+                      }}
+                    />
+                  ) : (
+                    activePart?.thumb && (
+                      <img
+                        src={activePart.thumb}
+                        alt={item.name}
+                        className={rotation % 180 ? "is-quarter-turn" : undefined}
+                        style={{
+                          transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s}) rotate(${rotation}deg)`,
+                          transition: smooth ? "transform .2s ease" : "none",
+                        }}
+                      />
+                    )
+                  )}
+                </>
               ) : (
                 <Icon name={ft.icon} size={120} stroke={1.2} style={{ color: ft.tint }} />
               )}
