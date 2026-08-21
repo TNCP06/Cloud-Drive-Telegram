@@ -2,6 +2,7 @@
 
 import { db } from "@/lib/db";
 import { refresh } from "./_shared";
+import { authorizeFolder } from "@/lib/resourceAuth";
 
 // --- Folder management --------------------------------------------------------
 
@@ -28,6 +29,7 @@ export async function createFolder(name: string, parentId: number | null, isPriv
 }
 
 export async function renameFolder(id: number, name: string) {
+  if (!(await authorizeFolder(id))) throw new Error("Folder not found.");
   const n = name.trim();
   if (!n) throw new Error("Folder name cannot be empty.");
 
@@ -66,6 +68,7 @@ export async function getFolderItemsAndSubfolders(
 }
 
 export async function deleteFolder(id: number) {
+  if (!(await authorizeFolder(id))) throw new Error("Folder not found.");
   const { itemIds, folderIds } = await getFolderItemsAndSubfolders(id);
 
   if (itemIds.length > 0) {
@@ -105,6 +108,7 @@ export async function restoreParentChain(folderId: number | null) {
 }
 
 export async function restoreFolder(id: number) {
+  if (!(await authorizeFolder(id, true))) throw new Error("Folder not found.");
   await restoreParentChain(id);
   const { itemIds, folderIds } = await getFolderItemsAndSubfolders(id);
 
@@ -128,6 +132,7 @@ export async function restoreFolder(id: number) {
 import { bulkPurgeNow } from "./items";
 
 export async function purgeFolderNow(id: number): Promise<{ ok: boolean; error?: string }> {
+  if (!(await authorizeFolder(id, true))) return { ok: false, error: "Folder not found." };
   const { itemIds } = await getFolderItemsAndSubfolders(id);
 
   if (itemIds.length > 0) {
@@ -174,11 +179,23 @@ export async function moveItemsToFolder(itemIds: number[], folderId: number | nu
 // Reparent a folder into another folder (or the root). Rejects moving a folder into
 // itself or one of its own descendants, which would create a cycle.
 export async function moveFolderToFolder(folderId: number, targetParentId: number | null) {
+  if (!(await authorizeFolder(folderId))) throw new Error("Folder not found.");
+  if (targetParentId !== null && !(await authorizeFolder(targetParentId))) {
+    throw new Error("Target folder not found.");
+  }
   if (targetParentId === folderId) throw new Error("Cannot move a folder into itself.");
   if (targetParentId !== null) {
     const { folderIds } = await getFolderItemsAndSubfolders(folderId);
     if (folderIds.includes(targetParentId)) {
       throw new Error("Cannot move a folder into one of its own subfolders.");
+    }
+    const spaces = await db.execute({
+      sql: `SELECT f.is_private AS source_private, p.is_private AS target_private
+            FROM folders f JOIN folders p ON p.id = ? WHERE f.id = ?`,
+      args: [targetParentId, folderId],
+    });
+    if (spaces.rows.length && Number(spaces.rows[0].source_private) !== Number(spaces.rows[0].target_private)) {
+      throw new Error("Cannot move a folder across Main and Private spaces.");
     }
   }
   await db.execute({

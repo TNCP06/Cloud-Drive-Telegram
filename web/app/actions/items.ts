@@ -4,12 +4,14 @@ import { db } from "@/lib/db";
 import type { Kind } from "@/lib/types";
 import { refresh, resolveTagId } from "./_shared";
 import { restoreParentChain } from "./folders";
+import { authorizeItem } from "@/lib/resourceAuth";
 
 // Item server actions for Turso metadata (instant, without touching Telegram).
 // Note: softDelete ONLY sets deleted_at. The actual file on Telegram is deleted
 // at purge time (>7 days) by the bot's purge job → restore is lossless.
 
 export async function toggleFavorite(id: number, next: boolean) {
+  if (!(await authorizeItem(id))) throw new Error("Item not found.");
   await db.execute({
     sql: "UPDATE items SET is_favorite = ?, updated_at = now_text() WHERE id = ?",
     args: [next ? 1 : 0, id],
@@ -23,6 +25,7 @@ export async function toggleFavorite(id: number, next: boolean) {
 // its original position instead of looking freshly uploaded. Trash status is
 // tracked solely by `deleted_at`.
 export async function softDelete(id: number) {
+  if (!(await authorizeItem(id))) throw new Error("Item not found.");
   await db.execute({
     sql: "UPDATE items SET deleted_at = now_text() WHERE id = ? AND deleted_at IS NULL",
     args: [id],
@@ -31,6 +34,7 @@ export async function softDelete(id: number) {
 }
 
 export async function restore(id: number) {
+  if (!(await authorizeItem(id, true))) throw new Error("Item not found.");
   const rs = await db.execute({ sql: "SELECT folder_id FROM items WHERE id = ?", args: [id] });
   if (rs.rows.length && rs.rows[0].folder_id !== null) {
     await restoreParentChain(Number(rs.rows[0].folder_id));
@@ -79,6 +83,7 @@ async function purgeMessage(apiBase: string, chatId: string, messageId: number) 
 // Guarded to items already in Trash so a stray call can't nuke a live file.
 // This is irreversible: confirm in the UI before calling.
 export async function purgeNow(id: number): Promise<{ ok: boolean; error?: string }> {
+  if (!(await authorizeItem(id, true))) return { ok: false, error: "Item not found." };
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
   if (!BOT_TOKEN || !STORAGE_CHANNEL_ID) {
@@ -104,14 +109,16 @@ export async function purgeNow(id: number): Promise<{ ok: boolean; error?: strin
     await purgeMessage(apiBase, STORAGE_CHANNEL_ID, Number(row.channel_msg_id));
   }
 
-  // Explicit hard delete (thumbnails FK → parts, so delete thumbnails first).
+  // One statement keeps the mandatory tombstone and cascading metadata deletion atomic.
   await db.execute({
-    sql: "DELETE FROM thumbnails WHERE part_id IN (SELECT id FROM parts WHERE item_id = ?)",
-    args: [id],
+    sql: `WITH tombstones AS (
+            INSERT INTO purged_messages (channel_msg_id, tg_deleted)
+            SELECT channel_msg_id, 0 FROM parts WHERE item_id = ?
+            ON CONFLICT(channel_msg_id) DO NOTHING
+          )
+          DELETE FROM items WHERE id = ?`,
+    args: [id, id],
   });
-  await db.execute({ sql: "DELETE FROM parts WHERE item_id = ?", args: [id] });
-  await db.execute({ sql: "DELETE FROM item_tags WHERE item_id = ?", args: [id] });
-  await db.execute({ sql: "DELETE FROM items WHERE id = ?", args: [id] });
   refresh();
   return { ok: true };
 }
@@ -127,6 +134,7 @@ export async function updateMetadata(
   id: number,
   input: { title: string; kind: Kind; tags: string }
 ) {
+  if (!(await authorizeItem(id))) throw new Error("Item not found.");
   const title = input.title.trim();
   if (!title) throw new Error("Title cannot be empty.");
   if (input.kind !== "archive" && input.kind !== "media") {
@@ -169,6 +177,7 @@ export async function unpackArchive(
   itemId: number,
   password: string
 ): Promise<{ ok: boolean; error?: string }> {
+  if (!(await authorizeItem(itemId))) return { ok: false, error: "Item not found." };
   const it = await db.execute({
     sql: "SELECT kind FROM items WHERE id = ? AND deleted_at IS NULL",
     args: [itemId],
@@ -185,7 +194,8 @@ export async function unpackArchive(
     return { ok: false, error: "This archive is already being unpacked." };
 
   await db.execute({
-    sql: "INSERT INTO unpack_jobs (item_id, password, status) VALUES (?, ?, 'queued')",
+    sql: `INSERT INTO unpack_jobs (item_id, password, status) VALUES (?, ?, 'queued')
+          ON CONFLICT (item_id) WHERE status IN ('queued','running') DO NOTHING`,
     args: [itemId, password || null],
   });
   refresh();
@@ -304,10 +314,16 @@ export async function bulkPurgeNow(itemIds: number[]): Promise<{ ok: boolean; er
     }
   }
 
-  // Single delete — ON DELETE CASCADE removes parts, thumbnails, item_tags.
+  // One statement atomically records every tombstone before cascading metadata deletion.
   await db.execute({
-    sql: "DELETE FROM items WHERE id = ANY(?)",
-    args: [validIds],
+    sql: `WITH tombstones AS (
+            INSERT INTO purged_messages (channel_msg_id, tg_deleted)
+            SELECT channel_msg_id, ? FROM parts WHERE item_id = ANY(?)
+            ON CONFLICT(channel_msg_id) DO UPDATE SET tg_deleted =
+              GREATEST(purged_messages.tg_deleted, excluded.tg_deleted)
+          )
+          DELETE FROM items WHERE id = ANY(?)`,
+    args: [isDemo ? 1 : 0, validIds, validIds],
   });
 
   refresh();

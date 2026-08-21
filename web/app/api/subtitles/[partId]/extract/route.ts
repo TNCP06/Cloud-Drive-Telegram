@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { authorizePart } from "@/lib/resourceAuth";
 
 // Softsub extraction: POST starts a background job on the Python streamer that
 // downloads the ORIGINAL video from Telegram and extracts its embedded text
@@ -32,6 +33,10 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
   const { partId } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
   try {
     const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}/extract`, {
       method: "POST",
@@ -58,6 +63,10 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
   const { partId } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
   try {
     const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}/extract/status`, {
       headers: streamerHeaders(),

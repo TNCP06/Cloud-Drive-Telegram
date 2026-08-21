@@ -492,8 +492,13 @@ def _start_local_fetch(part_id: int, channel_msg_id: int, meta: dict,
     task = _local_fetch_tasks.get(part_id)
     if task and not task.done():
         return True
-    _local_fetch_tasks[part_id] = asyncio.create_task(
+    task = asyncio.create_task(
         _fetch_local_original(part_id, channel_msg_id, meta, total_size, mime))
+    _local_fetch_tasks[part_id] = task
+    task.add_done_callback(
+        lambda done, pid=part_id: _local_fetch_tasks.pop(pid, None)
+        if _local_fetch_tasks.get(pid) is done else None
+    )
     return True
 
 

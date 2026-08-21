@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { authorizePart } from "@/lib/resourceAuth";
 
 // Upload a manual subtitle file (SRT/VTT/ASS/…) for a video part. Proxies the
 // Python streamer, which converts it to WebVTT and stores it on /subtitles.
@@ -26,6 +27,10 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
   const { partId } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
   const lang = req.nextUrl.searchParams.get("lang") ?? "id";
   const ext = req.nextUrl.searchParams.get("ext") ?? "srt";
   if (!/^[a-z]{2,8}$/i.test(lang) || !/^[a-z0-9]{2,5}$/i.test(ext)) {

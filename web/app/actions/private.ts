@@ -54,6 +54,7 @@ export async function lockPrivate(): Promise<void> {
 // hiding/unhiding is not a content change, so the file keeps its real Modified date.
 export async function moveItemsPrivacy(itemIds: number[], makePrivate: boolean) {
   if (itemIds.length === 0) return;
+  if (!(await isPrivateUnlocked())) throw new Error("Private space is locked.");
   const priv = makePrivate ? 1 : 0;
   await db.execute({
     sql: "UPDATE items SET is_private = ?, folder_id = NULL WHERE id = ANY(?)",
@@ -66,6 +67,7 @@ export async function moveItemsPrivacy(itemIds: number[], makePrivate: boolean) 
 // lands at the destination root (parent_id = NULL); descendants keep their structure.
 // items.updated_at is preserved (see above).
 export async function moveFolderPrivacy(folderId: number, makePrivate: boolean) {
+  if (!(await isPrivateUnlocked())) throw new Error("Private space is locked.");
   const priv = makePrivate ? 1 : 0;
   const { itemIds, folderIds } = await getFolderItemsAndSubfolders(folderId);
 

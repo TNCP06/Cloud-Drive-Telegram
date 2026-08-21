@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { authorizePart } from "@/lib/resourceAuth";
 
 // List the subtitle languages available for a part. Proxies the Python streamer,
 // which reads them off its persistent /subtitles volume.
@@ -25,6 +26,10 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
   const { partId } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
   try {
     const headers: Record<string, string> = { Connection: "close" };
     if (process.env.STREAMER_SECRET) headers["X-Streamer-Secret"] = process.env.STREAMER_SECRET;

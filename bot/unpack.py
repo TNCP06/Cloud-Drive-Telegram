@@ -87,6 +87,10 @@ async def ensure_schema(db):
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_unpack_jobs_status ON unpack_jobs(status)")
     await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_unpack_jobs_active_item "
+        "ON unpack_jobs(item_id) WHERE status IN ('queued','running')"
+    )
+    await db.execute(
         "CREATE OR REPLACE FUNCTION notify_unpack_change() RETURNS trigger "
         "LANGUAGE plpgsql AS $func$ BEGIN "
         "PERFORM pg_notify('unpack_changed', TG_TABLE_NAME); RETURN NULL; END $func$"

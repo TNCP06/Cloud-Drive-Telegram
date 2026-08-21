@@ -4,6 +4,8 @@ import { stat } from "node:fs/promises";
 import { db } from "@/lib/db";
 import { jobDir, stagedFilePath } from "@/lib/staging";
 import type { Kind } from "@/lib/types";
+import { isAppAuthenticated } from "@/lib/apiAuth";
+import { isPrivateUnlocked } from "@/app/actions/private";
 
 // Finalize a resumable upload: verify the staged file is fully received, then queue
 // an upload_job for the watcher (origin='upload', cleanup_source=1 → the watcher
@@ -12,6 +14,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  if (!(await isAppAuthenticated())) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  }
   let body: {
     token?: string;
     name?: string;
@@ -81,11 +86,15 @@ export async function POST(req: NextRequest) {
   }
 
   const isPrivate = body.isPrivate ? 1 : 0;
+  if (isPrivate && !(await isPrivateUnlocked())) {
+    return NextResponse.json({ error: "Private space is locked." }, { status: 403 });
+  }
 
   const rs = await db.execute({
     sql:
       "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status, is_private) " +
-      "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'queued', ?) RETURNING id",
+      "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'queued', ?) " +
+      "ON CONFLICT (source_path) WHERE origin = 'upload' DO UPDATE SET source_path=excluded.source_path RETURNING id",
     args: [kind, title, tags, dir, partSize, onDisk, isPrivate],
   });
 

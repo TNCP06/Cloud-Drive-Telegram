@@ -79,6 +79,21 @@ try:
     watcher.PIKPAK_MAX_BYTES = 2000 * 1024 * 1024
     assert asyncio.run(watcher.plan_media(src)) == ("list", [src], False)
 
+    # A failed playable split must fail the job. Raw byte windows are valid for archives only.
+    watcher.PIKPAK_MAX_BYTES = 1
+    original_split = watcher.split_video
+    async def fail_split(_path):
+        raise RuntimeError("forced split failure")
+    watcher.split_video = fail_split
+    try:
+        try:
+            asyncio.run(watcher.plan_media(src))
+            raise AssertionError("oversized video unexpectedly fell back to a raw split")
+        except RuntimeError as exc:
+            assert "forced split failure" in str(exc)
+    finally:
+        watcher.split_video = original_split
+
     print(f"OK — {len(parts)} playable segments, {total:.2f}s total")
 finally:
     shutil.rmtree(work, ignore_errors=True)

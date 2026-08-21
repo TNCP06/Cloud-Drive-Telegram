@@ -78,7 +78,10 @@ async def send_part(path: str, caption: str, as_document: bool, chat_id: int):
     return msg["message_id"], media.get("file_id"), as_document
 
 
-async def index_uploaded(db, title, tags, part_no, total, kind, msg_id, file_name, file_size, file_id):
+async def index_uploaded(
+    db, title, tags, part_no, total, kind, msg_id, file_name, file_size, file_id,
+    is_private=False,
+):
     """Inline index of a bot-api-uploaded part — the bot gets no channel_post update for its own
     token's posts, so the watcher does exactly what the bot's indexer would have done. Slug rules
     mirror bot.py: media → slugify(title)-<msg_id> (titles may repeat), archive → slugify(title)
@@ -89,7 +92,9 @@ async def index_uploaded(db, title, tags, part_no, total, kind, msg_id, file_nam
     from tg_helpers import slugify
 
     slug = f"{slugify(title)}-{msg_id}" if kind == "media" else slugify(title)
-    item_id = await upsert_item(db, slug, title, kind, total, set_title=True)
+    item_id = await upsert_item(
+        db, slug, title, kind, total, set_title=True, is_private=is_private
+    )
     part_id = await upsert_part(db, item_id, part_no, msg_id, file_name, file_size, file_id)
     await recompute_totals(db, item_id)
     if tags:

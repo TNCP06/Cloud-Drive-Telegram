@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { authorizePart } from "@/lib/resourceAuth";
 
 // Serve one WebVTT subtitle track. Proxies the Python streamer.
 export const runtime = "nodejs";
@@ -24,6 +25,10 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
   const { partId, lang } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return new Response("Not found", { status: 404 });
+  }
   // Only allow simple language codes (defense-in-depth; the streamer also validates).
   if (!/^[a-z]{2,8}$/i.test(lang)) {
     return NextResponse.json({ error: "Bad language." }, { status: 400 });
@@ -40,7 +45,7 @@ export async function GET(
       status: 200,
       headers: {
         "Content-Type": "text/vtt; charset=utf-8",
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": "private, max-age=3600",
       },
     });
   } catch {

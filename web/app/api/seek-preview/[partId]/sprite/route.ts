@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { authorizePart } from "@/lib/resourceAuth";
 
 // Proxy seek-preview sprite image requests to the Python streamer.
 export const runtime = "nodejs";
@@ -25,6 +26,10 @@ export async function GET(
   }
 
   const { partId } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return new NextResponse("Not found", { status: 404 });
+  }
   const upstream = `${STREAMER_URL}/seek-preview/${partId}/sprite`;
 
   const headers: Record<string, string> = {};
@@ -39,7 +44,7 @@ export async function GET(
 
     const relay = new Headers();
     relay.set("Content-Type", "image/jpeg");
-    relay.set("Cache-Control", "public, max-age=86400");
+    relay.set("Cache-Control", "private, max-age=86400");
     const cl = resp.headers.get("content-length");
     if (cl) relay.set("Content-Length", cl);
 

@@ -203,6 +203,10 @@ CREATE INDEX IF NOT EXISTS idx_items_favorite  ON items(is_favorite) WHERE is_fa
 CREATE INDEX IF NOT EXISTS idx_items_private   ON items(is_private);
 CREATE INDEX IF NOT EXISTS idx_folders_private ON folders(is_private);
 CREATE INDEX IF NOT EXISTS idx_subtitles_part  ON subtitles(part_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_upload_jobs_staged_path
+    ON upload_jobs(source_path) WHERE origin = 'upload';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_unpack_jobs_active_item
+    ON unpack_jobs(item_id) WHERE status IN ('queued','running');
 
 -- ---------------------------------------------------------------------------
 -- Realtime change notification (web SSE) ----------------------------------

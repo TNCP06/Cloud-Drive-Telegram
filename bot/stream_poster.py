@@ -140,6 +140,7 @@ async def store_poster(db, part_id: int, src_path: str) -> bool:
             INSERT INTO thumbnails (part_id, mime, data, source) VALUES (?, ?, ?, 'ffmpeg')
             ON CONFLICT(part_id) DO UPDATE
                SET mime = excluded.mime, data = excluded.data, source = 'ffmpeg'
+             WHERE thumbnails.source <> 'manual'
             """,
             [part_id, mime, data_b64],
         )

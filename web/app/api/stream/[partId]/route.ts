@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { authorizePart } from "@/lib/resourceAuth";
 
 // Proxy authenticated streaming requests to the Python streamer service.
 // Excluded from middleware (avoids edge-runtime body-size limit), so auth
@@ -28,6 +29,10 @@ export async function GET(
   }
 
   const { partId } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return new NextResponse("Not found", { status: 404 });
+  }
 
   // UI-only demo (see lib/db.ts): there is no streamer and no Telegram, so a part's
   // `file_id` holds the path of a static demo asset instead of a Telegram file id.
@@ -36,7 +41,7 @@ export async function GET(
   if (process.env.DEMO_MODE === "1") {
     const rs = await db.execute({
       sql: "SELECT file_id FROM parts WHERE id = ?",
-      args: [Number(partId)],
+      args: [id],
     });
     const asset = String(rs.rows[0]?.file_id ?? "");
     if (!asset.startsWith("/demo/")) {

@@ -4,11 +4,13 @@ import { db } from "@/lib/db";
 import type { GalleryPart } from "@/lib/types";
 import { readFileSync } from "node:fs";
 import { refresh } from "./_shared";
+import { authorizeItem } from "@/lib/resourceAuth";
 
 // Gallery: thumbnails for ALL parts of an item, ordered by album position (channel_msg_id).
 // Used by PreviewDrawer to show all photos/videos in an album. Loaded on-demand
 // when the drawer opens → the main grid stays light (only one cover per item).
 export async function getGallery(itemId: number): Promise<GalleryPart[]> {
+  if (!(await authorizeItem(itemId))) return [];
   const rs = await db.execute({
     sql: `SELECT p.id AS part_id, p.file_name, p.file_size, t.mime, t.data
           FROM parts p
@@ -31,6 +33,7 @@ export async function getGallery(itemId: number): Promise<GalleryPart[]> {
 export async function reharvestThumbnail(
   itemId: number
 ): Promise<{ ok: boolean; harvested: number; error?: string }> {
+  if (!(await authorizeItem(itemId))) return { ok: false, harvested: 0, error: "Item not found." };
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
   const OWNER_USER_ID = process.env.OWNER_USER_ID;
@@ -132,7 +135,8 @@ export async function reharvestThumbnail(
         // a sharp ffmpeg poster must also hand it back to the backfill to re-poster later.
         sql: `INSERT INTO thumbnails (part_id, mime, data, source) VALUES (?, ?, ?, 'telegram')
          ON CONFLICT(part_id) DO UPDATE
-            SET mime = excluded.mime, data = excluded.data, source = 'telegram'`,
+            SET mime = excluded.mime, data = excluded.data, source = 'telegram'
+          WHERE thumbnails.source <> 'manual'`,
         args: [partId, "image/jpeg", data_b64],
       });
       harvested++;
@@ -163,6 +167,7 @@ export async function uploadThumbnail(
   mime: string,
   dataB64: string
 ): Promise<{ ok: boolean; updated: number; error?: string }> {
+  if (!(await authorizeItem(itemId))) return { ok: false, updated: 0, error: "Item not found." };
   if (dataB64.length > 750_000) {
     return { ok: false, updated: 0, error: "Image too large (max ~500 KB)." };
   }

@@ -184,9 +184,10 @@ async def _store_thumbnails(db, thumb_b64: str, thumb_mime: str, channel_msg_ids
             await asyncio.sleep(5 if attempt == 0 else 10)
             try:
                 result = await db.execute(
-                    "INSERT INTO thumbnails (part_id, mime, data) "
-                    "SELECT id, ?, ? FROM parts WHERE channel_msg_id = ? "
-                    "ON CONFLICT (part_id) DO NOTHING",
+                    "INSERT INTO thumbnails (part_id, mime, data, source) "
+                    "SELECT id, ?, ?, 'ffmpeg' FROM parts WHERE channel_msg_id = ? "
+                    "ON CONFLICT (part_id) DO UPDATE SET mime=excluded.mime, data=excluded.data, "
+                    "source=excluded.source WHERE thumbnails.source = 'telegram'",
                     [thumb_mime, thumb_b64, channel_msg_id],
                 )
                 if getattr(result, "rows_affected", 0):
@@ -204,7 +205,7 @@ async def claim_next(db):
         "UPDATE upload_jobs SET status='running', message='starting...', "
         "updated_at=now_text() "
         "WHERE id = (SELECT id FROM upload_jobs WHERE status='pending' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
-        "RETURNING id, kind, title, tags, source_path, part_size, origin, cleanup_source, parts_done"
+        "RETURNING id, kind, title, tags, source_path, part_size, origin, cleanup_source, parts_done, is_private"
     )
     if not rs.rows:
         return None
@@ -213,6 +214,7 @@ async def claim_next(db):
         "id": r[0], "kind": r[1], "title": r[2],
         "tags": r[3], "path": r[4], "part_size": r[5],
         "origin": r[6] or "local", "cleanup_source": r[7] or 0, "parts_done": r[8] or 0,
+        "is_private": r[9] or 0,
     }
     return job
 
@@ -346,12 +348,7 @@ async def plan_media(staged: str) -> tuple:
     if os.path.getsize(staged) <= PIKPAK_MAX_BYTES:
         return ("list", [staged], False)
     if os.path.splitext(staged)[1].lower() in _VIDEO_EXTS:
-        try:
-            return ("list", await split_video(staged), False)
-        except RuntimeError as e:
-            # Never lose the file to a split failure — fall back to raw parts (downloadable,
-            # just not streamable) exactly like an oversized archive.
-            print(f"  [warn] video split failed ({e}); falling back to a raw byte split")
+        return ("list", await split_video(staged), False)
     return ("stream", staged, True)
 
 
@@ -421,7 +418,7 @@ async def _harvest_thumbnail(client, channel, db, part_id: int, msg_id: int) -> 
 
 
 async def _send_part(client, channel, db, path, caption, as_document, thumb, cb,
-                     *, title, tags, part_no, total, kind) -> int:
+                     *, title, tags, part_no, total, kind, is_private=False) -> int:
     """Send one part and return its channel message id.
 
     Fast path: the local telegram-bot-api server (bot account → no FLOOD_PREMIUM_WAIT,
@@ -451,7 +448,7 @@ async def _send_part(client, channel, db, path, caption, as_document, thumb, cb,
             _botapi_bps["v"] = 0.5 * _botapi_bps["v"] + 0.5 * (size / elapsed)
             _, part_id = await botapi.index_uploaded(
                 db, title, tags, part_no, total, kind, msg_id,
-                os.path.basename(path), size, file_id)
+                os.path.basename(path), size, file_id, is_private=is_private)
             if kind == "media":
                 await _harvest_thumbnail(client, channel, db, part_id, msg_id)
             cb(size, size)
@@ -461,6 +458,11 @@ async def _send_part(client, channel, db, path, caption, as_document, thumb, cb,
         finally:
             ticker.cancel()
     msg = await _send_file_smart(client, channel, path, caption, as_document, thumb, cb)
+    # Inline indexing carries job-only privacy metadata that a Telegram caption cannot encode.
+    await botapi.index_uploaded(
+        db, title, tags, part_no, total, kind, msg.id,
+        os.path.basename(path), os.path.getsize(path), None, is_private=is_private,
+    )
     return msg.id
 
 
@@ -519,6 +521,7 @@ async def process(client, db, channel, job):
     origin = job.get("origin", "local")
     cleanup_source = bool(job.get("cleanup_source", 0))
     parts_done = int(job.get("parts_done", 0) or 0)
+    is_private = bool(job.get("is_private", 0))
     part_mb = int(job["part_size"] or 1500)
     print(f"\n=== Job #{jid}: [{kind}/{origin}] {title} ←  {path}"
           + (f"  (resume from part {parts_done + 1})" if parts_done else ""))
@@ -652,8 +655,9 @@ async def process(client, db, channel, job):
                     caption = build_caption(title, i, total, tags)
                     print(f"  [{i}/{total}] {os.path.basename(part_path)} ({length} B)")
                     msg_id = await _send_part(
-                        client, channel, db, part_path, caption, True, None, make_cb(i),
-                        title=title, tags=tags, part_no=i, total=total, kind=kind,
+                         client, channel, db, part_path, caption, True, None, make_cb(i),
+                         title=title, tags=tags, part_no=i, total=total, kind=kind,
+                         is_private=is_private,
                     )
                     uploaded_msg_ids.append(msg_id)
                     state["pct"] = min(99, int(i / total * 100))
@@ -684,9 +688,9 @@ async def process(client, db, channel, job):
                     caption = build_caption(part_title, part_no, part_total, tags)
                     print(f"  [{part_no}/{part_total}] {os.path.basename(p)}")
                     msg_id = await _send_part(
-                        client, channel, db, p, caption, as_document, own_thumb, make_cb(i),
-                        title=part_title, tags=tags, part_no=part_no,
-                        total=part_total, kind=kind,
+                         client, channel, db, p, caption, as_document, own_thumb, make_cb(i),
+                         title=part_title, tags=tags, part_no=part_no,
+                         total=part_total, kind=kind, is_private=is_private,
                     )
                     if video_segments:
                         if own_thumb:
@@ -812,14 +816,14 @@ async def purge_worker(client, channel, db, interval: int = 30):
                             failed.append(msg_id)
                 for msg_id in done:
                     await db.execute(
-                        "UPDATE purged_messages SET tg_deleted = 1 WHERE channel_msg_id = ?",
+                        "UPDATE purged_messages SET tg_deleted = 1 WHERE channel_msg_id = ? AND tg_deleted = 0",
                         [msg_id],
                     )
                 for msg_id in failed:
                     # 2 = gave up (still a tombstone, so it can never be re-indexed) — this
                     # stops the loop from retrying the same undeletable message forever.
                     await db.execute(
-                        "UPDATE purged_messages SET tg_deleted = 2 WHERE channel_msg_id = ?",
+                        "UPDATE purged_messages SET tg_deleted = 2 WHERE channel_msg_id = ? AND tg_deleted = 0",
                         [msg_id],
                     )
                 if done:

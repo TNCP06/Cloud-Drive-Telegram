@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { authorizePart } from "@/lib/resourceAuth";
 
 // Attach a subtitle file that is ALREADY stored on the drive (Telegram storage)
 // to a video part. Proxies the Python streamer, which downloads the small file
@@ -26,9 +27,16 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
   const { partId } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
   const { srcPartId, lang } = await req.json().catch(() => ({}));
   if (!Number.isInteger(srcPartId) || srcPartId <= 0 || !/^[a-z]{2,8}$/i.test(String(lang ?? "id"))) {
     return NextResponse.json({ error: "Bad source part or language." }, { status: 400 });
+  }
+  if (!(await authorizePart(srcPartId))) {
+    return NextResponse.json({ error: "Source part not found." }, { status: 404 });
   }
   try {
     const headers: Record<string, string> = { Connection: "close" };

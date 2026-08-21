@@ -11,12 +11,12 @@ async function getStats() {
   const [kinds, parts, tags, dl, dlSrc, unp, ups, trash] = await Promise.all([
     db.execute(
       "SELECT kind, count(*) AS n, coalesce(sum(total_size),0) AS bytes FROM items " +
-        "WHERE deleted_at IS NULL GROUP BY kind"
+        "WHERE deleted_at IS NULL AND is_private = 0 GROUP BY kind"
     ),
-    db.execute("SELECT count(*) AS n, coalesce(sum(file_size),0) AS bytes FROM parts"),
+    db.execute("SELECT count(*) AS n, coalesce(sum(p.file_size),0) AS bytes FROM parts p JOIN items i ON i.id=p.item_id WHERE i.is_private=0 AND i.deleted_at IS NULL"),
     db.execute(
       "SELECT t.name, count(*) AS n FROM item_tags it JOIN tags t ON t.id=it.tag_id " +
-        "JOIN items i ON i.id=it.item_id WHERE i.deleted_at IS NULL " +
+         "JOIN items i ON i.id=it.item_id WHERE i.deleted_at IS NULL AND i.is_private=0 " +
         "GROUP BY t.name ORDER BY n DESC LIMIT 8"
     ),
     db.execute("SELECT status, count(*) AS n FROM download_jobs GROUP BY status"),
@@ -26,7 +26,7 @@ async function getStats() {
     ),
     db.execute("SELECT status, count(*) AS n FROM unpack_jobs GROUP BY status"),
     db.execute("SELECT status, count(*) AS n FROM upload_jobs GROUP BY status"),
-    db.execute("SELECT count(*) AS n FROM items WHERE deleted_at IS NOT NULL"),
+    db.execute("SELECT count(*) AS n FROM items WHERE deleted_at IS NOT NULL AND is_private=0"),
   ]);
 
   let disk = { total: 0, free: 0 };

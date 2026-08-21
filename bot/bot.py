@@ -212,11 +212,16 @@ async def purge_job(context: ContextTypes.DEFAULT_TYPE):
                 # A bot may not delete a message the user account posted; the watcher's
                 # Telethon session finishes the job off the purged_messages queue.
                 log.info("Bot cannot delete msg %s — queued for the watcher", row[0])
-            # Tombstone either way: index_history.py must never re-index a purged message.
-            await tombstone_messages(db, [row[0]], tg_deleted=deleted)
             await asyncio.sleep(0.2)
-        # PostgreSQL cascades: items → parts → thumbnails, items → item_tags.
-        await db.execute("DELETE FROM items WHERE id = ?", [item_id])
+        # Tombstones and cascading metadata deletion are one PostgreSQL statement.
+        await db.execute(
+            "WITH tombstones AS ("
+            "INSERT INTO purged_messages (channel_msg_id, tg_deleted) "
+            "SELECT channel_msg_id, 0 FROM parts WHERE item_id = ? "
+            "ON CONFLICT(channel_msg_id) DO NOTHING) "
+            "DELETE FROM items WHERE id = ?",
+            [item_id, item_id],
+        )
         purged += 1
 
     log.info("Purge complete: %s item(s) permanently deleted", purged)
@@ -249,6 +254,18 @@ async def post_init(app: Application):
         # first. schema.sql has it for a fresh volume; this adds it to an existing database.
         await db.execute(
             "ALTER TABLE thumbnails ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'telegram'"
+        )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_upload_jobs_staged_path "
+            "ON upload_jobs(source_path) WHERE origin = 'upload'"
+        )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_unpack_jobs_active_item "
+            "ON unpack_jobs(item_id) WHERE status IN ('queued','running')"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_purged_messages_pending "
+            "ON purged_messages(channel_msg_id) WHERE tg_deleted = 0"
         )
         log.info("Migration: ensured file_id/thumb_missing on parts, is_private on upload_jobs, "
                  "source on thumbnails")

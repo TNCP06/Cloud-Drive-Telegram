@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { authorizePart } from "@/lib/resourceAuth";
 
 // Proxy seek-preview VTT requests to the Python streamer.
 // Auth mirrors the main /api/stream proxy.
@@ -26,6 +27,10 @@ export async function GET(
   }
 
   const { partId } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return new NextResponse("Not found", { status: 404 });
+  }
   const reqUrl = new URL(req.url);
   const wait = reqUrl.searchParams.get("wait") === "true";
   const upstream = `${STREAMER_URL}/seek-preview/${partId}${wait ? "?wait=true" : ""}`;
@@ -65,7 +70,7 @@ export async function GET(
       status: 200,
       headers: {
         "Content-Type": "text/vtt",
-        "Cache-Control": "public, max-age=86400",
+        "Cache-Control": "private, max-age=86400",
       },
     });
   } catch {

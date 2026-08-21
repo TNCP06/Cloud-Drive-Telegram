@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { db } from "@/lib/db";
+import { isAppAuthenticated } from "@/lib/apiAuth";
+import { authorizeItem } from "@/lib/resourceAuth";
 
 // Cover thumbnail (first part) of an item, served as a CACHEABLE image instead of being
 // embedded as base64 in the main page payload. The grid now ships only a tiny URL per item, so
@@ -13,11 +15,13 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ itemId: string }> }
 ) {
+  if (!(await isAppAuthenticated())) return new NextResponse("Unauthorized", { status: 401 });
   const { itemId } = await params;
   const id = Number(itemId);
-  if (!Number.isFinite(id)) {
+  if (!Number.isInteger(id) || id <= 0) {
     return new NextResponse("Bad request", { status: 400 });
   }
+  if (!(await authorizeItem(id))) return new NextResponse("Not found", { status: 404 });
 
   // Cover = thumbnail of the item's FIRST part (album = smallest channel_msg_id).
   const rs = await db.execute({
@@ -40,7 +44,7 @@ export async function GET(
       "Content-Type": String(row.mime || "image/jpeg"),
       // Browser caches the cover; stale-while-revalidate lets a re-harvested/replaced cover
       // refresh quietly in the background without ever blocking the grid render.
-      "Cache-Control": "public, max-age=600, stale-while-revalidate=86400",
+      "Cache-Control": "private, max-age=600, stale-while-revalidate=86400",
     },
   });
 }

@@ -169,8 +169,9 @@ async function indexBotDrop(
           }
           if (dataB64) {
             await db.execute({
-              sql: `INSERT INTO thumbnails (part_id, mime, data) VALUES (?, 'image/jpeg', ?)
-                    ON CONFLICT(part_id) DO UPDATE SET mime = excluded.mime, data = excluded.data`,
+              sql: `INSERT INTO thumbnails (part_id, mime, data, source) VALUES (?, 'image/jpeg', ?, 'telegram')
+                    ON CONFLICT(part_id) DO UPDATE SET mime = excluded.mime, data = excluded.data,
+                      source = 'telegram' WHERE thumbnails.source <> 'manual'`,
               args: [partId, dataB64],
             });
           }
@@ -203,12 +204,20 @@ export async function processBotDrop(formData: FormData) {
   if (!msg_id || !chat_id || !title) {
     return { error: "Semua data (termasuk judul) wajib diisi." };
   }
+  const parsedMsgId = Number(msg_id);
+  if (!Number.isInteger(parsedMsgId) || parsedMsgId <= 0) {
+    return { error: "Message ID is invalid." };
+  }
 
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
+  const OWNER_USER_ID = process.env.OWNER_USER_ID;
 
-  if (!BOT_TOKEN || !STORAGE_CHANNEL_ID) {
+  if (!BOT_TOKEN || !STORAGE_CHANNEL_ID || !OWNER_USER_ID) {
     return { error: "Konfigurasi BOT_TOKEN atau STORAGE_CHANNEL_ID di Vercel belum diisi." };
+  }
+  if (chat_id !== OWNER_USER_ID) {
+    return { error: "Bot Drop source chat is not authorized." };
   }
 
   // Format caption sesuai kontrak
@@ -229,7 +238,7 @@ export async function processBotDrop(formData: FormData) {
       body: JSON.stringify({
         chat_id: STORAGE_CHANNEL_ID,
         from_chat_id: chat_id,
-        message_id: parseInt(msg_id, 10),
+        message_id: parsedMsgId,
         caption: caption,
       }),
     });

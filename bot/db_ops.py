@@ -19,7 +19,7 @@ async def is_user_authorized(db, user_id: int) -> bool:
         return False
 
 
-async def resolve_folders(db, folder_path: str) -> int | None:
+async def resolve_folders(db, folder_path: str, is_private=None) -> int | None:
     """Resolve (creating as needed) a 'A/B/C' path to the id of its last folder.
 
     A folder that is in the trash is revived on the way: we are about to put a live item
@@ -33,9 +33,14 @@ async def resolve_folders(db, folder_path: str) -> int | None:
     for part in parts:
         # Prefer a live folder over a trashed one with the same name at this level.
         if parent_id is None:
-            rs = await db.execute(
-                "SELECT id FROM folders WHERE name = ? AND parent_id IS NULL "
-                "ORDER BY (deleted_at IS NULL) DESC, id LIMIT 1", [part])
+            if is_private is None:
+                rs = await db.execute(
+                    "SELECT id FROM folders WHERE name = ? AND parent_id IS NULL "
+                    "ORDER BY (deleted_at IS NULL) DESC, id LIMIT 1", [part])
+            else:
+                rs = await db.execute(
+                    "SELECT id FROM folders WHERE name = ? AND parent_id IS NULL AND is_private = ? "
+                    "ORDER BY (deleted_at IS NULL) DESC, id LIMIT 1", [part, int(bool(is_private))])
         else:
             rs = await db.execute(
                 "SELECT id FROM folders WHERE name = ? AND parent_id = ? "
@@ -52,18 +57,21 @@ async def resolve_folders(db, folder_path: str) -> int | None:
             # folder never creates a Main-space folder halfway down.
             await db.execute(
                 "INSERT INTO folders (name, parent_id, is_private) VALUES (?, ?, "
-                "COALESCE((SELECT is_private FROM folders WHERE id = ?), 0))",
-                [part, parent_id, parent_id]
+                "COALESCE((SELECT is_private FROM folders WHERE id = ?), ?))",
+                [part, parent_id, parent_id, int(bool(is_private)) if is_private is not None else 0]
             )
             if parent_id is None:
-                rs = await db.execute("SELECT id FROM folders WHERE name = ? AND parent_id IS NULL", [part])
+                rs = await db.execute(
+                    "SELECT id FROM folders WHERE name = ? AND parent_id IS NULL AND is_private = ?",
+                    [part, int(bool(is_private)) if is_private is not None else 0],
+                )
             else:
                 rs = await db.execute("SELECT id FROM folders WHERE name = ? AND parent_id = ?", [part, parent_id])
             parent_id = rs.rows[0][0]
     return parent_id
 
 
-async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
+async def upsert_item(db, slug, title, kind, total, set_title=True, is_private=None) -> int:
     """Upsert item by slug, return item_id.
 
     set_title=False → do NOT overwrite an existing title. Used for album members
@@ -75,15 +83,18 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
         title_parts = [p.strip() for p in original_title.split("/")]
         folder_path = "/".join(title_parts[:-1])
         title = title_parts[-1]
-        folder_id = await resolve_folders(db, folder_path)
+        folder_id = await resolve_folders(db, folder_path, is_private=is_private)
     else:
         folder_id = None
 
     # Check if the item already exists to protect user modifications
-    rs_exist = await db.execute("SELECT title, folder_id FROM items WHERE slug = ?", [slug])
+    rs_exist = await db.execute("SELECT title, folder_id, is_private FROM items WHERE slug = ?", [slug])
     if rs_exist.rows:
         existing_title = rs_exist.rows[0][0]
         existing_folder_id = rs_exist.rows[0][1]
+        existing_private = int(rs_exist.rows[0][2] or 0)
+        if is_private is not None and existing_private != int(bool(is_private)):
+            raise ValueError(f"Slug '{slug}' already exists in the other storage space")
 
         allow_overwrite = False
         if set_title:
@@ -114,11 +125,11 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
     # A new item inherits the space (Main / Private) of the folder it lands in. Without this
     # a file indexed into a Private folder stays is_private = 0: hidden in Private (wrong
     # space) AND hidden in Main (its folder is not there), visible only under Recent.
-    is_private = 0
-    if folder_id is not None:
+    item_private = int(bool(is_private)) if is_private is not None else 0
+    if is_private is None and folder_id is not None:
         rs_priv = await db.execute("SELECT is_private FROM folders WHERE id = ?", [folder_id])
         if rs_priv.rows:
-            is_private = int(rs_priv.rows[0][0] or 0)
+            item_private = int(rs_priv.rows[0][0] or 0)
 
     await db.execute(
         """
@@ -131,7 +142,7 @@ async def upsert_item(db, slug, title, kind, total, set_title=True) -> int:
             folder_id   = CASE WHEN ? = 1 THEN excluded.folder_id ELSE items.folder_id END,
             updated_at  = now_text()
         """,
-        [slug, title, kind, total, folder_id, is_private,
+        [slug, title, kind, total, folder_id, item_private,
          1 if set_title else 0, 1 if set_title else 0],
     )
     rs = await db.execute("SELECT id FROM items WHERE slug = ?", [slug])
@@ -365,6 +376,7 @@ async def upsert_thumbnail(db, part_id, mime, data_b64, source="telegram"):
         INSERT INTO thumbnails (part_id, mime, data, source) VALUES (?, ?, ?, ?)
         ON CONFLICT(part_id) DO UPDATE
            SET mime = excluded.mime, data = excluded.data, source = excluded.source
+         WHERE thumbnails.source <> 'manual' OR excluded.source = 'manual'
         """,
         [part_id, mime, data_b64, source],
     )
