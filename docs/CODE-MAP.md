@@ -169,7 +169,7 @@ Allows authorized users to import videos/files from public and private Telegram 
 - `parse_tg_links` / `parse_import_command`: parses public (`https://t.me/channel/42`), private (`https://t.me/c/1234567890/42`), topic threads, and batch ranges (`10-15`), extracting optional custom title and tags.
 - `_download_part_stream`: chunked MTProto stream download using `client.iter_download` with flood-wait resilience (`FloodError` retry) and live progress tracking (speed EMA, ETA, byte counter).
 - `_safe_edit`: throttled progress message updater editing the user's progress message in Telegram via Bot API HTTP.
-- `_track_upload_job`: monitors the handed-off `upload_jobs` row to completion, updating `tg_import_jobs` status to `done` or `failed`.
+- `_track_upload_jobs`: monitors handed-off `upload_jobs` row(s) to completion, updating `tg_import_jobs` status to `done` or `failed`.
 - `ensure_schema`: auto-creates `tg_import_jobs` table, index, and `tg_import_changed` trigger.
 - `worker_loop`: background task in `watcher.py` polling `tg_import_jobs`.
 

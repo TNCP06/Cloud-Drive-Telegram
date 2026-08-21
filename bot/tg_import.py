@@ -264,44 +264,80 @@ async def _download_part_stream(client, msg, dst_path, on_progress=None):
                 f.seek(offset)
 
 
-async def _track_upload_job(db, jid, upload_id, chat_id, msg_id, title, size, tags, dst_dir):
-    """Poll upload_jobs until completion, then mark tg_import_job done."""
+def _sanitize_filename(name: str) -> str:
+    cleaned = re.sub(r'[\/\\:\*\?"<>\|]', "_", name).strip()
+    return cleaned or "media_file"
+
+
+async def _track_upload_jobs(db, jid: int, upload_ids: List[int], chat_id: Optional[int], msg_id: Optional[int], title: str, size: int, tags: str, dst_dir: str):
+    """Poll upload_jobs until all parts complete, then mark tg_import_job done and clean staging."""
+    if not upload_ids:
+        shutil.rmtree(dst_dir, ignore_errors=True)
+        return
+
     state = {"last_edit": 0.0}
+    total_jobs = len(upload_ids)
+
     for _ in range(4 * 3600 // 5):  # poll up to ~4h
         await asyncio.sleep(5)
         try:
-            rs = await db.execute("SELECT status, message FROM upload_jobs WHERE id=?", [upload_id])
+            placeholders = ",".join("?" for _ in upload_ids)
+            rs = await db.execute(
+                f"SELECT id, status, message FROM upload_jobs WHERE id IN ({placeholders})",
+                upload_ids,
+            )
         except Exception:
             continue
+
         if not rs.rows:
+            continue
+
+        rows_by_id = {r[0]: {"status": r[1], "message": r[2]} for r in rs.rows}
+
+        # Check if any upload job failed or was canceled
+        failed_job = next((j for j in rows_by_id.values() if j["status"] in ("error", "canceled")), None)
+        if failed_job:
+            shutil.rmtree(dst_dir, ignore_errors=True)
+            err_detail = failed_job.get("message") or f"upload {failed_job['status']}"
+            await db.execute(
+                "UPDATE tg_import_jobs SET status='failed', error=?, updated_at=now_text() WHERE id=?",
+                [err_detail[:400], jid],
+            )
+            await _safe_edit(chat_id, msg_id, f"❌ <b>Upload ke Telegram gagal:</b>\n{html.escape(err_detail[:300])}")
             return
-        st, detail = rs.rows[0][0], rs.rows[0][1]
-        if st == "done":
+
+        # Check if all upload jobs finished successfully
+        done_count = sum(1 for j in rows_by_id.values() if j["status"] == "done")
+        if done_count == total_jobs:
             shutil.rmtree(dst_dir, ignore_errors=True)
             await db.execute(
                 "UPDATE tg_import_jobs SET status='done', progress=100, updated_at=now_text() WHERE id=?",
-                [jid]
+                [jid],
             )
+            item_desc = f" ({total_jobs} files)" if total_jobs > 1 else ""
             success_text = (
                 f"🎉 <b>Berhasil diimpor ke Cloud Drive!</b>\n\n"
-                f"📁 <b>Title:</b> <code>{html.escape(title)}</code>\n"
+                f"📁 <b>Title:</b> <code>{html.escape(title)}</code>{item_desc}\n"
                 f"📊 <b>Size:</b> <code>{human_size(size)}</code>\n"
                 f"🏷 <b>Tags:</b> <code>{html.escape(tags or '-')}</code>"
             )
             await _safe_edit(chat_id, msg_id, success_text)
-            log.info("tg_import job #%s complete (upload #%s done)", jid, upload_id)
+            log.info("tg_import job #%s complete (all %s upload jobs done)", jid, total_jobs)
             return
-        if st in ("error", "canceled"):
-            await db.execute(
-                "UPDATE tg_import_jobs SET status='failed', error=?, updated_at=now_text() WHERE id=?",
-                [f"upload {st}", jid]
-            )
-            await _safe_edit(chat_id, msg_id, f"❌ Upload ke Telegram gagal: status {st}")
-            return
+
         now = time.monotonic()
-        if st == "running" and detail and (now - state["last_edit"] >= 10):
+        if now - state["last_edit"] >= 10:
             state["last_edit"] = now
-            await _safe_edit(chat_id, msg_id, f"⬆️ <b>Menyimpan ke Cloud Drive:</b>\n• {html.escape(title)}\n• {html.escape(detail)}")
+            running_job = next((j for j in rows_by_id.values() if j["status"] == "running"), None)
+            detail = running_job.get("message") if running_job else None
+            batch_note = f" (File {done_count + 1}/{total_jobs})" if total_jobs > 1 else ""
+            status_text = (
+                f"⬆️ <b>Menyimpan ke Cloud Drive:</b>\n"
+                f"• <b>{html.escape(title)}</b>{batch_note}\n"
+            )
+            if detail:
+                status_text += f"• <code>{html.escape(detail)}</code>"
+            await _safe_edit(chat_id, msg_id, status_text)
 
 
 async def _process(client, db, job):
@@ -392,7 +428,8 @@ async def _process(client, db, job):
 
         tags = tags or ""
 
-        # 3. Create staging destination
+        # 3. Create staging destination (clean any stale files from previous attempts)
+        shutil.rmtree(dst_dir, ignore_errors=True)
         os.makedirs(dst_dir, exist_ok=True)
         total_batch_size = sum(int(getattr(m.file, "size", 0) or getattr(m, "size", 0) or 0) for m in messages_to_fetch)
         first_fname = getattr(messages_to_fetch[0].file, "name", None) or f"item_{target_msg_id}.mp4"
@@ -418,6 +455,8 @@ async def _process(client, db, job):
                     m_fname = f"audio_{m.id}{ext}"
                 else:
                     m_fname = f"file_{m.id}{ext}"
+            else:
+                m_fname = _sanitize_filename(m_fname)
 
             target_path = os.path.join(dst_dir, m_fname)
             if os.path.exists(target_path):
@@ -519,8 +558,7 @@ async def _process(client, db, job):
             f"<i>Sedang diproses oleh watcher (upload/segmentasi jika &gt;2GB)…</i>"
         )
 
-        for uid in upload_ids:
-            await _track_upload_job(db, jid, uid, chat_id, msg_id, title, total_batch_size, tags, dst_dir)
+        await _track_upload_jobs(db, jid, upload_ids, chat_id, msg_id, title, total_batch_size, tags, dst_dir)
 
     except (asyncio.CancelledError, TgImportError) as e:
         shutil.rmtree(dst_dir, ignore_errors=True)
