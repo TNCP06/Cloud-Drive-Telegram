@@ -37,7 +37,7 @@ import os
 import re
 import shutil
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 
@@ -145,6 +145,7 @@ TELEGRAM_API_URL = os.environ.get("TELEGRAM_API_URL")
 
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", "/cache"))
 CACHE_MAX_BYTES = int(os.environ.get("CACHE_MAX_SIZE_GB", "15")) * 1073741824
+MESSAGE_CACHE_MAX = max(128, int(os.environ.get("STREAM_MESSAGE_CACHE_MAX", "2048")))
 # Disk-free floor: evict cache to keep at least this much free on the (shared) volume, so streaming
 # yields disk to a concurrent download and to other projects on the same VPS — a good-neighbor
 # invariant independent of the cache's own size cap. Only TCD's own cache is ever evicted.
@@ -225,7 +226,7 @@ _tg_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 _tg_last_req_time: dict[int, float] = {}
 
 # Telethon message cache: channel_msg_id → message object
-_msg_cache: dict[int, object] = {}
+_msg_cache: OrderedDict[int, object] = OrderedDict()
 
 # Track last-requested chunk index per part for prefetch orientation
 _last_request_pos: dict[int, int] = {}
@@ -247,6 +248,7 @@ _poster_failed: set[int] = set()  # part_ids that failed THIS session (retried n
 # Both backfills pull WHOLE videos onto a 30 GB disk shared with other projects. Serialise them:
 # one retroactive download at a time, whichever loop asks first.
 _backfill_download_lock: "asyncio.Lock | None" = None
+_cache_bytes: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -272,17 +274,22 @@ def _read_meta(part_id: int) -> dict | None:
 
 
 def _write_meta(meta: dict) -> None:
+    global _cache_bytes
     d = _part_dir(meta["part_id"])
     d.mkdir(parents=True, exist_ok=True)
-    _meta_path(meta["part_id"]).write_text(json.dumps(meta))
+    path = _meta_path(meta["part_id"])
+    old_size = path.stat().st_size if path.exists() else 0
+    path.write_text(json.dumps(meta))
+    if _cache_bytes is not None:
+        _cache_bytes += path.stat().st_size - old_size
 
 
 def _touch_meta(part_id: int) -> None:
-    """Update last_accessed timestamp in meta.json."""
-    meta = _read_meta(part_id)
-    if meta:
-        meta["last_accessed"] = time.time()
-        _write_meta(meta)
+    """Touch metadata without synchronously rewriting its JSON payload."""
+    try:
+        os.utime(_meta_path(part_id), None)
+    except FileNotFoundError:
+        pass
 
 
 def _mime_from_filename(name: str | None) -> str:
@@ -296,14 +303,19 @@ def _mime_from_filename(name: str | None) -> str:
 # Helpers — cache eviction (LRU by part directory)
 # ---------------------------------------------------------------------------
 def _cache_total_bytes() -> int:
+    global _cache_bytes
+    if _cache_bytes is not None:
+        return _cache_bytes
     total = 0
     if not CACHE_DIR.exists():
+        _cache_bytes = 0
         return 0
     for part_dir in CACHE_DIR.iterdir():
         if part_dir.is_dir() and part_dir.name.startswith("part_"):
             for f in part_dir.iterdir():
                 if f.is_file():
                     total += f.stat().st_size
+    _cache_bytes = total
     return total
 
 
@@ -323,6 +335,7 @@ def _room_ok(current: int, needed: int) -> bool:
 def _evict_if_needed(needed: int) -> None:
     """Evict oldest-accessed part directories until the cache is under its size cap AND the shared
     disk keeps its free-space floor (whichever bites first)."""
+    global _cache_bytes
     current = _cache_total_bytes()
     if _room_ok(current, needed):
         return
@@ -335,9 +348,8 @@ def _evict_if_needed(needed: int) -> None:
         meta_file = part_dir / "meta.json"
         if meta_file.exists():
             try:
-                meta = json.loads(meta_file.read_text())
-                entries.append((meta.get("last_accessed", 0), part_dir))
-            except (json.JSONDecodeError, KeyError):
+                entries.append((meta_file.stat().st_mtime, part_dir))
+            except OSError:
                 entries.append((0, part_dir))
         else:
             entries.append((0, part_dir))
@@ -352,6 +364,7 @@ def _evict_if_needed(needed: int) -> None:
         log.info("Evicting cache dir %s (%.1f MB)", part_dir.name, dir_size / 1048576)
         shutil.rmtree(part_dir, ignore_errors=True)
         current -= dir_size
+        _cache_bytes = current
         try:
             _clear_part_state(int(part_dir.name.removeprefix("part_")))
         except ValueError:
@@ -605,10 +618,18 @@ async def _get_tg_message(channel_msg_id: int):
 
     """Get a Telegram message, using the in-memory cache."""
     if channel_msg_id in _msg_cache:
-        return _msg_cache[channel_msg_id]
+        msg = _msg_cache.pop(channel_msg_id)
+        _msg_cache[channel_msg_id] = msg
+        return msg
     msg = await tg_client.get_messages(channel, ids=channel_msg_id)
     if msg:
         _msg_cache[channel_msg_id] = msg
+        if len(_msg_cache) > MESSAGE_CACHE_MAX:
+            old_id, _ = _msg_cache.popitem(last=False)
+            lock = _tg_locks.get(old_id)
+            if not lock or not lock.locked():
+                _tg_locks.pop(old_id, None)
+                _tg_last_req_time.pop(old_id, None)
     return msg
 
 
@@ -835,6 +856,8 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                                     break
 
                     os.rename(temp_path, chunk_path)
+                    if _cache_bytes is not None:
+                        _cache_bytes += chunk_path.stat().st_size
                     return  # Success
                 except telethon.errors.FloodError as e:
                     file_mode = "ab"  # append on retry
@@ -867,6 +890,8 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
             if temp_path.exists() and not chunk_path.exists():
                 try:
                     os.rename(temp_path, chunk_path)
+                    if _cache_bytes is not None:
+                        _cache_bytes += chunk_path.stat().st_size
                     log.info("Successfully promoted completed chunk %d of part %d to cache in finally block", chunk_index, part_id)
                 except Exception as e:
                     log.error("Failed to rename temp file to cache in finally block: %s", e)
@@ -1006,6 +1031,9 @@ def _clear_part_state(part_id: int) -> None:
     _last_request_pos.pop(part_id, None)
     _prefetch_tasks.pop(part_id, None)
     _local_file_paths.pop(part_id, None)
+    for key, lock in list(_part_locks.items()):
+        if key[0] == part_id and not lock.locked():
+            _part_locks.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1077,8 +1105,10 @@ async def _next_backfill_part() -> dict | None:
         "SELECT p.id, p.channel_msg_id, p.file_name, p.file_id, p.file_size "
         "FROM parts p JOIN items i ON i.id = p.item_id "
         "WHERE i.kind = 'media' AND i.deleted_at IS NULL "
-        "AND p.id NOT IN (SELECT part_id FROM subtitles) "
-        "ORDER BY p.id"
+        "AND lower(p.file_name) LIKE ANY(?) "
+        "AND NOT EXISTS (SELECT 1 FROM subtitles s WHERE s.part_id = p.id) "
+        "ORDER BY p.id LIMIT 100",
+        [[f"%{ext}" for ext in VIDEO_EXTS]],
     )
     for row in rs.rows:
         part_id = int(row[0])
@@ -1264,8 +1294,10 @@ async def _next_poster_part() -> dict | None:
         "FROM parts p JOIN items i ON i.id = p.item_id "
         "LEFT JOIN thumbnails t ON t.part_id = p.id "
         "WHERE i.kind = 'media' AND i.deleted_at IS NULL "
+        "AND lower(p.file_name) LIKE ANY(?) "
         "AND COALESCE(t.source, 'telegram') NOT IN ('ffmpeg', 'manual') "
-        "ORDER BY p.id DESC"
+        "ORDER BY p.id DESC LIMIT 100",
+        [[f"%{ext}" for ext in VIDEO_EXTS]],
     )
     for row in rs.rows:
         part_id = int(row[0])

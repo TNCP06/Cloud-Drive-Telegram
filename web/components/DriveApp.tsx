@@ -79,7 +79,6 @@ import {
   bulkRestore,
   bulkPurgeNow
 } from "@/app/actions";
-import { prefetchGallery } from "@/lib/gallery-cache";
 import { useUpload } from "./UploadProvider";
 import { DEFAULT_PART_MB } from "@/lib/uploadClient";
 
@@ -428,24 +427,6 @@ export function DriveApp({
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
-
-  /* ---- background album gallery prefetch (idle)
-     Warm the session cache for all multi-part albums as soon as drive data is ready,
-     so album previews open instantly (not just on the second open). */
-  useEffect(() => {
-    const albums = files.filter((f) => f.kind === "media" && f.parts > 1);
-    if (!albums.length) return;
-    const w = window as typeof window & {
-      requestIdleCallback?: (cb: () => void) => number;
-      cancelIdleCallback?: (h: number) => void;
-    };
-    const schedule = w.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 300));
-    const handle = schedule(() => albums.forEach((f) => prefetchGallery(f.id)));
-    return () => {
-      if (w.cancelIdleCallback) w.cancelIdleCallback(handle);
-      else window.clearTimeout(handle);
-    };
-  }, [files]);
 
   /* ---- mutations (server actions) ---- */
   const doStar = (item: DriveFile) =>
@@ -2409,4 +2390,3 @@ export function DriveApp({
     </div>
   );
 }
-

@@ -25,6 +25,7 @@ import {
   deleteUpload,
   getAllUploads,
   markUploadErrored,
+  patchUploadMeta,
 } from "@/lib/uploadDb";
 
 // A file selected in the browser but not yet (fully) uploaded to the VPS. Lives in
@@ -323,17 +324,9 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     if (patch.title === undefined && patch.tags === undefined) return;
     const it = itemsRef.current.find((i) => i.id === id);
     if (!it || it.stage === "done") return;
-    putUpload({
-      token: it.token,
-      tokenKey: it.tokenKey,
-      file: it.file,
-      name: it.name,
-      size: it.size,
-      kind: it.kind,
-      title: it.title,
-      tags: it.tags,
-      partSize: it.partSize,
-      errored: it.stage === "error",
+    void patchUploadMeta(it.token, {
+      title: patch.title ?? it.title,
+      tags: patch.tags ?? it.tags,
     });
   }, [updateLocal]);
 

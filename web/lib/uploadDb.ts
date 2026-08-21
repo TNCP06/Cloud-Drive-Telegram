@@ -9,7 +9,8 @@ import type { Kind } from "@/lib/types";
 
 const DB_NAME = "tcd-upload-db";
 const STORE = "queue";
-const VERSION = 1;
+const META_STORE = "metadata";
+const VERSION = 2;
 
 // One persisted queue item. `file` is a Blob (structured-cloneable) — IndexedDB can
 // store File/Blob directly, so we keep the original bytes for resume.
@@ -40,14 +41,17 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: "token" });
       }
+      if (!db.objectStoreNames.contains(META_STORE)) {
+        db.createObjectStore(META_STORE, { keyPath: "token" });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-function tx(db: IDBDatabase, mode: IDBTransactionMode): IDBObjectStore {
-  return db.transaction(STORE, mode).objectStore(STORE);
+function tx(db: IDBDatabase, mode: IDBTransactionMode, store = STORE): IDBObjectStore {
+  return db.transaction(store, mode).objectStore(store);
 }
 
 // Save (or overwrite) a queue item. Best-effort: a quota error degrades to in-memory
@@ -91,13 +95,36 @@ export async function markUploadErrored(token: string, errored: boolean): Promis
   }
 }
 
+// Update metadata without structured-cloning the potentially multi-gigabyte Blob.
+export async function patchUploadMeta(
+  token: string,
+  patch: Partial<Pick<PersistedUpload, "title" | "tags" | "kind" | "errored">>
+): Promise<void> {
+  if (!hasIDB()) return;
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const put = tx(db, "readwrite", META_STORE).put({ token, ...patch });
+      put.onsuccess = () => resolve();
+      put.onerror = () => reject(put.error);
+    });
+    db.close();
+  } catch (e) {
+    console.warn("[uploadDb] metadata patch failed", e);
+  }
+}
+
 export async function deleteUpload(token: string): Promise<void> {
   if (!hasIDB()) return;
   try {
     const db = await openDb();
     await new Promise<void>((resolve, reject) => {
       const r = tx(db, "readwrite").delete(token);
-      r.onsuccess = () => resolve();
+      r.onsuccess = () => {
+        const meta = tx(db, "readwrite", META_STORE).delete(token);
+        meta.onsuccess = () => resolve();
+        meta.onerror = () => reject(meta.error);
+      };
       r.onerror = () => reject(r.error);
     });
     db.close();
@@ -112,7 +139,17 @@ export async function getAllUploads(): Promise<PersistedUpload[]> {
     const db = await openDb();
     const rows = await new Promise<PersistedUpload[]>((resolve, reject) => {
       const r = tx(db, "readonly").getAll();
-      r.onsuccess = () => resolve((r.result as PersistedUpload[]) ?? []);
+      r.onsuccess = () => {
+        const queue = (r.result as PersistedUpload[]) ?? [];
+        const meta = tx(db, "readonly", META_STORE).getAll();
+        meta.onsuccess = () => {
+          const patches = new Map(
+            (meta.result as Array<{ token: string } & Partial<PersistedUpload>>).map((m) => [m.token, m])
+          );
+          resolve(queue.map((item) => ({ ...item, ...patches.get(item.token) })));
+        };
+        meta.onerror = () => reject(meta.error);
+      };
       r.onerror = () => reject(r.error);
     });
     db.close();
