@@ -534,17 +534,28 @@ export function DriveApp({
 
   /* ---- counts ---- */
   const counts: Counts = useMemo(() => {
-    const live = files.filter((f) => !f.trashed);
     const now = Date.now();
     const c: Counts = {
-      all: live.length,
-      recent: live.filter((f) => (now - f.modified) / 86400000 < 14).length,
-      starred: live.filter((f) => f.starred).length,
-      trash: files.filter((f) => f.trashed).length,
+      all: 0,
+      recent: 0,
+      starred: 0,
+      trash: 0,
       tags: {},
     };
     tags.forEach((tg) => {
-      c.tags[tg.id] = live.filter((f) => f.tags.includes(tg.id)).length;
+      c.tags[tg.id] = 0;
+    });
+    files.forEach((f) => {
+      if (f.trashed) {
+        c.trash++;
+        return;
+      }
+      c.all++;
+      if ((now - f.modified) / 86400000 < 14) c.recent++;
+      if (f.starred) c.starred++;
+      f.tags.forEach((tagId) => {
+        if (c.tags[tagId] !== undefined) c.tags[tagId]++;
+      });
     });
     return c;
   }, [files, tags]);
@@ -605,8 +616,9 @@ export function DriveApp({
       if (currentFolderId !== null) {
         list = files.filter((f) => f.trashed && f.folderId === currentFolderId);
       } else {
+        const trashedFolderIds = new Set(folders.filter((fd) => fd.trashed).map((fd) => fd.id));
         list = files.filter(
-          (f) => f.trashed && (!f.folderId || !folders.find((fd) => fd.id === f.folderId)?.trashed)
+          (f) => f.trashed && (!f.folderId || !trashedFolderIds.has(f.folderId))
         );
       }
     } else if (view === "starred") list = list.filter((f) => f.starred);

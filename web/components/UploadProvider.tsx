@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -343,7 +344,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     (i) => i.stage === "uploading" || i.stage === "finalizing" || i.stage === "ready"
   ).length;
 
-  const value: UploadContextValue = {
+  const value: UploadContextValue = useMemo(() => ({
     items,
     speed,
     running,
@@ -357,7 +358,8 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     removeLocal,
     updateLocal: persistMeta,
     clearDone,
-  };
+  }), [items, speed, running, readyCount, uploadingNow, activeCount,
+       addFiles, runQueue, pauseRun, cancelRun, removeLocal, persistMeta, clearDone]);
 
   return <UploadContext.Provider value={value}>{children}</UploadContext.Provider>;
 }

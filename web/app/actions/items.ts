@@ -239,38 +239,36 @@ export async function getUnpackStatus(
 
 export async function bulkToggleFavorite(itemIds: number[], starred: boolean) {
   if (itemIds.length === 0) return;
-  for (const itemId of itemIds) {
-    await db.execute({
-      sql: "UPDATE items SET is_favorite = ?, updated_at = now_text() WHERE id = ?",
-      args: [starred ? 1 : 0, itemId],
-    });
-  }
+  await db.execute({
+    sql: "UPDATE items SET is_favorite = ?, updated_at = now_text() WHERE id = ANY(?)",
+    args: [starred ? 1 : 0, itemIds],
+  });
   refresh();
 }
 
 export async function bulkSoftDelete(itemIds: number[]) {
   if (itemIds.length === 0) return;
-  for (const itemId of itemIds) {
-    await db.execute({
-      sql: "UPDATE items SET deleted_at = now_text() WHERE id = ? AND deleted_at IS NULL",
-      args: [itemId],
-    });
-  }
+  await db.execute({
+    sql: "UPDATE items SET deleted_at = now_text() WHERE id = ANY(?) AND deleted_at IS NULL",
+    args: [itemIds],
+  });
   refresh();
 }
 
 export async function bulkRestore(itemIds: number[]) {
   if (itemIds.length === 0) return;
-  for (const itemId of itemIds) {
-    const rs = await db.execute({ sql: "SELECT folder_id FROM items WHERE id = ?", args: [itemId] });
-    if (rs.rows.length && rs.rows[0].folder_id !== null) {
-      await restoreParentChain(Number(rs.rows[0].folder_id));
-    }
-    await db.execute({
-      sql: "UPDATE items SET deleted_at = NULL WHERE id = ?",
-      args: [itemId],
-    });
+  // Fetch distinct parent folders that need their chain untrashed.
+  const rs = await db.execute({
+    sql: "SELECT DISTINCT folder_id FROM items WHERE id = ANY(?) AND folder_id IS NOT NULL",
+    args: [itemIds],
+  });
+  for (const row of rs.rows) {
+    await restoreParentChain(Number(row.folder_id));
   }
+  await db.execute({
+    sql: "UPDATE items SET deleted_at = NULL WHERE id = ANY(?)",
+    args: [itemIds],
+  });
   refresh();
 }
 
@@ -287,32 +285,30 @@ export async function bulkPurgeNow(itemIds: number[]): Promise<{ ok: boolean; er
   const telegramApiUrl = process.env.TELEGRAM_API_URL || "https://api.telegram.org";
   const apiBase = BOT_TOKEN ? `${telegramApiUrl.replace(/\/+$/, "")}/bot${BOT_TOKEN}` : "";
 
-  for (const id of itemIds) {
-    const guard = await db.execute({
-      sql: "SELECT id FROM items WHERE id = ? AND deleted_at IS NOT NULL",
-      args: [id],
-    });
-    if (!guard.rows.length) continue;
+  // Only purge items that are actually trashed.
+  const guardRs = await db.execute({
+    sql: "SELECT id FROM items WHERE id = ANY(?) AND deleted_at IS NOT NULL",
+    args: [itemIds],
+  });
+  const validIds = guardRs.rows.map((r) => Number(r.id));
+  if (validIds.length === 0) { refresh(); return { ok: true }; }
 
+  // Delete Telegram messages for all parts of valid items.
+  if (!isDemo && apiBase && STORAGE_CHANNEL_ID) {
     const parts = await db.execute({
-      sql: "SELECT channel_msg_id FROM parts WHERE item_id = ?",
-      args: [id],
+      sql: "SELECT channel_msg_id FROM parts WHERE item_id = ANY(?)",
+      args: [validIds],
     });
-
-    if (!isDemo && apiBase && STORAGE_CHANNEL_ID) {
-      for (const row of parts.rows) {
-        await purgeMessage(apiBase, STORAGE_CHANNEL_ID, Number(row.channel_msg_id));
-      }
+    for (const row of parts.rows) {
+      await purgeMessage(apiBase, STORAGE_CHANNEL_ID, Number(row.channel_msg_id));
     }
-
-    await db.execute({
-      sql: "DELETE FROM thumbnails WHERE part_id IN (SELECT id FROM parts WHERE item_id = ?)",
-      args: [id],
-    });
-    await db.execute({ sql: "DELETE FROM parts WHERE item_id = ?", args: [id] });
-    await db.execute({ sql: "DELETE FROM item_tags WHERE item_id = ?", args: [id] });
-    await db.execute({ sql: "DELETE FROM items WHERE id = ?", args: [id] });
   }
+
+  // Single delete — ON DELETE CASCADE removes parts, thumbnails, item_tags.
+  await db.execute({
+    sql: "DELETE FROM items WHERE id = ANY(?)",
+    args: [validIds],
+  });
 
   refresh();
   return { ok: true };

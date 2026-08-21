@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { db } from "@/lib/db";
 import { sha256Hex } from "@/lib/auth";
 import { refresh } from "./_shared";
+import { getFolderItemsAndSubfolders } from "./folders";
 
 // PIN-gated Private space. Items/folders with is_private = 1 live in a parallel drive
 // that's hidden from the Main page and reachable only at /private after entering a PIN
@@ -48,43 +49,16 @@ export async function lockPrivate(): Promise<void> {
   (await cookies()).delete(PRIV_COOKIE);
 }
 
-// Recursively collect a folder + all descendant folder ids and the item ids within.
-async function collectSubtree(
-  folderId: number
-): Promise<{ itemIds: number[]; folderIds: number[] }> {
-  const itemIds: number[] = [];
-  const folderIds: number[] = [folderId];
-
-  const itemsRs = await db.execute({
-    sql: "SELECT id FROM items WHERE folder_id = ?",
-    args: [folderId],
-  });
-  for (const row of itemsRs.rows) itemIds.push(Number(row.id));
-
-  const subRs = await db.execute({
-    sql: "SELECT id FROM folders WHERE parent_id = ?",
-    args: [folderId],
-  });
-  for (const row of subRs.rows) {
-    const child = await collectSubtree(Number(row.id));
-    itemIds.push(...child.itemIds);
-    folderIds.push(...child.folderIds);
-  }
-  return { itemIds, folderIds };
-}
-
 // Move items between Main (makePrivate=false) and Private (makePrivate=true). Lands at
 // the destination root (folder_id = NULL). Intentionally does NOT touch updated_at —
 // hiding/unhiding is not a content change, so the file keeps its real Modified date.
 export async function moveItemsPrivacy(itemIds: number[], makePrivate: boolean) {
   if (itemIds.length === 0) return;
   const priv = makePrivate ? 1 : 0;
-  for (const id of itemIds) {
-    await db.execute({
-      sql: "UPDATE items SET is_private = ?, folder_id = NULL WHERE id = ?",
-      args: [priv, id],
-    });
-  }
+  await db.execute({
+    sql: "UPDATE items SET is_private = ?, folder_id = NULL WHERE id = ANY(?)",
+    args: [priv, itemIds],
+  });
   refresh();
 }
 
@@ -93,12 +67,12 @@ export async function moveItemsPrivacy(itemIds: number[], makePrivate: boolean) 
 // items.updated_at is preserved (see above).
 export async function moveFolderPrivacy(folderId: number, makePrivate: boolean) {
   const priv = makePrivate ? 1 : 0;
-  const { itemIds, folderIds } = await collectSubtree(folderId);
+  const { itemIds, folderIds } = await getFolderItemsAndSubfolders(folderId);
 
-  for (const fid of folderIds) {
+  if (folderIds.length > 0) {
     await db.execute({
-      sql: "UPDATE folders SET is_private = ? WHERE id = ?",
-      args: [priv, fid],
+      sql: "UPDATE folders SET is_private = ? WHERE id = ANY(?)",
+      args: [priv, folderIds],
     });
   }
   // Detach the top folder so it sits at the destination space's root.
@@ -106,10 +80,10 @@ export async function moveFolderPrivacy(folderId: number, makePrivate: boolean) 
     sql: "UPDATE folders SET parent_id = NULL WHERE id = ?",
     args: [folderId],
   });
-  for (const id of itemIds) {
+  if (itemIds.length > 0) {
     await db.execute({
-      sql: "UPDATE items SET is_private = ? WHERE id = ?",
-      args: [priv, id],
+      sql: "UPDATE items SET is_private = ? WHERE id = ANY(?)",
+      args: [priv, itemIds],
     });
   }
   refresh();

@@ -228,6 +228,7 @@ CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_unpack_jobs_status ON unpack_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_tg_import_jobs_status ON tg_import_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_parts_item      ON parts(item_id);
+CREATE INDEX IF NOT EXISTS idx_parts_item_msg  ON parts(item_id, channel_msg_id ASC);
 CREATE INDEX IF NOT EXISTS idx_thumbnails_part ON thumbnails(part_id);
 CREATE INDEX IF NOT EXISTS idx_items_kind      ON items(kind);
 CREATE INDEX IF NOT EXISTS idx_items_deleted   ON items(deleted_at);

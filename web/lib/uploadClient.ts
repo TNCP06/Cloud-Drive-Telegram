@@ -145,16 +145,22 @@ export async function uploadResumable(
           ac,
           // Live byte progress within this chunk: report the running total and a
           // rolling speed so the bar + speed track in real time, not in 16 MB jumps.
-          (loaded) => {
-            const sent = chunkStart + loaded;
-            const now = Date.now();
-            let sp = 0;
-            if (now - anchor.t > 500) {
-              sp = ((sent - anchor.bytes) * 1000) / (now - anchor.t);
-              anchor = { t: now, bytes: sent };
-            }
-            onProgress(sent, sp);
-          }
+          // Throttled to ~5 updates/sec to avoid flooding React state updates.
+          (() => {
+            let lastFire = 0;
+            return (loaded: number) => {
+              const now = Date.now();
+              if (now - lastFire < 200 && loaded < blob.size) return;
+              lastFire = now;
+              const sent = chunkStart + loaded;
+              let sp = 0;
+              if (now - anchor.t > 500) {
+                sp = ((sent - anchor.bytes) * 1000) / (now - anchor.t);
+                anchor = { t: now, bytes: sent };
+              }
+              onProgress(sent, sp);
+            };
+          })()
         );
         if (res.status === 409) {
           const j = res.json() as { received?: number };

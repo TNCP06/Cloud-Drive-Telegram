@@ -53,18 +53,17 @@ async function fetchDriveData(
     // gallery is loaded on-demand in PreviewDrawer via getGallery().
     db.execute(
       `SELECT DISTINCT p.item_id AS item_id
-       FROM thumbnails t JOIN parts p ON p.id = t.part_id`
+       FROM thumbnails t JOIN parts p ON p.id = t.part_id
+       JOIN items i ON i.id = p.item_id WHERE i.is_private = ${priv}`
     ),
     // First part info for EVERY item (single or multi-part). Media uses it for video
     // streaming; non-media uses the first part's file_name to derive a fine-grained
     // document type (PDF/Word/Excel/…) and to drive inline document preview.
     db.execute(
-      `WITH first_part AS (
-         SELECT p.item_id, p.id AS part_id, p.file_name,
-                ROW_NUMBER() OVER (PARTITION BY p.item_id ORDER BY p.channel_msg_id) AS rn
-         FROM parts p
-       )
-       SELECT item_id, part_id, file_name FROM first_part WHERE rn = 1`
+      `SELECT DISTINCT ON (p.item_id) p.item_id, p.id AS part_id, p.file_name
+       FROM parts p JOIN items i ON i.id = p.item_id
+       WHERE i.is_private = ${priv}
+       ORDER BY p.item_id, p.channel_msg_id ASC`
     ),
     db.execute(`SELECT id, name, parent_id, created_at, updated_at, deleted_at FROM folders WHERE is_private = ${priv} ORDER BY lower(name)`),
   ]);

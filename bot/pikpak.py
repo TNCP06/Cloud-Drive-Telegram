@@ -379,16 +379,19 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
                         eta = (f" · ETA {_fmt_eta((size - done) / avg)}"
                                if avg > 0 and size > done else "")
                         state["spd_bytes"], state["spd_t"], state["last_db"] = done, now, now
-                        # Cancel/pause check: the buttons flip status to 'failed'/'paused'
-                        # (see cancel_download / pause_download).
+                        # Atomically update progress if not cancelled/paused; RETURNING status verifies state
                         rs = await db.execute(
-                            "SELECT status FROM download_jobs WHERE id=?", [job["id"]])
-                        st = rs.rows[0][0] if rs.rows else None
-                        if st in ("failed", "paused"):
+                            "UPDATE download_jobs SET progress=?, speed=?, bytes_done=?, updated_at=now_text() "
+                            "WHERE id=? AND status NOT IN ('failed', 'paused') "
+                            "RETURNING status",
+                            [pct, spd + eta, done, job["id"]],
+                        )
+                        if not rs.rows:
+                            rs_st = await db.execute("SELECT status FROM download_jobs WHERE id=?", [job["id"]])
+                            st = rs_st.rows[0][0] if rs_st.rows else "failed"
                             proc.kill(); await proc.wait()
                             await _set(db, job["id"], bytes_done=done)
                             raise DownloadCancelled() if st == "failed" else DownloadPaused()
-                        await _set(db, job["id"], progress=pct, speed=spd + eta, bytes_done=done)
                         await _safe_edit(
                             bot, job,
                             f"⬇️ {fname}\n{human_size(done)} / {human_size(size)} ({pct}%, {spd}{eta})",

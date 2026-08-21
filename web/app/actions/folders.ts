@@ -39,31 +39,29 @@ export async function renameFolder(id: number, name: string) {
 }
 
 // Get all item + subfolder IDs inside a folder recursively.
-async function getFolderItemsAndSubfolders(
+export async function getFolderItemsAndSubfolders(
   folderId: number
 ): Promise<{ itemIds: number[]; folderIds: number[] }> {
-  const itemIds: number[] = [];
-  const folderIds: number[] = [folderId];
-
-  const itemsRs = await db.execute({
-    sql: "SELECT id FROM items WHERE folder_id = ?",
+  const fRs = await db.execute({
+    sql: `
+      WITH RECURSIVE subfolders AS (
+        SELECT id FROM folders WHERE id = ?
+        UNION ALL
+        SELECT f.id FROM folders f
+        JOIN subfolders s ON f.parent_id = s.id
+      )
+      SELECT id FROM subfolders
+    `,
     args: [folderId],
   });
-  for (const row of itemsRs.rows) {
-    itemIds.push(Number(row.id));
-  }
+  const folderIds = fRs.rows.map((r) => Number(r.id));
+  if (folderIds.length === 0) return { itemIds: [], folderIds: [folderId] };
 
-  const subRs = await db.execute({
-    sql: "SELECT id FROM folders WHERE parent_id = ?",
-    args: [folderId],
+  const iRs = await db.execute({
+    sql: "SELECT id FROM items WHERE folder_id = ANY(?)",
+    args: [folderIds],
   });
-  for (const row of subRs.rows) {
-    const subFolderId = Number(row.id);
-    const recurse = await getFolderItemsAndSubfolders(subFolderId);
-    itemIds.push(...recurse.itemIds);
-    folderIds.push(...recurse.folderIds);
-  }
-
+  const itemIds = iRs.rows.map((r) => Number(r.id));
   return { itemIds, folderIds };
 }
 
@@ -71,23 +69,17 @@ export async function deleteFolder(id: number) {
   const { itemIds, folderIds } = await getFolderItemsAndSubfolders(id);
 
   if (itemIds.length > 0) {
-    // Soft delete items inside recursively.
-    for (const itemId of itemIds) {
-      await db.execute({
-        sql: "UPDATE items SET deleted_at = now_text() WHERE id = ? AND deleted_at IS NULL",
-        args: [itemId],
-      });
-    }
+    await db.execute({
+      sql: "UPDATE items SET deleted_at = now_text() WHERE id = ANY(?) AND deleted_at IS NULL",
+      args: [itemIds],
+    });
   }
 
   if (folderIds.length > 0) {
-    // Soft delete the folder and its subfolders recursively.
-    for (const fId of folderIds) {
-      await db.execute({
-        sql: "UPDATE folders SET deleted_at = now_text() WHERE id = ? AND deleted_at IS NULL",
-        args: [fId],
-      });
-    }
+    await db.execute({
+      sql: "UPDATE folders SET deleted_at = now_text() WHERE id = ANY(?) AND deleted_at IS NULL",
+      args: [folderIds],
+    });
   }
 
   refresh();
@@ -117,21 +109,17 @@ export async function restoreFolder(id: number) {
   const { itemIds, folderIds } = await getFolderItemsAndSubfolders(id);
 
   if (itemIds.length > 0) {
-    for (const itemId of itemIds) {
-      await db.execute({
-        sql: "UPDATE items SET deleted_at = NULL WHERE id = ?",
-        args: [itemId],
-      });
-    }
+    await db.execute({
+      sql: "UPDATE items SET deleted_at = NULL WHERE id = ANY(?)",
+      args: [itemIds],
+    });
   }
 
   if (folderIds.length > 0) {
-    for (const fId of folderIds) {
-      await db.execute({
-        sql: "UPDATE folders SET deleted_at = NULL WHERE id = ?",
-        args: [fId],
-      });
-    }
+    await db.execute({
+      sql: "UPDATE folders SET deleted_at = NULL WHERE id = ANY(?)",
+      args: [folderIds],
+    });
   }
 
   refresh();
@@ -169,18 +157,16 @@ export async function moveItemsToFolder(itemIds: number[], folderId: number | nu
     });
     if (rs.rows.length) isPrivate = Number(rs.rows[0].is_private ?? 0);
   }
-  for (const itemId of itemIds) {
-    if (isPrivate === null) {
-      await db.execute({
-        sql: "UPDATE items SET folder_id = ?, updated_at = now_text() WHERE id = ?",
-        args: [folderId, itemId],
-      });
-    } else {
-      await db.execute({
-        sql: "UPDATE items SET folder_id = ?, is_private = ?, updated_at = now_text() WHERE id = ?",
-        args: [folderId, isPrivate, itemId],
-      });
-    }
+  if (isPrivate === null) {
+    await db.execute({
+      sql: "UPDATE items SET folder_id = ?, updated_at = now_text() WHERE id = ANY(?)",
+      args: [folderId, itemIds],
+    });
+  } else {
+    await db.execute({
+      sql: "UPDATE items SET folder_id = ?, is_private = ?, updated_at = now_text() WHERE id = ANY(?)",
+      args: [folderId, isPrivate, itemIds],
+    });
   }
   refresh();
 }

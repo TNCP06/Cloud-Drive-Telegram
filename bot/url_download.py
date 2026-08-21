@@ -531,16 +531,17 @@ async def http_stream_copy(bot, db, job, dst: str, state: dict):
                         eta = f" · ETA {_fmt_eta((size - done) / avg)}" if avg > 0 and size > done else ""
                         state["spd_bytes"], state["spd_t"], state["last_db"] = done, now, now
 
-                        rs = await db.execute("SELECT status FROM download_jobs WHERE id=?", [job["id"]])
-                        st = rs.rows[0][0] if rs.rows else None
-                        if st in ("failed", "paused"):
+                        rs = await db.execute(
+                            "UPDATE download_jobs SET progress=?, speed=?, bytes_done=?, updated_at=now_text() "
+                            "WHERE id=? AND status NOT IN ('failed', 'paused') "
+                            "RETURNING status",
+                            [pct, spd + eta, done, job["id"]],
+                        )
+                        if not rs.rows:
+                            rs_st = await db.execute("SELECT status FROM download_jobs WHERE id=?", [job["id"]])
+                            st = rs_st.rows[0][0] if rs_st.rows else "failed"
                             await db.execute("UPDATE download_jobs SET bytes_done=? WHERE id=?", [done, job["id"]])
                             raise DownloadCancelled() if st == "failed" else DownloadPaused()
-
-                        await db.execute(
-                            "UPDATE download_jobs SET progress=?, speed=?, bytes_done=?, updated_at=now_text() WHERE id=?",
-                            [pct, spd + eta, done, job["id"]]
-                        )
 
                         now_t = time.monotonic()
                         if now_t - state["last_edit"] >= EDIT_THROTTLE_S and job.get("chat_id") and job.get("message_id"):

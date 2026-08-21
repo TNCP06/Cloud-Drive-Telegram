@@ -63,12 +63,16 @@ export async function renameTag(id: number, name: string) {
 
   if (existing.rows.length) {
     const targetId = Number(existing.rows[0].id);
-    // Re-point relations; ON CONFLICT keeps the row already on the target.
+    // Delete item_tags rows that would conflict (item already has the target tag).
     await db.execute({
-      sql: "UPDATE OR IGNORE item_tags SET tag_id = ? WHERE tag_id = ?",
+      sql: "DELETE FROM item_tags WHERE tag_id = ? AND item_id IN (SELECT item_id FROM item_tags WHERE tag_id = ?)",
+      args: [id, targetId],
+    });
+    // Re-point surviving relations to the target tag.
+    await db.execute({
+      sql: "UPDATE item_tags SET tag_id = ? WHERE tag_id = ?",
       args: [targetId, id],
     });
-    await db.execute({ sql: "DELETE FROM item_tags WHERE tag_id = ?", args: [id] });
     await db.execute({ sql: "DELETE FROM tags WHERE id = ?", args: [id] });
   } else {
     // Pin the colour before renaming: if this tag has no explicit colour, lock in the

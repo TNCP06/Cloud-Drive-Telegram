@@ -451,10 +451,12 @@ async def _process(client, db, job):
             m_size = int(getattr(m.file, "size", 0) or getattr(m, "size", 0) or 0)
 
             async def on_progress(done_bytes, _part_total, current_idx=idx, total_items=len(messages_to_fetch), fname=m_fname):
-                if await _is_cancelled(db, jid):
-                    raise asyncio.CancelledError("Import cancelled by user")
-
                 now = time.monotonic()
+                if now - state.get("last_cancel", 0.0) >= 2.0:
+                    state["last_cancel"] = now
+                    if await _is_cancelled(db, jid):
+                        raise asyncio.CancelledError("Import cancelled by user")
+
                 overall_done = batch_done_base + done_bytes
                 total = total_batch_size or 1
                 pct = min(100, int(overall_done * 100 / total))
