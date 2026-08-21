@@ -429,7 +429,7 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
 
 async def _process(bot, db, job):
     jid, fname, size = job["id"], job["filename"], job["size"]
-    drive = resolve_drive(job.get("source")) or resolve_drive("pikpak")
+    source = (job.get("source") or "pikpak").lower()
     dst = os.path.join(PIKPAK_STAGING_DIR, str(jid))
     state = {"last_edit": 0.0, "last_pct": -1, "last_db": 0.0, "start": time.monotonic()}
     await _safe_edit(bot, job, f"⬇️ Downloading {fname} ({human_size(size)}) …", state,
@@ -450,7 +450,17 @@ async def _process(bot, db, job):
             raise PikpakError(
                 f"❌ Not enough disk to finish {fname}: {human_size(free)} free, "
                 f"{human_size(remaining)} still needed.")
-        await _rclone_copy(bot, db, job, dst, state, drive)
+
+        if source in ("streamtape", "gofile", "url", "http"):
+            from url_download import http_stream_copy
+            await http_stream_copy(bot, db, job, dst, state)
+            base = os.path.splitext(fname)[0] or fname
+            title = f"{source}/{base}"
+        else:
+            drive = resolve_drive(source) or resolve_drive("pikpak")
+            await _rclone_copy(bot, db, job, dst, state, drive)
+            title = _drive_title(job["remote_path"], fname, drive)  # files it under the drive folder
+
         fpath = _resolve_single(dst)  # sanity: a file actually landed
 
         # Hand off to the existing upload pipeline. origin='upload' + cleanup_source=1 means
@@ -462,7 +472,6 @@ async def _process(bot, db, job):
         #                           stays streamable (part_size doesn't apply to media).
         kind = "media" if _is_media(fname) else "archive"  # photo/video → thumbnail+preview; else document
         part_size = DRIVE_SPLIT_PART_MB if size > PIKPAK_MAX_BYTES else 4096
-        title = _drive_title(job["remote_path"], fname, drive)  # files it under the drive folder
         rs = await db.execute(
             "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, "
             "cleanup_source, total_bytes, status) VALUES (?, ?, '', ?, ?, 'upload', 1, ?, 'pending') "
@@ -472,7 +481,7 @@ async def _process(bot, db, job):
         upload_id = rs.rows[0][0] if rs.rows else None
         await _set(db, jid, status="downloaded", progress=100)
         await _safe_edit(bot, job, f"✅ Downloaded {fname} — uploading to Telegram…", state, force=True)
-        log.info("PikPak job #%s downloaded, handed to upload_jobs #%s", jid, upload_id)
+        log.info("Download job #%s downloaded (%s), handed to upload_jobs #%s", jid, source, upload_id)
         # Track the upload to completion so /jobs shows 'done' and the staging file is confirmed
         # gone. (cleanup_source=1 already makes the watcher delete it on a successful upload; this
         # updates status + is a defensive backstop.)
@@ -847,7 +856,15 @@ async def jobs_text(db) -> str:
     for jid, fname, size, status, progress, error, source, speed in rs.rows:
         icon = _STATUS_ICON.get(status, "•")
         drive = resolve_drive(source)
-        tag = f"[{html.escape(drive['display'] if drive else str(source))}] "
+        if drive:
+            d_name = drive.get("display", source)
+        elif str(source).lower() == "streamtape":
+            d_name = "Streamtape"
+        elif str(source).lower() == "gofile":
+            d_name = "Gofile"
+        else:
+            d_name = str(source).title()
+        tag = f"[{html.escape(d_name)}] "
         extra = (f" {progress}%" + (f" · {html.escape(speed)}" if speed else "")) if status == "downloading" else ""
         tail = f" — {html.escape(error[:60])}" if status == "failed" and error else ""
         lines.append(f"{icon} #{jid} {tag}{html.escape(str(fname))} ({human_size(size)}) [{status}{extra}]{tail}")

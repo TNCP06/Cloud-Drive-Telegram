@@ -13,7 +13,8 @@ approximate and will drift — treat function names as the stable anchor.
 > `tg_helpers.py` (pure helpers), `db_ops.py` (idempotent Postgres ops), `indexing.py`
 > (channel indexing + thumbnail harvest + `index_bot_copy`), `db_backup.py` (daily DB backup
 > → Telegram), `pikpak.py` (generic remote-download: `/pikpak` `/baidu` + `_ls`/`_jobs`, drive
-> registry, ☁️ Cloud Drives inline-button browser + in-bot rclone worker). `bot.py` keeps the interactive handlers
+> registry, ☁️ Cloud Drives inline-button browser + in-bot rclone worker), `url_download.py`
+> (URL extractors & HTTP streaming download: Streamtape & Gofile.io). `bot.py` keeps the interactive handlers
 > + `main()` and **re-exports** the names
 > `index_history.py` imports (`from bot import …`). The streamer's background compression lives in
 > `stream_compress.py`, seek-preview sprite generation in `stream_seekpreview.py`, and video
@@ -97,6 +98,13 @@ stranded mid-download; `paused` survives restarts). Needs **rclone in the bot
 image** + host `rclone.conf` bind-mounted; downloads land in the shared `staging` volume. **Env:**
 `PIKPAK_*`, `DRIVES_JSON`, `DRIVE_SPLIT_PART_MB`, `RCLONE_BIN`. OpenList infra + runbook:
 [`infra/openlist/`](../infra/openlist/README.md). One-check: `test_pikpak.py`.
+
+### `url_download.py` — Streamtape & Gofile URL extractors and HTTP streaming download
+Allows pulling files directly from Streamtape and Gofile.io without local download.
+- Extractors: `extract_streamtape` (normalizes embed/video URLs, parses title & obfuscated `norobotlink`/`ideoooolink` JS tokens), `extract_gofile` (authenticates guest sessions, fetches dynamic salt from `wt.obf.js`, computes `X-Website-Token` via sha256, extracts single/multi-file contents).
+- Helpers: `is_streamtape_url`, `is_gofile_url`, `start_url_download` (resolves links, checks disk capacity against staging, enqueues into `download_jobs`).
+- Worker: `http_stream_copy` (HTTP stream download supporting `Range: bytes=` resume, throttled progress updates, DB status updates, stall timers, cancel/pause).
+- Handlers: `on_streamtape`, `on_gofile` (`/streamtape`, `/gofile`), integrated with `/menu` ☁️ Cloud Drives and chat link auto-detection.
 
 ### `watcher.py` — upload-queue executor (long-running, Telethon, **laptop OR server**)
 Handles two job origins (`upload_jobs.origin`) and target space (`is_private`):

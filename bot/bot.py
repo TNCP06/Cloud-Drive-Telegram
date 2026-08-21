@@ -100,6 +100,13 @@ from pikpak import (  # noqa: F401  (remote-download feature: PikPak + WebDAV dr
     start_workers as start_pikpak_workers,
 )
 import tg_import
+from url_download import (
+    on_streamtape,
+    on_gofile,
+    is_streamtape_url,
+    is_gofile_url,
+    start_url_download,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +388,8 @@ async def post_init(app: Application):
             BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
             BotCommand("import", "Import from Telegram link: /import <link>"),
+            BotCommand("streamtape", "Download Streamtape video: /streamtape <url>"),
+            BotCommand("gofile", "Download Gofile link: /gofile <url>"),
             BotCommand("auth", "Authorize yourself using password"),
             BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
             BotCommand("pikpak_ls", "Browse PikPak: /pikpak_ls [folder]"),
@@ -396,6 +405,8 @@ async def post_init(app: Application):
             BotCommand("menu", "Show bot main menu & commands"),
             BotCommand("start", "Trigger file download / Greet"),
             BotCommand("import", "Import from Telegram link: /import <link>"),
+            BotCommand("streamtape", "Download Streamtape video: /streamtape <url>"),
+            BotCommand("gofile", "Download Gofile link: /gofile <url>"),
             BotCommand("pikpak", "Download a PikPak file: /pikpak <path>"),
             BotCommand("pikpak_ls", "Browse PikPak: /pikpak_ls [folder]"),
             BotCommand("pikpak_jobs", "Recent download jobs"),
@@ -705,6 +716,14 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if prompt_id:
             await _delete_messages(context, message.chat_id, [prompt_id])
         await message.reply_text("❌ Drive download prompt cancelled.")
+        return
+
+    if context.user_data.get("url_await"):
+        prompt_id = context.user_data.pop("url_prompt_id", None)
+        context.user_data.pop("url_await", None)
+        if prompt_id:
+            await _delete_messages(context, message.chat_id, [prompt_id])
+        await message.reply_text("❌ URL download prompt cancelled.")
         return
 
     if "upload_file" in context.user_data or "upload_state" in context.user_data or "upload_queue" in context.user_data:
@@ -1292,10 +1311,33 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _delete_messages(context, message.chat_id, cleanup)
         return
 
+    # URL guided input (from the Streamtape / Gofile menu buttons)
+    url_mode = context.user_data.get("url_await")
+    if url_mode:
+        ptext = (message.text or "").strip()
+        prompt_id = context.user_data.pop("url_prompt_id", None)
+        context.user_data.pop("url_await", None)
+        if ptext.startswith("/"):
+            return  # let CommandHandlers run
+        await start_url_download(message, db, ptext, url_mode)
+        cleanup = [message.message_id] + ([prompt_id] if prompt_id else [])
+        await _delete_messages(context, message.chat_id, cleanup)
+        return
+
     state = context.user_data.get("upload_state")
     if not state:
-        # Check if user sent a telegram message link directly in chat
         msg_text = message.text or ""
+
+        # Check if user sent a Streamtape or Gofile link directly in chat
+        for word in msg_text.split():
+            if is_streamtape_url(word):
+                await start_url_download(message, db, word, "streamtape")
+                return
+            if is_gofile_url(word):
+                await start_url_download(message, db, word, "gofile")
+                return
+
+        # Check if user sent a telegram message link directly in chat
         tg_links = tg_import.parse_tg_links(msg_text)
         if tg_links:
             targets, title, tags = tg_import.parse_import_command(msg_text)
@@ -1478,17 +1520,64 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
     elif data == "menu:drives":
-        # Drive picker — one button per registry drive (PikPak, Baidu, …).
+        # Drive picker — one button per registry drive (PikPak, Baidu, …) + Streamtape & Gofile.
         text = (
-            "☁️ <b>Cloud Drives</b>\n\n"
-            "Pick a drive to browse and pull files from into your cloud drive:"
+            "☁️ <b>Cloud Drives & Remote Download</b>\n\n"
+            "Pilih drive atau layanan web untuk menarik file langsung ke cloud drive Anda:"
         )
         keyboard = [
             [InlineKeyboardButton(f"☁️ {d.get('display', k)}", callback_data=f"drive:menu:{k}")]
             for k, d in DRIVES.items()
         ]
+        keyboard.append([
+            InlineKeyboardButton("🎬 Streamtape", callback_data="drive:menu:streamtape"),
+            InlineKeyboardButton("📁 Gofile.io", callback_data="drive:menu:gofile"),
+        ])
         keyboard.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu:main")])
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+    elif data == "drive:menu:streamtape":
+        text = (
+            "🎬 <b>Streamtape Cloud Download</b>\n\n"
+            "Download video langsung dari Streamtape ke cloud drive Anda tanpa perlu download manual.\n\n"
+            "Format link yang didukung:\n"
+            "• <code>https://streamtape.com/v/...</code>\n"
+            "• <code>https://streamta.pe/v/...</code>"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📥 Input Link Streamtape", callback_data="drive:url:streamtape")],
+            [InlineKeyboardButton("📋 Recent jobs", callback_data="drive:jobs:streamtape")],
+            [InlineKeyboardButton("⬅️ Back to Drives", callback_data="menu:drives")],
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+    elif data == "drive:menu:gofile":
+        text = (
+            "📁 <b>Gofile.io Cloud Download</b>\n\n"
+            "Download file/folder langsung dari Gofile ke cloud drive Anda tanpa perlu download manual.\n\n"
+            "Format link yang didukung:\n"
+            "• <code>https://gofile.io/d/...</code>"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📥 Input Link Gofile", callback_data="drive:url:gofile")],
+            [InlineKeyboardButton("📋 Recent jobs", callback_data="drive:jobs:gofile")],
+            [InlineKeyboardButton("⬅️ Back to Drives", callback_data="menu:drives")],
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+    elif data.startswith("drive:url:"):
+        service = data.split(":", 2)[2]
+        context.user_data["url_await"] = service
+        srv_title = "Streamtape" if service == "streamtape" else "Gofile"
+        example_url = "https://streamtape.com/v/XXXXX/..." if service == "streamtape" else "https://gofile.io/d/XXXXX"
+        prompt = await query.message.reply_text(
+            f"📥 Kirim link <b>{srv_title}</b> yang ingin di-download.\n"
+            f"Contoh: <code>{example_url}</code>\n\n"
+            "Kirim /cancel untuk membatalkan.",
+            parse_mode="HTML",
+            reply_markup=ForceReply(input_field_placeholder=example_url),
+        )
+        context.user_data["url_prompt_id"] = prompt.message_id
 
     elif data.startswith("drive:menu:"):
         drive_key = data.split(":", 2)[2]
@@ -1636,6 +1725,8 @@ def main():
     app.add_handler(CommandHandler("import", on_import))
     app.add_handler(CommandHandler("save", on_import))
     app.add_handler(CommandHandler("dl", on_import))
+    app.add_handler(CommandHandler("streamtape", on_streamtape))
+    app.add_handler(CommandHandler("gofile", on_gofile))
     app.add_handler(CommandHandler("approve", on_approve))
     app.add_handler(CommandHandler("revoke", on_revoke))
     app.add_handler(CommandHandler("list_users", on_list_users))

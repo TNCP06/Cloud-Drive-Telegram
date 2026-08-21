@@ -174,6 +174,29 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
 
 ---
 
+## A3b. Remote-download from Web Links (Streamtape + Gofile.io)
+
+Pull videos or files directly from supported web hosting services (**Streamtape**, **Gofile.io**) into the
+Telegram storage without manual downloading. Managed via [`bot/url_download.py`](../bot/url_download.py) and
+executed by the `download_jobs` worker pool.
+
+1. **Triggering**:
+   - **Menu-driven**: `/menu` → **☁️ Cloud Drives** → select **🎬 Streamtape** or **📁 Gofile.io** → tap **📥 Input Link** → send URL when prompted (or `/cancel` to abort).
+   - **Command-driven**: `/streamtape <url>` or `/gofile <url>`.
+   - **Auto-detection**: pasting a `streamtape.com` or `gofile.io/d/` link directly in chat automatically starts the flow.
+2. **Extraction & Validation**:
+   - *Streamtape*: Normalizes `/e/` embed links to `/v/`, extracts video title, resolves obfuscated `norobotlink`/`ideoooolink` tokens, and performs a HEAD request to check size & filename.
+   - *Gofile*: Mints a guest account token, dynamically extracts the current salt from `wt.obf.js`, computes `X-Website-Token` (`sha256(ua::lang::token::t4::salt)`), and queries `/contents/{id}`. Supports single files and multi-file folders.
+   - Server checks free disk space in `/staging/_pikpak` (reclaiming finished/failed orphan staging dirs if tight) before queuing.
+3. **Execution**:
+   - Inserts row(s) into `download_jobs` (`source='streamtape'` or `'gofile'`).
+   - The worker runs `http_stream_copy` via `httpx` stream with `Range: bytes=` resume support, live progress reporting, speed/ETA calculations, stall timers (3h max without progress), and pause/resume/cancel controls (`_CANCEL_KB`).
+4. **Upload Handoff**:
+   - Staged file is handed off to `upload_jobs` (`origin='upload'`, `cleanup_source=1`, title filed under `streamtape/<name>` or `gofile/<name>`).
+   - Watcher processes the upload (auto-splitting videos or archives > 2GB) and indexes them into the Postgres database.
+
+---
+
 ## A4. Unpack a stored archive → stream its contents ([`bot/unpack.py`](../bot/unpack.py))
 
 Goal: watch a video that lives *inside* a stored (possibly password-protected, possibly split) 7z
