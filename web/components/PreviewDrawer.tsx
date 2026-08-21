@@ -206,10 +206,11 @@ export function PreviewDrawer({
   const pendingPartRef = useRef<{ id: number; idx: number } | null>(null);
   // Detail panel is hidden behind the kebab button; photos show full-screen.
   const [showDetails, setShowDetails] = useState(initialEditing || initialShowDetails);
-  // "Add subtitle" dialog (videos only). `subsBump` remounts the player after a track
-  // is added so the new language appears in the CC menu without reopening the video.
   const [subsOpen, setSubsOpen] = useState(false);
   const [subsBump, setSubsBump] = useState(0);
+  // Holds the fully preloaded high-res image URL so the instant thumbnail stays displayed
+  // until the high-res image is completely decoded in memory (avoids top-to-bottom scanlines).
+  const [loadedStreamSrc, setLoadedStreamSrc] = useState<string | null>(null);
 
   // Reset form when the opened item changes (or when leaving edit mode).
   useEffect(() => {
@@ -398,42 +399,32 @@ export function PreviewDrawer({
   const isPdfStage = isDocStage && ft.preview === "pdf";
   const isImageStage = !!activePart?.thumb && !isVideoStage && !isDocStage;
 
-  // Prefetch adjacent photos (+1 and -1 in album, and neighboring nav files) for instant navigation
+  // Background preloader for high-res stream so the image transitions smoothly from
+  // the instant thumbnail without progressive top-to-bottom scanlines.
   useEffect(() => {
-    if (detailsOnly || !activePart) return;
-
-    const candidatePartIds: number[] = [];
-
-    // 1. Next & previous parts in current album
-    const nextPart = partsList[activeIdx + 1];
-    const prevPart = partsList[activeIdx - 1];
-    if (nextPart?.partId && !isPartStreamableVideo(nextPart, item.kind)) {
-      candidatePartIds.push(nextPart.partId);
+    if (detailsOnly || !activePart?.partId || !isImageStage) {
+      setLoadedStreamSrc(null);
+      return;
     }
-    if (prevPart?.partId && !isPartStreamableVideo(prevPart, item.kind)) {
-      candidatePartIds.push(prevPart.partId);
-    }
+    const streamUrl = `/api/stream/${activePart.partId}`;
+    let cancelled = false;
+    setLoadedStreamSrc(null);
 
-    // 2. Neighboring files from nav list
-    if (navFiles && navFiles.length > 0) {
-      const curFileIdx = navFiles.findIndex((f) => f.id === item.id);
-      if (curFileIdx >= 0) {
-        const nextF = navFiles[curFileIdx + 1];
-        const prevF = navFiles[curFileIdx - 1];
-        if (nextF && nextF.kind === "media" && nextF.firstPartId && fileTypeFor(nextF).preview === "image") {
-          candidatePartIds.push(nextF.firstPartId);
-        }
-        if (prevF && prevF.kind === "media" && prevF.firstPartId && fileTypeFor(prevF).preview === "image") {
-          candidatePartIds.push(prevF.firstPartId);
-        }
-      }
-    }
+    const img = new window.Image();
+    img.src = streamUrl;
+    img.onload = () => {
+      if (!cancelled) setLoadedStreamSrc(streamUrl);
+    };
+    img.onerror = () => {
+      if (!cancelled) setLoadedStreamSrc(null);
+    };
 
-    for (const pid of candidatePartIds) {
-      const img = new window.Image();
-      img.src = `/api/stream/${pid}`;
-    }
-  }, [activeIdx, partsList, activePart, item.id, item.kind, navFiles, detailsOnly]);
+    return () => {
+      cancelled = true;
+      img.onload = null;
+      img.onerror = null;
+    };
+  }, [activePart?.partId, isImageStage, detailsOnly]);
 
   // The bottom filmstrip lists the OTHER media in this view (siblings from the parent's nav list).
   // The CURRENTLY-OPEN item expands into its individual parts so an album's photos each show as a
@@ -708,7 +699,7 @@ export function PreviewDrawer({
                 />
               ) : isImageStage ? (
                 <img
-                  src={activePart?.partId ? `/api/stream/${activePart.partId}` : activePart!.thumb!}
+                  src={loadedStreamSrc || activePart?.thumb || (activePart?.partId ? `/api/stream/${activePart.partId}` : "")}
                   alt={item.name}
                   onError={(e) => {
                     // Fallback to thumbnail if stream fails
