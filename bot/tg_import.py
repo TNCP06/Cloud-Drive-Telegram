@@ -264,6 +264,10 @@ async def _download_part_stream(client, msg, dst_path, on_progress=None):
                 f.seek(offset)
 
 
+def _speed_str(nbytes: float, secs: float) -> str:
+    return (human_size(nbytes / secs).replace(" ", "") + "/s") if secs > 0 and nbytes >= 0 else ""
+
+
 def _sanitize_filename(name: str) -> str:
     cleaned = re.sub(r'[\/\\:\*\?"<>\|]', "_", name).strip()
     return cleaned or "media_file"
@@ -356,10 +360,15 @@ async def _process(client, db, job):
     }
 
     dst_dir = os.path.join(PIKPAK_STAGING_DIR, f"tgimport_{jid}")
+    t_start = time.monotonic()
     state = {
         "last_edit": 0.0,
         "last_db": 0.0,
-        "start_time": time.monotonic(),
+        "t0": t_start,
+        "spd_t": t_start,
+        "spd_bytes": 0,
+        "spd_str": "",
+        "eta_str": "...",
     }
 
     try:
@@ -473,27 +482,41 @@ async def _process(client, db, job):
                 total = total_batch_size or 1
                 pct = min(100, int(overall_done * 100 / total))
 
-                elapsed = max(0.001, now - state["start_time"])
-                avg_speed = overall_done / elapsed
-                spd_text = f"{human_size(avg_speed).replace(' ', '')}/s" if avg_speed > 0 else ""
-                rem_bytes = max(0, total - overall_done)
-                eta_text = _fmt_eta(rem_bytes / avg_speed) if avg_speed > 0 else "..."
+                # Rolling-window speed (every >= 2.0s) & session average ETA (PikPak worker pattern)
+                dt = now - state["spd_t"]
+                if dt >= 2.0:
+                    dn = overall_done - state["spd_bytes"]
+                    state["spd_str"] = _speed_str(dn, dt)
+                    state["spd_bytes"] = overall_done
+                    state["spd_t"] = now
+
+                    sess_dt = now - state["t0"]
+                    if sess_dt > 10 and overall_done > 0 and total > overall_done:
+                        avg_rate = overall_done / sess_dt
+                        state["eta_str"] = _fmt_eta((total - overall_done) / avg_rate)
+                    else:
+                        state["eta_str"] = "..."
+
+                spd_text = state["spd_str"]
+                eta_text = state["eta_str"]
 
                 if now - state["last_db"] >= DB_THROTTLE_S:
                     state["last_db"] = now
+                    spd_eta = f"{spd_text} · ETA {eta_text}".strip(" ·") if spd_text else ""
                     await db.execute(
                         "UPDATE tg_import_jobs SET progress=?, speed=?, updated_at=now_text() WHERE id=?",
-                        [pct, f"{spd_text} · ETA {eta_text}", jid],
+                        [pct, spd_eta, jid],
                     )
 
                 if now - state["last_edit"] >= PROGRESS_THROTTLE_S:
                     state["last_edit"] = now
                     item_note = f" (File {current_idx}/{total_items})" if total_items > 1 else ""
+                    spd_line = f"• Speed: <code>{spd_text}</code> · ETA <code>{eta_text}</code>" if spd_text else "• Speed: <i>menghitung…</i>"
                     edit_text = (
                         f"⬇️ <b>Downloading from Telegram:</b>\n"
                         f"• File: <code>{html.escape(fname)}</code>{item_note}\n"
                         f"• Progress: <code>{pct}%</code> ({human_size(overall_done)} / {human_size(total)})\n"
-                        f"• Speed: <code>{spd_text}</code> · ETA <code>{eta_text}</code>"
+                        f"{spd_line}"
                     )
                     await _safe_edit(chat_id, msg_id, edit_text, kb=cancel_kb)
 
