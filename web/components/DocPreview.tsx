@@ -16,9 +16,10 @@ const MAX_OFFICE_BYTES = 30 * 1024 * 1024; // 30 MB
 
 // Range bytes=0- forces the streamer to return the WHOLE file in both serving modes
 // (a plain GET returns only the first chunk in Telethon-fallback mode).
-async function fetchPart(partId: number): Promise<Response> {
+async function fetchPart(partId: number, signal: AbortSignal): Promise<Response> {
   const resp = await fetch(`/api/stream/${partId}`, {
     headers: { Range: "bytes=0-" },
+    signal,
   });
   if (!resp.ok && resp.status !== 206) {
     throw new Error(`Failed to load file (HTTP ${resp.status}).`);
@@ -127,14 +128,16 @@ function TextPreview({
       setState({ loading: false });
       return;
     }
+    const controller = new AbortController();
     let alive = true;
     setState({ loading: true });
-    fetchPart(partId)
+    fetchPart(partId, controller.signal)
       .then((r) => r.text())
       .then((text) => alive && setState({ text, loading: false }))
-      .catch((e) => alive && setState({ error: String(e.message ?? e), loading: false }));
+      .catch((e) => alive && e.name !== "AbortError" && setState({ error: String(e.message ?? e), loading: false }));
     return () => {
       alive = false;
+      controller.abort();
     };
   }, [partId, size]);
 
@@ -187,21 +190,25 @@ function WordPreview({
       setState({ loading: false });
       return;
     }
+    const controller = new AbortController();
     let alive = true;
     setState({ loading: true });
     (async () => {
       try {
-        const resp = await fetchPart(partId);
+        const resp = await fetchPart(partId, controller.signal);
         const buf = await resp.arrayBuffer();
         const mammoth = await import("mammoth/mammoth.browser.js");
         const result = await mammoth.convertToHtml({ arrayBuffer: buf });
         if (alive) setState({ html: result.value || "<p><em>Empty document.</em></p>", loading: false });
       } catch (e) {
-        if (alive) setState({ error: e instanceof Error ? e.message : String(e), loading: false });
+        if (alive && !(e instanceof DOMException && e.name === "AbortError")) {
+          setState({ error: e instanceof Error ? e.message : String(e), loading: false });
+        }
       }
     })();
     return () => {
       alive = false;
+      controller.abort();
     };
   }, [partId, size]);
 
@@ -244,11 +251,12 @@ function SheetPreview({
       setState({ loading: false });
       return;
     }
+    const controller = new AbortController();
     let alive = true;
     setState({ loading: true });
     (async () => {
       try {
-        const resp = await fetchPart(partId);
+        const resp = await fetchPart(partId, controller.signal);
         const buf = await resp.arrayBuffer();
         const XLSX = await import("xlsx");
         const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
@@ -258,11 +266,14 @@ function SheetPreview({
         }));
         if (alive) setState({ sheets, loading: false });
       } catch (e) {
-        if (alive) setState({ error: e instanceof Error ? e.message : String(e), loading: false });
+        if (alive && !(e instanceof DOMException && e.name === "AbortError")) {
+          setState({ error: e instanceof Error ? e.message : String(e), loading: false });
+        }
       }
     })();
     return () => {
       alive = false;
+      controller.abort();
     };
   }, [partId, size]);
 

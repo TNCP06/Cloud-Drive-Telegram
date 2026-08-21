@@ -421,6 +421,8 @@ export function PreviewDrawer({
 
     return () => {
       cancelled = true;
+      // Detach the source so a rapid part switch stops the old image download.
+      img.src = "";
       img.onload = null;
       img.onerror = null;
     };

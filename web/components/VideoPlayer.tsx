@@ -157,6 +157,7 @@ export function VideoPlayer({
     let player: Plyr | null = null;
     let destroyed = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
+    const controller = new AbortController();
 
     // Subtitles live at the part-keyed streamer routes (list at `${base}`, one track at
     // `${base}/${lang}`).
@@ -195,7 +196,7 @@ export function VideoPlayer({
       let subtitlesDone = false;
       if (subBase) {
         try {
-          const res = await fetch(subBase);
+          const res = await fetch(subBase, { signal: controller.signal });
           if (!destroyed && res.ok) {
             const data = await res.json();
             subtitlesDone = data?.done === true;
@@ -216,7 +217,7 @@ export function VideoPlayer({
       let previewReady = false;
       if (partId) {
         try {
-          const res = await fetch(`/api/seek-preview/${partId}`);
+          const res = await fetch(`/api/seek-preview/${partId}`, { signal: controller.signal });
           if (!destroyed && res.ok) {
             const vtt = await res.text();
             previewReady = vtt.includes("-->") && vtt.includes("#xywh=");
@@ -390,7 +391,7 @@ export function VideoPlayer({
           polls += 1;
           let stop = polls >= MAX_POLLS;
           try {
-            const res = await fetch(subBase);
+            const res = await fetch(subBase, { signal: controller.signal });
             if (!destroyed && res.ok) {
               const data = await res.json();
               if (data?.done === true) stop = true;
@@ -421,6 +422,7 @@ export function VideoPlayer({
 
     return () => {
       destroyed = true;
+      controller.abort();
       if (pollTimer) clearInterval(pollTimer);
       // Save the position on close/source-switch so reopening resumes from the exact spot.
       try {
