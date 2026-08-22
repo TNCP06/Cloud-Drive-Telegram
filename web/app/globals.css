@@ -753,7 +753,11 @@ button { font-family: inherit; }
    disembunyikan di balik tombol titik-3 (kebab) yang membuka .drawer di atasnya.
    =========================================================================== */
 .viewer-scrim { position: fixed; inset: 0; z-index: 150; background: color-mix(in oklab, #000 82%, transparent); animation: fade .16s ease; }
-.viewer { position: fixed; inset: 0; z-index: 155; animation: fade .18s ease; }
+.viewer {
+  position: fixed; inset: 0; z-index: 155; animation: fade .18s ease;
+  --viewer-bottom-height: 0px;
+  --viewer-floatpill-height: 0px;
+}
 
 /* Panggung foto memenuhi layar; ruang disisakan untuk kontrol melayang agar
    foto tampil utuh tanpa perlu zoom. Flex + min-0 menjamin gambar mengecil pas. */
@@ -769,7 +773,7 @@ button { font-family: inherit; }
   transition: padding-bottom .25s ease;
 }
 .viewer.has-nav .viewer-stage { padding-left: 60px; padding-right: 60px; }
-.viewer.has-bottom .viewer-stage { padding-bottom: 85px; }
+.viewer.has-bottom .viewer-stage { padding-bottom: var(--viewer-bottom-height); }
 .viewer-stage img {
   width: 100%; height: 100%;
   max-width: 100%; max-height: 100%; min-width: 0; min-height: 0;
@@ -799,7 +803,7 @@ button { font-family: inherit; }
    of the media's bottom edge and buries Plyr's control bar entirely. When it's expanded, keep
    reserving its height in fullscreen exactly as the windowed layout does. */
 .viewer:fullscreen.has-bottom .viewer-stage,
-.viewer:-webkit-full-screen.has-bottom .viewer-stage { padding-bottom: 85px; }
+.viewer:-webkit-full-screen.has-bottom .viewer-stage { padding-bottom: var(--viewer-bottom-height); }
 
 /* Plyr video player. The player fills the entire stage from the first frame —
    even while the stream is still loading — so it never collapses to a tiny box.
@@ -1036,7 +1040,7 @@ button { font-family: inherit; }
   transition: bottom .22s cubic-bezier(0.16, 1, 0.3, 1), transform .25s ease, opacity .25s ease;
 }
 .viewer.has-bottom .viewer-floatbar {
-  bottom: 85px;
+  bottom: var(--viewer-bottom-height);
 }
 /* Collapsed video: the pill drops into the empty centre of Plyr's button row, BELOW the seek
    bar — the left cluster (play/volume/time) and the right cluster both stop well short of it. */
@@ -1051,13 +1055,13 @@ button { font-family: inherit; }
     bottom: 88px;
   }
 }
-/* Expanded hits the same squeeze: the video ends exactly at the strip's top edge, so its control
-   bar runs right under the attached tab. Moving the tab would undo the attachment, so reserve the
-   tab's height on the stage as well and let the video end above it (35px tab + strip height). */
+/* On narrow screens, keep the attached tab as a continuous full-width toolbar. */
 @media (max-width: 800px) {
   .viewer.has-bottom.has-video-stage .viewer-stage,
   .viewer:fullscreen.has-bottom.has-video-stage .viewer-stage,
-  .viewer:-webkit-full-screen.has-bottom.has-video-stage .viewer-stage { padding-bottom: 121px; }
+  .viewer:-webkit-full-screen.has-bottom.has-video-stage .viewer-stage {
+    padding-bottom: calc(var(--viewer-bottom-height) + var(--viewer-floatpill-height));
+  }
   /* A centred 98px tab would leave that reserved band as empty black on either side, reading as a
      control bar left hanging in mid-air. Spread the tab across the full width instead: the band is
      then all bar, continuous with the strip below it — the usual phone toolbar. */
@@ -1134,6 +1138,10 @@ button { font-family: inherit; }
   background: #0b0b0c;
   transition: transform .25s ease;
 }
+.viewer-bottom.is-collapsed {
+  transform: translateY(100%);
+  pointer-events: none;
+}
 .viewer-strip {
   display: flex; gap: 0; justify-content: safe center; flex-wrap: nowrap;
   overflow-x: auto; overflow-y: hidden; padding: 0; scroll-behavior: smooth;
@@ -1178,19 +1186,18 @@ button { font-family: inherit; }
 }
 
 @media (max-width: 520px) {
-  .viewer.has-bottom .viewer-stage { padding-bottom: 60px; }
-  /* 60px strip + 35px attached tab — see the reserve rule above. */
+  .viewer.has-bottom .viewer-stage { padding-bottom: var(--viewer-bottom-height); }
   .viewer.has-bottom.has-video-stage .viewer-stage,
   .viewer:fullscreen.has-bottom.has-video-stage .viewer-stage,
-  .viewer:-webkit-full-screen.has-bottom.has-video-stage .viewer-stage { padding-bottom: 96px; }
+  .viewer:-webkit-full-screen.has-bottom.has-video-stage .viewer-stage {
+    padding-bottom: calc(var(--viewer-bottom-height) + var(--viewer-floatpill-height));
+  }
   .viewer-thumb { width: 60px; height: 60px; }
   .viewer-top { padding: 8px 10px; gap: 6px; }
   .viewer-name { font-size: 12px; }
   .viewer-tools { gap: 3px; }
   .viewer-iconbtn { width: 28px; height: 28px; }
   .viewer-floatbar { padding: 0 8px; }
-  /* Thumbs shrink to 60px here, so the attached tab has to follow the strip's new top edge. */
-  .viewer.has-bottom .viewer-floatbar { bottom: 60px; }
 }
 
 /* ===========================================================================

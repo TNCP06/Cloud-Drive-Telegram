@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/lib/icons";
 import { KINDS, TAG_COLORS } from "@/lib/kinds";
@@ -156,6 +156,8 @@ export function PreviewDrawer({
   }, [collapsed]);
   // Horizontal filmstrip scroller (ref + overflow flag drive the left/right scroll buttons).
   const stripRef = useRef<HTMLDivElement>(null);
+  const viewerBottomRef = useRef<HTMLDivElement>(null);
+  const floatPillRef = useRef<HTMLDivElement>(null);
   const [stripOverflow, setStripOverflow] = useState(false);
   const scrollStrip = (dir: number) =>
     stripRef.current?.scrollBy({ left: dir * Math.max(240, stripRef.current.clientWidth * 0.8), behavior: "smooth" });
@@ -461,10 +463,34 @@ export function PreviewDrawer({
     }];
   });
   const activeThumbIndex = Math.max(0, stripThumbs.findIndex((t) => t.active));
+  const stripCount = stripThumbs.length;
+
+  // The bottom bar and pill are absolutely positioned siblings, so CSS cannot derive one sibling's
+  // rendered height from the other. Publish both live sizes as CSS variables; this follows scrollbar,
+  // responsive thumbnail, and injected-control changes without duplicating breakpoint measurements.
+  useLayoutEffect(() => {
+    const viewer = viewerRef.current;
+    const bottom = viewerBottomRef.current;
+    const pill = floatPillRef.current;
+    if (!viewer || !bottom || !pill) return;
+
+    const measure = () => {
+      viewer.style.setProperty("--viewer-bottom-height", `${bottom.getBoundingClientRect().height}px`);
+      viewer.style.setProperty("--viewer-floatpill-height", `${pill.getBoundingClientRect().height}px`);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(bottom);
+    observer.observe(pill);
+    return () => observer.disconnect();
+  }, [stripCount, collapsed, isImageStage, isVideoStage]);
 
   // Show the left/right scroll buttons only when the filmstrip actually overflows. Re-measured
   // when the thumb count / collapse state changes and on window resize.
-  const stripCount = stripThumbs.length;
   useEffect(() => {
     if (collapsed) {
       setStripOverflow(false);
@@ -793,7 +819,7 @@ export function PreviewDrawer({
 
             {/* Floating controls over the media (PikPak-style unified pill): part counter + rotate + collapse chevron */}
             <div className="viewer-floatbar">
-              <div className="viewer-floatpill">
+              <div ref={floatPillRef} className="viewer-floatpill">
                 {stripThumbs.length > 1 && (
                   <>
                     <span className="viewer-count">{activeThumbIndex + 1} / {stripThumbs.length}</span>
@@ -824,8 +850,7 @@ export function PreviewDrawer({
 
             {/* Bottom box = a solid, full-bleed, thin filmstrip flush to the media. Always present
                 (even single media) unless collapsed, where it's removed so the media fills fully. */}
-            {!collapsed && (
-              <div className="viewer-bottom">
+            <div ref={viewerBottomRef} className={"viewer-bottom" + (collapsed ? " is-collapsed" : "")}>
                 {stripOverflow && (
                   <button
                     className="viewer-strip-scroll left"
@@ -870,8 +895,7 @@ export function PreviewDrawer({
                     <Icon name="chevright" size={16} />
                   </button>
                 )}
-              </div>
-            )}
+            </div>
           </div>
 
           {/* "Add subtitle" dialog — local upload / from Telegram storage / softsub extract. */}

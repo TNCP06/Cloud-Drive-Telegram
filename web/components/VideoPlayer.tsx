@@ -238,6 +238,7 @@ export function VideoPlayer({
         storage: { enabled: false }, // we manage volume/mute + caption-lang persistence ourselves
         fullscreen: { enabled: true, fallback: false },
         captions: { active: chosenLang != null, language: chosenLang ?? "auto", update: true },
+        settings: ["captions", "speed"],
         controls: [
           "play-large",
           "play",

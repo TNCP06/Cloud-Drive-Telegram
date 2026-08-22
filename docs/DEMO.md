@@ -62,6 +62,9 @@ rots.
 
 ## Running it locally
 
+From the repository root, use `demo.bat` on Windows or `./demo.sh` on Linux/macOS. Both set
+`DEMO_MODE=1`, default `PIN` to `123456`, and start the Next.js dev server from `web/`.
+
 ```bash
 # PowerShell
 $env:DEMO_MODE = "1"; npm --prefix web run dev
