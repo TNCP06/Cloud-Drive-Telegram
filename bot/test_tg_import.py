@@ -97,8 +97,36 @@ def test_formatters():
     assert tg_import._fmt_eta(3665) == "1h 1m"
 
 
+def test_derive_title_tags():
+    # Contract caption → title + contract tags
+    t, g = tg_import._derive_title_tags("My Video | 1/2 | anime, hd", None, None)
+    assert t == "My Video" and g == "anime, hd"
+
+    # Custom title kept; contract tags still derived (forward parity)
+    t, g = tg_import._derive_title_tags("My Video | 1/2 | anime", "Custom", None)
+    assert t == "Custom" and g == "anime"
+
+    # Custom title AND tags win over the caption entirely
+    t, g = tg_import._derive_title_tags("My Video | 1/2 | anime", "Custom", "x, y")
+    assert t == "Custom" and g == "x, y"
+
+    # Free-form caption → hashtags become tags, first line (sans hashtags) becomes title
+    t, g = tg_import._derive_title_tags("#anime New release ep 1 #hd", None, None)
+    assert t == "New release ep 1"
+    assert g == "anime, hd"
+
+    # Free-form caption with custom title → only hashtags fill the empty tags
+    t, g = tg_import._derive_title_tags("#anime something long\nsecond line", "T", None)
+    assert t == "T" and g == "anime"
+
+    # No caption at all → empty defaults (caller falls back to filename/date)
+    t, g = tg_import._derive_title_tags("", None, None)
+    assert t == "" and g == ""
+
+
 if __name__ == "__main__":
     test_parse_tg_links()
     test_parse_import_command()
     test_formatters()
+    test_derive_title_tags()
     print("All tg_import tests passed!")

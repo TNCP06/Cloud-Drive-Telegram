@@ -250,6 +250,30 @@ def _sanitize_filename(name: str) -> str:
     return cleaned or "media_file"
 
 
+def _derive_title_tags(caption_text: str, custom_title: Optional[str], custom_tags: Optional[str]) -> Tuple[str, str]:
+    """Default Title/Tags from a source caption, mirroring the forward path
+    (bot.py: parse_caption contract first, else derive_media_meta semantics):
+    a contract caption supplies title+tags; any free-form caption contributes
+    its hashtags as tags and its hashtag-free first line as the title — even
+    when a custom Title was supplied."""
+    title, tags = custom_title, custom_tags
+
+    parsed = parse_caption(caption_text)
+    if parsed:
+        if not title:
+            title = parsed["title"]
+        if not tags:
+            tags = ", ".join(parsed["tags"])
+    elif caption_text:
+        hash_tags = [t.lstrip("#") for t in re.findall(r"#\w+", caption_text)]
+        if not tags and hash_tags:
+            tags = ", ".join(hash_tags)
+        if not title:
+            first = re.sub(r"#\w+", "", caption_text.splitlines()[0]).strip(" -|")
+            title = first[:120] or None
+    return title or "", tags or ""
+
+
 async def _track_upload_jobs(db, jid: int, upload_ids: List[int], chat_id: Optional[int], msg_id: Optional[int], title: str, size: int, tags: str, dst_dir: str):
     """Poll upload_jobs until all parts complete, then mark tg_import_job done and clean staging."""
     if not upload_ids:
@@ -278,13 +302,20 @@ async def _track_upload_jobs(db, jid: int, upload_ids: List[int], chat_id: Optio
         # Check if any upload job failed or was canceled
         failed_job = next((j for j in rows_by_id.values() if j["status"] in ("error", "canceled")), None)
         if failed_job:
-            shutil.rmtree(dst_dir, ignore_errors=True)
+            # Do NOT rmtree dst_dir here: sibling uploads and still-running downloads
+            # share it. Every staged dir carries cleanup_source=1, so the watcher
+            # frees each item's disk when its own job ends (even on error); the
+            # remaining items simply finish flowing through the pipeline.
             err_detail = failed_job.get("message") or f"upload {failed_job['status']}"
             await db.execute(
                 "UPDATE tg_import_jobs SET status='failed', error=?, updated_at=now_text() WHERE id=?",
                 [err_detail[:400], jid],
             )
-            await _safe_edit(chat_id, msg_id, f"❌ <b>Upload ke Telegram gagal:</b>\n{html.escape(err_detail[:300])}")
+            await _safe_edit(
+                chat_id, msg_id,
+                f"❌ <b>Upload ke Telegram gagal:</b>\n{html.escape(err_detail[:300])}\n"
+                f"<i>File lain pada impor ini tetap dilanjutkan.</i>",
+            )
             return
 
         # Check if all upload jobs finished successfully
@@ -390,29 +421,19 @@ async def _process(client, db, job):
             except Exception as e:
                 log.warning("Album check failed for msg %s: %s", target_msg_id, e)
 
-        # 2. Extract metadata & Caption
+        # 2. Extract metadata & Caption — defaults mirror the forward path (see
+        #    _derive_title_tags); filename / message-date as the last resort.
         caption_text = ""
         for m in messages_to_fetch:
             if m.message and m.message.strip():
                 caption_text = m.message.strip()
                 break
 
-        title = custom_title
-        tags = custom_tags
+        title, tags = _derive_title_tags(caption_text, custom_title, custom_tags)
         if not title:
-            if caption_text:
-                parsed = parse_caption(caption_text)
-                if parsed:
-                    title = parsed["title"]
-                    if not tags:
-                        tags = ", ".join(parsed["tags"])
-                elif len(caption_text.strip()) <= 100 and "\n" not in caption_text:
-                    title = caption_text.strip()
-            if not title:
-                first_fname = getattr(messages_to_fetch[0].file, "name", None) or f"item_{target_msg_id}"
-                title = os.path.splitext(first_fname)[0]
-
-        tags = tags or ""
+            first_fname = getattr(messages_to_fetch[0].file, "name", None)
+            title = (os.path.splitext(first_fname)[0] if first_fname
+                     else f"Media {messages_to_fetch[0].date:%Y-%m-%d}")
 
         # 3. Create staging destination (clean any stale files from previous attempts)
         shutil.rmtree(dst_dir, ignore_errors=True)
@@ -425,7 +446,11 @@ async def _process(client, db, job):
             [first_fname if len(messages_to_fetch) == 1 else f"Album ({len(messages_to_fetch)} files)", title, tags, total_batch_size, jid],
         )
 
-        # 4. Download media with progress tracking
+        # 4+5. Pipelined per file: download → validate → enqueue upload job immediately,
+        # so the watcher uploads this file while the next one is still downloading.
+        # Peak staging disk ≈ one in-flight download instead of the whole album.
+        multi_file = len(messages_to_fetch) > 1
+        upload_ids = []
         batch_done_base = 0
         for idx, m in enumerate(messages_to_fetch, start=1):
             m_fname = getattr(m.file, "name", None)
@@ -502,48 +527,32 @@ async def _process(client, db, job):
             await _download_part_stream(client, m, target_path, on_progress)
             batch_done_base += m_size
 
-        # 5. Hand off to upload_jobs
-        downloaded_files = [
-            f for f in sorted(os.listdir(dst_dir))
-            if os.path.isfile(os.path.join(dst_dir, f)) and os.path.getsize(os.path.join(dst_dir, f)) > 0
-        ]
-        if not downloaded_files:
-            raise TgImportError("Download selesai tetapi tidak ada file yang tersimpan.")
-
-        upload_ids = []
-        if len(downloaded_files) == 1:
-            f = downloaded_files[0]
-            real_size = os.path.getsize(os.path.join(dst_dir, f))
-            kind = "media" if _is_media(f) else "archive"
+            # Size validation + immediate hand-off of THIS file (pipeline step).
+            real_size = os.path.getsize(target_path)
+            if real_size <= 0:
+                raise TgImportError(f"File selesai diunduh tetapi kosong: {m_fname}")
+            kind = "media" if _is_media(m_fname) else "archive"
             part_size = DRIVE_SPLIT_PART_MB if real_size > PIKPAK_MAX_BYTES else 4096
+            if multi_file:
+                # Own single-item subfolder so the watcher's cleanup_source=1 frees
+                # this file's disk as soon as its own upload job ends.
+                sub_dir = os.path.join(dst_dir, f"item_{idx}")
+                os.makedirs(sub_dir, exist_ok=True)
+                shutil.move(target_path, os.path.join(sub_dir, m_fname))
+                source_path, item_title = sub_dir, f"{title} (Part {idx})"
+            else:
+                source_path, item_title = dst_dir, title
 
             rs = await db.execute(
                 "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) "
                 "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'pending') RETURNING id",
-                [kind, title, tags, dst_dir, part_size, real_size],
+                [kind, item_title, tags, source_path, part_size, real_size],
             )
             if rs.rows:
                 upload_ids.append(rs.rows[0][0])
-        else:
-            # Multi-file album: stage each file into its own single-item subfolder
-            for idx, f in enumerate(downloaded_files, start=1):
-                fpath = os.path.join(dst_dir, f)
-                sub_dir = os.path.join(dst_dir, f"item_{idx}")
-                os.makedirs(sub_dir, exist_ok=True)
-                new_path = os.path.join(sub_dir, f)
-                shutil.move(fpath, new_path)
-                fsize = os.path.getsize(new_path)
-                fkind = "media" if _is_media(f) else "archive"
-                fpart_size = DRIVE_SPLIT_PART_MB if fsize > PIKPAK_MAX_BYTES else 4096
-                item_title = title if len(downloaded_files) == 1 else f"{title} (Part {idx})"
 
-                rs = await db.execute(
-                    "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status) "
-                    "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'pending') RETURNING id",
-                    [fkind, item_title, tags, sub_dir, fpart_size, fsize],
-                )
-                if rs.rows:
-                    upload_ids.append(rs.rows[0][0])
+        if not upload_ids:
+            raise TgImportError("Download selesai tetapi tidak ada file yang tersimpan.")
 
         last_upload_id = upload_ids[-1] if upload_ids else None
         await db.execute(
@@ -555,7 +564,7 @@ async def _process(client, db, job):
             chat_id, msg_id,
             f"⬆️ <b>Menyimpan ke Cloud Drive:</b>\n"
             f"• Title: <b>{html.escape(title)}</b>\n"
-            f"• Total Files: <code>{len(downloaded_files)} file(s)</code>\n"
+            f"• Total Files: <code>{len(upload_ids)} file(s)</code>\n"
             f"• Total Size: <code>{human_size(total_batch_size)}</code>\n"
             f"<i>Sedang diproses oleh watcher (upload/segmentasi jika &gt;2GB)…</i>"
         )

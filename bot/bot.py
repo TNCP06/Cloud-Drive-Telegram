@@ -1047,16 +1047,22 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["upload_state"] = "WAITING_TAGS"
-    auto_tags = context.user_data["upload_file"]["auto_tags"]
-    auto_tags_str = ", ".join(auto_tags) if auto_tags else "none"
+    uf = context.user_data["upload_file"]
+    auto_tags = uf.get("auto_tags")
 
     try:
-        btn_tags = auto_tags_str
-        if len(btn_tags) > 40:
-            btn_tags = btn_tags[:37] + "..."
+        if auto_tags:
+            joined = ", ".join(auto_tags)
+            btn_tags = joined[:37] + "..." if len(joined) > 40 else joined
+            tags_btn_label = f"✨ Use Auto Tags: {btn_tags}"
+        elif uf.get("is_link_import"):
+            # NULL passthrough — the watcher derives tags from the source caption.
+            tags_btn_label = "✨ Use Auto Tags (from source caption)"
+        else:
+            tags_btn_label = "✨ Use Auto Tags: none"
 
         keyboard = [
-            [InlineKeyboardButton(f"✨ Use Auto Tags: {btn_tags}", callback_data="upload:skip_tags")],
+            [InlineKeyboardButton(tags_btn_label, callback_data="upload:skip_tags")],
             [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1069,9 +1075,7 @@ async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
-        uf = context.user_data.get("upload_file")
-        if uf is not None:
-            uf.setdefault("flow_msg_ids", []).append(prompt.message_id)
+        uf.setdefault("flow_msg_ids", []).append(prompt.message_id)
     except Exception as e:
         log.exception("Failed to prompt for tags")
         message = update.message or update.callback_query.message
@@ -1107,7 +1111,7 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
             text=f"📥 <b>Telegram Import Queued</b>\n"
-                 f"• Title: <b>{html.escape(title)}</b>\n"
+                 f"• Title: <b>{html.escape(title or '(otomatis dari pesan sumber)')}</b>\n"
                  f"• Tags: <code>{html.escape(tags_str if tags_str else 'none')}</code>\n"
                  f"• Source: <code>{target_chat} / {target_msg_id}</code>\n"
                  f"• Status: <i>Menunggu worker…</i>",
@@ -1214,8 +1218,11 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
     msg_id = message.message_id
     chat_id = message.chat_id
 
-    auto_title = f"video_{target_msg_id}"
-    auto_tags = []
+    # The bot process has no MTProto access to the source message, so "auto" here means
+    # NULL passthrough: the watcher's tg_import worker owns the Telethon client and derives
+    # Title/Tags from the real caption exactly like the forward path does.
+    auto_title = None
+    auto_tags = None
 
     context.user_data["upload_file"] = {
         "is_link_import": True,
@@ -1233,12 +1240,14 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
     }
     context.user_data["upload_state"] = "WAITING_TITLE"
 
-    btn_title = auto_title
-    if len(btn_title) > 40:
-        btn_title = btn_title[:37] + "..."
+    if auto_title:
+        btn_title = auto_title[:37] + "..." if len(auto_title) > 40 else auto_title
+        title_btn_label = f"✨ Use Auto Title: {btn_title}"
+    else:
+        title_btn_label = "✨ Use Auto Title (from source caption)"
 
     keyboard = [
-        [InlineKeyboardButton(f"✨ Use Auto Title: {btn_title}", callback_data="upload:skip_title")],
+        [InlineKeyboardButton(title_btn_label, callback_data="upload:skip_title")],
         [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1247,7 +1256,7 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
         f"📥 <b>Telegram Link Received!</b>\n"
         f"• Source: <code>{target_chat} / {target_msg_id}</code>\n\n"
         f"Please reply with a <b>Title</b> for this upload.\n"
-        f"Or click the button below to use the Auto Title.",
+        f"Or click the button below to use the defaults derived from the source message's caption (same as forwards).",
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
