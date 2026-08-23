@@ -847,6 +847,12 @@ async def main():
             asyncio.create_task(tg_import.worker_loop(client, db))
             # Finishes purges the bot is not allowed to make (see purge_worker).
             asyncio.create_task(purge_worker(client, channel, db))
+            # Resume jobs left 'running' by a previous crash/kill: claim_next only
+            # picks 'pending', and parts_done lets process() continue where it stopped.
+            await db.execute(
+                "UPDATE upload_jobs SET status='pending', message='resumed after restart', "
+                "updated_at=now_text() WHERE status='running'"
+            )
             print("Polling upload_jobs… (Ctrl+C to stop)")
             while True:
                 job = await claim_next(db)
