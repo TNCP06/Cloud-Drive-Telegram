@@ -54,6 +54,7 @@ import {
   ConfirmEmptyTrash,
   ConfirmRestore,
   KeyboardShortcutsModal,
+  PinPromptModal,
 } from "./DriveDialogs";
 import {
   toggleFavorite,
@@ -114,12 +115,16 @@ export function DriveApp({
   folders: baseFolders = [],
   initialView = "all",
   space = "main",
+  privUnlocked = false,
 }: {
   files: DriveFile[];
   tags: Tag[];
   folders?: Folder[];
   initialView?: View;
   space?: "main" | "private";
+  // Whether the current request already carries a valid Private unlock cookie (the
+  // server checks it; this only decides whether the UI prompts for the PIN first).
+  privUnlocked?: boolean;
 }) {
   const router = useRouter();
   const isPrivate = space === "private";
@@ -210,6 +215,10 @@ export function DriveApp({
   // Unified move target: any mix of items + folders (kebab → one entry; toolbar → the
   // whole selection). null = no move dialog open.
   const [moveTarget, setMoveTarget] = useState<{ itemIds: number[]; folderIds: number[] } | null>(null);
+  // Cross-space moves need the Private unlock cookie; if it's absent we stash the move
+  // here, ask for the PIN (PinPromptModal), and run it right after a successful unlock.
+  const [privOk, setPrivOk] = useState(privUnlocked);
+  const [pinMove, setPinMove] = useState<{ itemIds: number[]; folderIds: number[] } | null>(null);
   const [unpackTarget, setUnpackTarget] = useState<DriveFile | null>(null);
   // Live unpack progress pill: {itemId} drives polling; the rest is the latest status shown.
   const [unpackTrack, setUnpackTrack] = useState<
@@ -478,6 +487,30 @@ export function DriveApp({
         setToast(r.error ?? "Failed to start unpack.");
       }
     });
+
+  // Move a selection across the Main ⇄ Private boundary. Failures toast instead of
+  // hitting the error boundary, so one bad folder can't blank the whole page.
+  const runCrossSpaceMove = ({ itemIds, folderIds }: { itemIds: number[]; folderIds: number[] }) => {
+    startTransition(async () => {
+      // Moving across the Main ⇄ Private boundary removes the rows from this space.
+      if (itemIds.length) optimizeFiles({ type: "remove", ids: itemIds });
+      if (folderIds.length) optimizeFolders({ type: "remove", ids: folderIds });
+      try {
+        if (itemIds.length) await moveItemsPrivacy(itemIds, space === "main");
+        for (const fid of folderIds) {
+          try {
+            await moveFolderPrivacy(fid, space === "main");
+          } catch (err) {
+            setToast(err instanceof Error ? err.message : "Failed to move folder.");
+          }
+        }
+        clearSelection();
+      } catch (err) {
+        setToast(err instanceof Error ? err.message : "Failed to move items.");
+      }
+    });
+  };
+
   // Poll the active unpack job (stops once its status turns terminal — see dep on status).
   useEffect(() => {
     const id = unpackTrack?.itemId;
@@ -2327,16 +2360,30 @@ export function DriveApp({
             setMoveTarget(null);
           }}
           onMoveCrossSpace={() => {
-            const { itemIds, folderIds } = moveTarget;
-            startTransition(async () => {
-              // Moving across the Main ⇄ Private boundary removes the rows from this space.
-              if (itemIds.length) optimizeFiles({ type: "remove", ids: itemIds });
-              if (folderIds.length) optimizeFolders({ type: "remove", ids: folderIds });
-              if (itemIds.length) await moveItemsPrivacy(itemIds, space === "main");
-              for (const fid of folderIds) await moveFolderPrivacy(fid, space === "main");
-              clearSelection();
-            });
+            const target = moveTarget;
             setMoveTarget(null);
+            if (!target) return;
+            // Moving into Private while locked: ask for the PIN first instead of letting
+            // the server action throw "Private space is locked." into the error boundary.
+            if (space === "main" && !privOk) {
+              setPinMove(target);
+              return;
+            }
+            runCrossSpaceMove(target);
+          }}
+        />
+      )}
+
+      {/* PIN gate for cross-space moves started from Main while Private is locked. */}
+      {pinMove && (
+        <PinPromptModal
+          title="Move to private"
+          onClose={() => setPinMove(null)}
+          onUnlock={() => {
+            setPrivOk(true);
+            const target = pinMove;
+            setPinMove(null);
+            if (target) runCrossSpaceMove(target);
           }}
         />
       )}

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Icon } from "@/lib/icons";
+import { unlockPrivate } from "@/app/actions";
 import type { DriveFile, Folder } from "@/lib/types";
 import type { FolderStat } from "./DriveApp";
 
@@ -481,6 +482,121 @@ export function MoveToFolderModal({
           </button>
           <button className="btn primary" onClick={() => onMove(selectedFolderId)}>
             Move
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Compact PIN prompt for cross-space moves started from Main while Private is locked.
+// Same 6-digit auto-submit keypad as PrivateLock; a correct PIN sets the unlock cookie
+// server-side and fires onUnlock so the queued move can proceed without a page reload.
+export function PinPromptModal({
+  title,
+  onClose,
+  onUnlock,
+}: {
+  title: string;
+  onClose: () => void;
+  onUnlock: () => void;
+}) {
+  const PIN_LENGTH = 6;
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const pinRef = useRef("");
+  pinRef.current = pin;
+
+  const submit = (value: string) => {
+    if (value.length !== PIN_LENGTH || pending) return;
+    startTransition(async () => {
+      const res = await unlockPrivate(value);
+      if (res.ok) onUnlock();
+      else {
+        setError(true);
+        setPin("");
+        pinRef.current = "";
+        setTimeout(() => setError(false), 600);
+      }
+    });
+  };
+
+  const press = (d: string) => {
+    if (pending || pinRef.current.length >= PIN_LENGTH) return;
+    setError(false);
+    const next = pinRef.current + d;
+    pinRef.current = next;
+    setPin(next);
+    if (next.length === PIN_LENGTH) submit(next);
+  };
+  const back = () => {
+    const next = pinRef.current.slice(0, -1);
+    pinRef.current = next;
+    setPin(next);
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key >= "0" && e.key <= "9") {
+        e.preventDefault();
+        press(e.key);
+      } else if (e.key === "Backspace") {
+        e.preventDefault();
+        back();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        submit(pinRef.current);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="overlay" style={{ zIndex: 340 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="dialog" style={{ maxWidth: 300 }}>
+        <div className="dhead">
+          <h2>{title}</h2>
+        </div>
+        <div className="dbody" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+          <Icon name="lock" size={22} />
+          <div className="pin-dots" style={{ margin: 0 }}>
+            {Array.from({ length: PIN_LENGTH }).map((_, i) => (
+              <span key={i} className={"pin-dot" + (i < pin.length ? " filled" : "")} />
+            ))}
+          </div>
+          <div className="pin-pad">
+            {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((k) => (
+              <button key={k} type="button" className="pin-key" onClick={() => press(k)} disabled={pending}>
+                {k}
+              </button>
+            ))}
+            <button type="button" className="pin-key ghost" onClick={back} disabled={pending} aria-label="Delete">
+              <Icon name="backspace" size={22} />
+            </button>
+            <button type="button" className="pin-key" onClick={() => press("0")} disabled={pending}>
+              0
+            </button>
+            <button
+              type="button"
+              className="pin-key accent"
+              onClick={() => submit(pin)}
+              disabled={pending || pin.length !== PIN_LENGTH}
+              aria-label="Unlock"
+            >
+              <Icon name="check" size={22} />
+            </button>
+          </div>
+          {error && <div className="pin-error">Incorrect PIN</div>}
+        </div>
+        <div className="dfoot">
+          <button className="btn subtle" onClick={onClose}>
+            Cancel
           </button>
         </div>
       </div>
