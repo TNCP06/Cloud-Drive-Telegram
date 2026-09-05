@@ -306,17 +306,38 @@ async def _get_gofile_token(client: httpx.AsyncClient) -> str:
     if _gofile_token_cache and now - _gofile_token_cache[1] < 1800:
         return _gofile_token_cache[0]
 
-    try:
-        r = await client.post("https://api.gofile.io/accounts", timeout=10.0)
-        data = r.json()
-        token = data.get("data", {}).get("token")
-        if token:
-            _gofile_token_cache = (token, now)
-            return token
-    except Exception as e:
-        log.warning("Gofile guest account creation failed: %s", e)
+    last_err = "tanpa detail"
+    for attempt in range(3):
+        try:
+            r = await client.post(
+                "https://api.gofile.io/accounts",
+                headers={
+                    "Origin": "https://gofile.io",
+                    "Referer": "https://gofile.io/",
+                    "Accept": "application/json",
+                },
+                timeout=30.0,
+            )
+            if r.status_code != 200:
+                last_err = f"HTTP {r.status_code}: {(r.text or '')[:150]}"
+                continue
+            data = r.json()
+            token = data.get("data", {}).get("token")
+            if token:
+                _gofile_token_cache = (token, now)
+                return token
+            last_err = f"status={data.get('status')}"
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {(str(e).strip() or repr(e))}"
+            log.warning("Gofile guest account creation attempt %d failed: %s", attempt + 1, last_err)
+            await asyncio.sleep(2 * (attempt + 1))
 
-    raise UrlDownloadError("Gagal membuat sesi tamu Gofile (API tidak merespons).")
+    raise UrlDownloadError(
+        f"Gagal membuat sesi tamu Gofile ({last_err}). "
+        "Kemungkinan IP server (datacenter) diblokir Gofile. "
+        "Solusi: set env GOFILE_TOKEN dengan token akun premium di VPS, "
+        "atau download manual lalu forward file-nya ke bot."
+    )
 
 
 async def extract_gofile(url: str) -> List[Tuple[str, str, int, str]]:
