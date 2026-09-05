@@ -40,7 +40,19 @@ STREAMTAPE_DOMAINS = (
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 GOFILE_LANG = "en-US"
-GOFILE_FALLBACK_SALT = "12af056dacea0b"
+# Salt untuk X-Website-Token dinamis (sha256 UA::lang::token::timeSlot::salt).
+# Nilai ini diputar Gofile dari waktu ke waktu; bisa di-override tanpa ubah kode via env GOFILE_WT_SALT.
+# "5d4f7g8sd45fsd" = nilai yang dipakai gallery-dl/yt-dlp saat ini; fallback lama "12af056dacea0b" sudah mati.
+GOFILE_FALLBACK_SALT = os.environ.get("GOFILE_WT_SALT", "5d4f7g8sd45fsd")
+# Token akun premium opsional (env GOFILE_TOKEN / GF_TOKEN). Bypass batasan guest/datacenter-IP.
+GOFILE_API_TOKEN = os.environ.get("GOFILE_TOKEN", "") or os.environ.get("GF_TOKEN", "")
+GOFILE_CONTENT_PARAMS = {
+    "contentFilter": "",
+    "page": "1",
+    "pageSize": "1000",
+    "sortField": "name",
+    "sortDirection": "1",
+}
 
 POLL_INTERVAL = 3
 EDIT_THROTTLE_S = 6
@@ -242,23 +254,55 @@ async def _get_gofile_salt(client: httpx.AsyncClient) -> str:
     if _gofile_salt_cache and now - _gofile_salt_cache[1] < 3600:
         return _gofile_salt_cache[0]
 
+    # wt.obf.js sekarang ter-obfuscate berat; pola lama sering gagal sehingga
+    # kita coba beberapa pola lalu pakai fallback (env GOFILE_WT_SALT).
+    patterns = [
+        r"\+['\"]((?:\\x[0-9a-fA-F]{2})+)['\"]",  # format lama
+        r"::['\"]\s*\+\s*['\"]([0-9a-zA-Z]{10,32})['\"]",  # salt plain di generator WT
+        r"['\"]([0-9a-f]{12,32})['\"]",  # hex string generik
+    ]
     try:
         r_js = await client.get("https://gofile.io/js/wt.obf.js", timeout=10.0)
-        m = re.search(r"\+['\"]((?:\\x[0-9a-fA-F]{2})+)['\"]", r_js.text)
-        if m:
-            hex_str = m.group(1).replace("\\x", "")
-            salt = bytes.fromhex(hex_str).decode("latin1", "replace")
-            _gofile_salt_cache = (salt, now)
-            return salt
+        if r_js.status_code == 200:
+            for pat in patterns:
+                m = re.search(pat, r_js.text)
+                if m:
+                    raw_salt = m.group(1)
+                    try:
+                        salt = bytes(raw_salt.encode().decode("unicode_escape"), "latin1").decode("latin1")
+                    except Exception:
+                        salt = raw_salt
+                    # Salt WT yang valid sejauh ini selalu alfanumerik pendek
+                    if 8 <= len(salt) <= 32 and re.fullmatch(r"[0-9a-zA-Z]+", salt):
+                        _gofile_salt_cache = (salt, now)
+                        return salt
     except Exception as e:
         log.warning("Gofile salt fetch failed, using fallback: %s", e)
 
     return GOFILE_FALLBACK_SALT
 
 
+def _gofile_website_token(user_agent: str, token: str, salt: str) -> str:
+    t4 = str(int(time.time() / 14400))
+    raw = f"{user_agent}::{GOFILE_LANG}::{token}::{t4}::{salt}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _gofile_premium_hint() -> str:
+    if GOFILE_API_TOKEN:
+        return ""
+    return (
+        " Kemungkinan IP server (datacenter) diblokir Gofile atau salt WT sudah diputar. "
+        "Solusi: set env GOFILE_TOKEN dengan token akun premium di VPS, "
+        "atau download manual lalu forward file-nya ke bot."
+    )
+
+
 async def _get_gofile_token(client: httpx.AsyncClient) -> str:
     global _gofile_token_cache
     now = time.monotonic()
+    if GOFILE_API_TOKEN:
+        return GOFILE_API_TOKEN
     if _gofile_token_cache and now - _gofile_token_cache[1] < 1800:
         return _gofile_token_cache[0]
 
@@ -289,25 +333,35 @@ async def extract_gofile(url: str) -> List[Tuple[str, str, int, str]]:
     async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=20.0) as client:
         token = await _get_gofile_token(client)
         salt = await _get_gofile_salt(client)
+        wt = _gofile_website_token(USER_AGENT, token, salt)
 
-        t4 = str(int(time.time() / 14400))
-        raw = f"{USER_AGENT}::{GOFILE_LANG}::{token}::{t4}::{salt}"
-        wt = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
+        params = dict(GOFILE_CONTENT_PARAMS)
+        params["wt"] = wt
         try:
             r = await client.get(
                 f"https://api.gofile.io/contents/{content_id}",
+                params=params,
                 headers={
                     "Authorization": f"Bearer {token}",
                     "X-Website-Token": wt,
                     "X-BL": GOFILE_LANG,
-                }
+                    "Origin": "https://gofile.io",
+                    "Referer": "https://gofile.io/",
+                    "Accept": "application/json",
+                    "Cookie": f"accountToken={token}",
+                },
             )
         except Exception as e:
-            raise UrlDownloadError(f"Gagal menghubungi Gofile API: {e}")
+            detail = str(e).strip() or repr(e)
+            raise UrlDownloadError(f"Gagal menghubungi Gofile API ({type(e).__name__}): {detail}")
 
         if r.status_code != 200:
-            raise UrlDownloadError(f"Gofile API HTTP {r.status_code}: {r.text[:100]}")
+            body = (r.text or "")[:200]
+            if r.status_code in (401, 403) and ("notPremium" in body or "wrongToken" in body):
+                raise UrlDownloadError(
+                    f"Gofile menolak akses ({body}).{_gofile_premium_hint()}"
+                )
+            raise UrlDownloadError(f"Gofile API HTTP {r.status_code}: {body}")
 
         res = r.json()
         status = res.get("status")
@@ -316,6 +370,10 @@ async def extract_gofile(url: str) -> List[Tuple[str, str, int, str]]:
                 raise UrlDownloadError("File atau folder Gofile tidak ditemukan (mungkin telah dihapus).")
             if status == "error-password":
                 raise UrlDownloadError("File Gofile dilindungi password.")
+            if status in ("error-notPremium", "error-wrongToken", "error-token"):
+                raise UrlDownloadError(
+                    f"Gofile menolak akses ({status}).{_gofile_premium_hint()}"
+                )
             raise UrlDownloadError(f"Gofile error: {status}")
 
         data = res.get("data", {})
@@ -462,13 +520,17 @@ async def http_stream_copy(bot, db, job, dst: str, state: dict):
     if job.get("source") == "streamtape":
         headers["Referer"] = "https://streamtape.com/"
     elif job.get("source") == "gofile":
-        try:
-            async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=10.0) as c:
-                g_token = await _get_gofile_token(c)
+        g_token = GOFILE_API_TOKEN
+        if not g_token:
+            try:
+                async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=10.0) as c:
+                    g_token = await _get_gofile_token(c)
+            except Exception as e:
+                log.warning("Could not fetch Gofile token for stream download: %s", e)
+                g_token = ""
+        if g_token:
             headers["Authorization"] = f"Bearer {g_token}"
             headers["Cookie"] = f"accountToken={g_token}"
-        except Exception as e:
-            log.warning("Could not fetch Gofile token for stream download: %s", e)
 
     mode = "r+b" if (os.path.exists(fpath) and done > 0) else "wb"
     if mode == "wb":
