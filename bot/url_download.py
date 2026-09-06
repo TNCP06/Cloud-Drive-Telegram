@@ -42,8 +42,10 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 GOFILE_LANG = "en-US"
 # Salt untuk X-Website-Token dinamis (sha256 UA::lang::token::timeSlot::salt).
 # Nilai ini diputar Gofile dari waktu ke waktu; bisa di-override tanpa ubah kode via env GOFILE_WT_SALT.
-# "5d4f7g8sd45fsd" = nilai yang dipakai gallery-dl/yt-dlp saat ini; fallback lama "12af056dacea0b" sudah mati.
-GOFILE_FALLBACK_SALT = os.environ.get("GOFILE_WT_SALT", "5d4f7g8sd45fsd")
+# Terverifikasi 2026-09-06 dengan MENJALANKAN generateWT() dari wt.obf.js live
+# (node scripts/gofile_salt.js) — salt saat itu: "12af056dacea0b".
+# Nilai "5d4f7g8sd45fsd" (gallery-dl) terbukti basi → selalu error-notPremium.
+GOFILE_FALLBACK_SALT = os.environ.get("GOFILE_WT_SALT", "12af056dacea0b")
 # Token akun premium opsional (env GOFILE_TOKEN / GF_TOKEN). Bypass batasan guest/datacenter-IP.
 GOFILE_API_TOKEN = os.environ.get("GOFILE_TOKEN", "") or os.environ.get("GF_TOKEN", "")
 GOFILE_CONTENT_PARAMS = {
