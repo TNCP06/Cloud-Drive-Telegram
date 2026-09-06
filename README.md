@@ -4,6 +4,8 @@
 
 # Telegram Cloud Drive
 
+**Language:** English (default) · [Bahasa Indonesia](README.id.md)
+
 > Personal, effectively-unlimited cloud storage with a clean web dashboard — built on a private **Telegram channel** for bytes, **self-hosted PostgreSQL** for metadata, and **Next.js** for the UI.
 
 Files are stored as messages in a private Telegram channel (free, no size cap for your data). A self-hosted PostgreSQL database holds the metadata (titles, tags, sizes, the pointer back to each message). A Next.js dashboard lets you browse, search, tag, upload, download, and **stream video** from any device — without opening Telegram.

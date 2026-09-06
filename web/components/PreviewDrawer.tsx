@@ -129,6 +129,14 @@ export function PreviewDrawer({
   const viewerRef = useRef<HTMLDivElement>(null);
   const activeThumbRef = useRef<HTMLButtonElement>(null);
   const closeDetails = () => setShowDetails(false);
+  // A fullscreen element owns the browser top layer; close it before opening a sibling dialog.
+  const openPopup = (open: () => void) => {
+    if (!document.fullscreenElement) {
+      open();
+      return;
+    }
+    document.exitFullscreen().catch(() => {}).finally(open);
+  };
   // Photo viewing affordances (mirror the PikPak bottom box: counter + filmstrip + rotate/fullscreen).
   const [rotation, setRotation] = useState(0);
   // Pinch/double-tap zoom state for a still image: scale + pan offset, applied as one transform.
@@ -767,7 +775,7 @@ export function PreviewDrawer({
                 {isVideoStage && (
                   <button
                     className="viewer-iconbtn"
-                    onClick={() => setSubsOpen(true)}
+                    onClick={() => openPopup(() => setSubsOpen(true))}
                     title="Add subtitle"
                   >
                     <Icon name="subtitles" size={17} />
@@ -775,7 +783,7 @@ export function PreviewDrawer({
                 )}
                 <button
                   className="viewer-iconbtn"
-                  onClick={() => setShowDetails(true)}
+                  onClick={() => openPopup(() => setShowDetails(true))}
                   title="Details"
                 >
                   <Icon name="kebab" size={17} />

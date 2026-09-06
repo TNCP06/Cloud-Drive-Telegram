@@ -1,5 +1,7 @@
 # Architecture
 
+**Language:** English (default) · [Bahasa Indonesia](./ARCHITECTURE.id.md)
+
 Telegram Cloud Drive uses Telegram as the durable byte store, PostgreSQL as the metadata and job
 system, Python services as the Telegram/media bridge, and Next.js as the dashboard and HTTP boundary.
 

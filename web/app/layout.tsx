@@ -4,6 +4,7 @@ import "./globals.css";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 import { UploadProvider } from "@/components/UploadProvider";
 import { FloatingUploadPanel } from "@/components/FloatingUploadPanel";
+import { LocaleProvider } from "@/components/LocaleProvider";
 
 const hanken = Hanken_Grotesk({
   subsets: ["latin"],
@@ -20,7 +21,7 @@ const instrument = Instrument_Serif({
 
 export const metadata: Metadata = {
   title: "Vault — Telegram Cloud Drive",
-  description: "Personal cloud drive dengan Telegram sebagai storage.",
+  description: "Personal cloud drive with Telegram as storage.",
 };
 
 // Applied before first paint to avoid a light→dark flash: use the saved choice,
@@ -29,16 +30,18 @@ const THEME_INIT = `(function(){try{var t=localStorage.getItem('tcd_theme');if(!
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="id" className={`${hanken.variable} ${instrument.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${hanken.variable} ${instrument.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
       </head>
       <body>
         <ServiceWorkerRegister />
-        <UploadProvider>
-          {children}
-          <FloatingUploadPanel />
-        </UploadProvider>
+        <LocaleProvider>
+          <UploadProvider>
+            {children}
+            <FloatingUploadPanel />
+          </UploadProvider>
+        </LocaleProvider>
       </body>
     </html>
   );

@@ -1,5 +1,7 @@
 # Deployment Guide — VPS / AWS EC2 (Docker)
 
+**Language:** English (default) · [Bahasa Indonesia](./DEPLOYMENT.id.md)
+
 This guide explains how to run **Telegram Cloud Drive** on an always-on server so it's
 reachable from any device, large uploads are handled server-side ("upload one file, the
 server splits it into <2 GB parts and pushes them to Telegram"), and videos stream in the

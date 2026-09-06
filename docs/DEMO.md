@@ -1,5 +1,7 @@
 # UI-only demo (Vercel)
 
+**Language:** English (default) · [Bahasa Indonesia](./DEMO.id.md)
+
 A public, backend-free deployment of the dashboard: no Postgres, no Telegram, no bot, no
 streamer. It exists so the UI can be shown off (and shared as a link) without exposing the real
 drive, and without a Vercel rebuild every time the Python side changes.

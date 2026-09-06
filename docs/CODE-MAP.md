@@ -1,5 +1,7 @@
 # Code Map
 
+**Language:** English (default) · [Bahasa Indonesia](./CODE-MAP.id.md)
+
 This is the current ownership map for the public entry points and the main flows.
 
 ## Web

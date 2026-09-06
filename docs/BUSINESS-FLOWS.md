@@ -1,5 +1,7 @@
 # Business / Operational Flows
 
+**Language:** English (default) · [Bahasa Indonesia](./BUSINESS-FLOWS.id.md)
+
 Step-by-step flows for every operation, with the exact code path. "Needs laptop?" tells you
 whether the operation requires the laptop powered on. See [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 for components and [`CODE-MAP.md`](./CODE-MAP.md) for function-level detail.
