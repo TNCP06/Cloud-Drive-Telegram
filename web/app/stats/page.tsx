@@ -97,7 +97,7 @@ export default async function StatsPage() {
   return (
     <div className="stats-wrap scroll">
       <style>{`
-        .stats-wrap { padding: 28px 20px 60px; overflow-y: auto; height: 100dvh; }
+         .stats-wrap { padding: 28px 20px 60px; overflow-y: auto; height: 100dvh; overflow-x: hidden; }
         .stats-inner { max-width: 980px; margin: 0 auto; }
         .stats-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
         .stats-head h1 { font-size: 22px; margin: 0 12px 0 0; letter-spacing: -.02em; }
@@ -125,8 +125,19 @@ export default async function StatsPage() {
         .st-chip b { font-variant-numeric: tabular-nums; }
         .st-chip.st-ok b { color: var(--ok, #0ca30c); }
         .st-chip.st-bad b { color: var(--red, #d03b3b); }
-        .st-chip.st-run b { color: var(--accent); }
-      `}</style>
+         .st-chip.st-run b { color: var(--accent); }
+         @media (max-width: 560px) {
+           .stats-wrap { padding: 18px 14px 48px; }
+           .stats-head { align-items: stretch; flex-direction: column; gap: 10px; }
+           .stats-head h1 { font-size: 20px; }
+           .stats-head .btn { align-self: flex-start; }
+           .stats-grid { grid-template-columns: 1fr; gap: 9px; margin-top: 14px; }
+           .stats-card { padding: 14px; }
+           .flow-row { align-items: flex-start; }
+           .flow-row .fl { width: 100%; }
+           .tag-row { grid-template-columns: minmax(70px, 1fr) 1.5fr max-content; }
+         }
+       `}</style>
       <div className="stats-inner">
         <div className="stats-head">
           <h1>System map &amp; stats</h1>

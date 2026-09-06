@@ -95,6 +95,14 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
   const failed = localFailed + serverFailed;
   const serverActive = (stats.queued ?? 0) + (stats.pending ?? 0) + (stats.running ?? 0);
   const serverDone = stats.done ?? 0;
+  const recentJobs = jobs.filter((j) => j.status !== "error").slice(0, 20);
+  const statusLabel: Record<string, string> = {
+    pending: "menunggu",
+    queued: "antre",
+    running: "mengunggah",
+    done: "selesai",
+    canceled: "dibatalkan",
+  };
 
   const retryAll = () => {
     setAutoPaused(false);
@@ -103,26 +111,25 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
   };
 
   return (
-    <div className="up-wrap scroll">
-      <div className="up-inner">
-        <div className="up-head">
+    <div className="up-wrap scroll backup-page">
+      <div className="up-inner backup-inner">
+        <div className="up-head backup-head">
           <button className="btn subtle" type="button" onClick={() => router.back()}>
             <Icon name="back" size={16} />
             Back
           </button>
-          <h1>Backup HP</h1>
+          <div>
+            <div className="backup-eyebrow">PHONE ARCHIVE</div>
+            <h1>Backup HP</h1>
+          </div>
         </div>
 
-        <div className="pick-note" style={{ marginBottom: 12 }}>
-          Arsip isi HP lama ke Telegram, sekali jalan. Pilih folder (mis. DCIM, lalu
-          WhatsApp, Download — menumpuk jadi satu antrean), tekan <b>Mulai</b>, lalu
-          biarkan: tiap file otomatis berjudul dari nama foldernya, file besar
-          otomatis dipecah, dan yang gagal bisa diulang <b>sekaligus</b> dengan satu
-          tombol. Colok charger dan biarkan tab ini terbuka — kalau HP mati/hang,
-          buka lagi halaman ini untuk lanjut dari posisi terakhir (tidak mengulang
-          dari nol). Tips hemat: file kecil (≤ ~2 GB) lebih cepat & gratis-egress
-          lewat bot Telegram (<b>/backup</b>, kirim file ke bot); halaman ini
-          wajib hanya untuk file besar & folder.
+        <div className="pick-note backup-intro">
+          Pilih satu atau beberapa folder dari HP, lalu tekan <b>Mulai backup</b>.
+          File masuk ke satu antrean, dipecah otomatis bila terlalu besar, dan yang
+          gagal bisa diulang sekaligus. Biarkan tab tetap terbuka dan sambungkan
+          charger. File kecil (≤ ~2 GB) lebih hemat lewat bot Telegram dengan
+          perintah <b>/backup</b>.
         </div>
 
         {/* Disk + progress summary */}
@@ -132,15 +139,16 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
           </h2>
           {speed > 0 && <span className="up-job-time">{fmtSize(speed)}/s</span>}
         </div>
-        <div className="up-job">
+        <div className="up-job backup-status">
           <div className="up-job-main">
             <div className="up-job-title">
-              VPS {disk?.freeBytes != null ? `sisa ${fmtSize(disk.freeBytes)}` : "…"}
+              <span className="backup-status-label">VPS staging</span>
+              <strong>{disk?.freeBytes != null ? fmtSize(disk.freeBytes) : "…"}</strong>
               <span className="up-kind">
                 {disk ? `${fmtSize(disk.pendingBytes)} menunggu` : ""}
               </span>
             </div>
-            <div className="up-job-path">
+            <div className="up-job-path backup-summary">
               Antre HP: {items.filter((i) => i.stage === "ready").length} siap ·{" "}
               {items.filter((i) => i.stage === "uploading").length} terkirim ·{" "}
               {localFailed} gagal · VPS aktif: {serverActive} · Selesai: {serverDone} ·{" "}
@@ -164,7 +172,8 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
         </div>
 
         {/* Pickers + controls */}
-        <div className="up-pickers" style={{ marginTop: 12 }}>
+        <div className="backup-section-label">Tambahkan dari perangkat</div>
+        <div className="up-pickers backup-pickers" style={{ marginTop: 8 }}>
           <label className="btn">
             <input
               type="file"
@@ -191,10 +200,10 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
             <Icon name="folder" size={16} /> Tambah folder (DCIM…)
           </label>
         </div>
-        <div className="up-actions" style={{ marginTop: 8 }}>
+        <div className="up-actions backup-actions" style={{ marginTop: 10 }}>
           {!uploadingNow && (
             <button className="btn primary" onClick={() => { setAutoPaused(false); runQueue(); }}>
-              <Icon name="upload" size={15} /> Mulai / Lanjutkan
+              <Icon name="upload" size={15} /> Mulai backup
             </button>
           )}
           {uploadingNow && (
@@ -202,7 +211,7 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
           )}
           {failed > 0 && (
             <button className="btn primary" onClick={retryAll} disabled={isPending}>
-              <Icon name="upload" size={15} /> Ulangi {failed} yang gagal
+              <Icon name="upload" size={15} /> Ulangi {failed} gagal
             </button>
           )}
           {jobs.some((j) => ["done", "error", "canceled"].includes(j.status)) && (
@@ -214,7 +223,7 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
             </button>
           )}
         </div>
-        <div className="pick-note">
+        <div className="pick-note backup-resume-note">
           Kalau browser mati/hang total: buka lagi halaman ini, pilih ulang folder yang
           sama — file yang sudah terkirim dikenali dari server dan tidak diulang.
         </div>
@@ -222,7 +231,7 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
         {/* Failed files (names, so the user knows WHAT failed) */}
         {(localFailed > 0 || serverFailed > 0) && (
           <>
-            <div className="up-listhead" style={{ marginTop: 16 }}>
+            <div className="up-listhead backup-listhead" style={{ marginTop: 16 }}>
               <h2>Gagal ({failed})</h2>
             </div>
             <div className="up-list">
@@ -253,7 +262,7 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
                       className="btn primary sm"
                       onClick={() => startTransition(() => retryUpload(j.id))}
                     >
-                      Retry
+                      Ulangi
                     </button>
                     <button
                       className="btn subtle sm"
@@ -270,15 +279,15 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
         )}
 
         {/* Recent server jobs */}
-        {jobs.length > 0 && (
+        {recentJobs.length > 0 && (
           <>
-            <div className="up-listhead" style={{ marginTop: 16 }}>
-              <h2>Antre VPS → Telegram ({serverActive + serverDone + serverFailed} total, 20 terbaru)</h2>
+            <div className="up-listhead backup-listhead" style={{ marginTop: 16 }}>
+              <h2>Aktivitas VPS terbaru</h2>
             </div>
             <div className="up-list">
-              {jobs.slice(0, 20).map((j) => (
+              {recentJobs.map((j) => (
                 <div className="up-job" key={j.id}>
-                  <div className={"up-badge st-" + j.status}>{j.status}</div>
+                  <div className={"up-badge st-" + j.status}>{statusLabel[j.status] ?? j.status}</div>
                   <div className="up-job-main">
                     <div className="up-job-title">{j.title}</div>
                     {j.status === "running" && (
@@ -295,7 +304,7 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
                         className="btn primary sm"
                         onClick={() => startTransition(() => retryUpload(j.id))}
                       >
-                        Retry
+                        Ulangi
                       </button>
                     )}
                   </div>

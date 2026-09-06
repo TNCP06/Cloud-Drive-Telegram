@@ -103,6 +103,7 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+html { overflow-x: hidden; }
 body {
   margin: 0;
   font-family: var(--ui);
@@ -181,7 +182,7 @@ button { font-family: inherit; }
 .app {
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -419,6 +420,7 @@ button { font-family: inherit; }
    Content area
    =========================================================================== */
 .content { flex: 1; min-height: 0; overflow-y: auto; padding: 6px var(--pad) 60px; }
+.content, .toolbar, .topbar, .selbar, .up-inner, .stats-inner { min-width: 0; }
 
 .section-h { font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); margin: 18px 2px 12px; font-weight: 600; }
 .section-h:first-child { margin-top: 6px; }
@@ -1241,7 +1243,7 @@ button { font-family: inherit; }
   .list-head, .row { grid-template-columns: 1fr 90px 36px; }
   .list-head .h-size, .row .c-size, .list-head .h-mod, .row .c-mod { display: none; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 11px; }
-  .drawer { width: 380px; }
+  .drawer { width: min(380px, calc(100vw - 24px)); }
   .hide-mob { display: none !important; }
 }
 
@@ -1262,12 +1264,26 @@ button { font-family: inherit; }
   .spacer { display: none; }
   .search { display: none; }
   .search.mob-open { display: flex; order: 10; flex: 0 0 100%; width: 100% !important; max-width: 100% !important; margin-top: 2px; }
+  .toolbar { gap: 6px 10px; padding-top: 9px; padding-bottom: 9px; }
+  .toolbar .sortbtn { padding: 7px 6px; }
+  .selbar { flex-wrap: wrap; }
+  .selbar .sgap { display: none; }
+  .selact { padding: 6px 7px; }
 }
 @media (min-width: 861px) {
   .show-mob-only { display: none !important; }
 }
+@media (min-width: 861px) and (max-width: 1050px) {
+  .topbar { flex-wrap: wrap; }
+  .topbar .crumb-count { display: none; }
+  .topbar .search { display: none; }
+  .topbar .search.mob-open {
+    display: flex; order: 10; flex: 0 0 100%; width: 100%; max-width: 100%;
+  }
+  .topbar-actions .show-mob-only { display: grid !important; }
+}
 @media (max-width: 520px) {
-  .grid { grid-template-columns: repeat(2, 1fr); }
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .brand-name { font-size: 24px; }
   .overlay { padding: 12px; }
   .dialog { max-height: calc(100vh - 24px); border-radius: var(--r-lg); }
@@ -1313,7 +1329,7 @@ button { font-family: inherit; }
 /* ===========================================================================
    Halaman Upload via laptop
    =========================================================================== */
-.up-wrap { height: 100vh; overflow-y: auto; background: var(--paper); }
+.up-wrap { height: 100dvh; overflow-y: auto; background: var(--paper); }
 .up-inner { max-width: 720px; margin: 0 auto; padding: 28px 22px 80px; }
 .up-head { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
 .up-head h1 { font-family: var(--ui); font-weight: 600; font-size: 22px; margin: 0; letter-spacing: -.01em; }
@@ -1402,6 +1418,64 @@ button { font-family: inherit; }
 .up-job-time { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
 .up-pct { font-size: 13px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
 .btn.sm { padding: 4px 10px; font-size: 12.5px; }
+
+/* Backup HP is a guided one-purpose flow, not the full upload form. */
+.backup-inner { max-width: 760px; }
+.backup-head { margin-bottom: 14px; }
+.backup-head > div { display: flex; flex-direction: column; }
+.backup-eyebrow, .backup-section-label {
+  color: var(--faint); font-size: 10.5px; font-weight: 650;
+  letter-spacing: .11em; text-transform: uppercase;
+}
+.backup-head h1 { line-height: 1.15; }
+.backup-intro {
+  margin: 0 0 22px; padding: 15px 17px; color: var(--muted); font-size: 13px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md);
+}
+.backup-status { padding: 16px 18px; border-color: var(--line-2); box-shadow: var(--sh-1); }
+.backup-status .up-job-title { display: flex; align-items: center; gap: 8px; }
+.backup-status .up-job-title strong { font-size: 20px; line-height: 1; color: var(--ink); }
+.backup-status-label { color: var(--muted); }
+.backup-summary { margin-top: 9px; font-family: var(--ui); line-height: 1.55; white-space: normal; }
+.backup-section-label { margin: 20px 2px 0; }
+.backup-pickers { display: grid; grid-template-columns: 1fr 1fr; }
+.backup-pickers .btn { justify-content: center; min-height: 42px; border-style: dashed; }
+.backup-actions { align-items: center; justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
+.backup-actions .btn.primary:first-child { min-height: 42px; padding-inline: 20px; }
+.backup-actions .btn.subtle:last-child { margin-left: auto; }
+.backup-resume-note {
+  margin-top: 12px; padding-left: 12px; border-left: 2px solid var(--line-2);
+}
+.backup-listhead { margin-bottom: 9px; }
+
+@media (max-width: 560px) {
+  .up-inner { padding: 18px 14px 56px; }
+  .up-head { gap: 8px; margin-bottom: 16px; }
+  .up-head h1 { font-size: 20px; }
+  .up-head > div { margin-left: auto !important; }
+  .up-head > div .btn { padding-inline: 8px; }
+  .up-form { padding: 14px; border-radius: var(--r-md); }
+  .up-row { display: block; }
+  .up-row .field[style] { width: 100% !important; }
+  .pick-row { align-items: stretch; flex-direction: column; }
+  .pick-row .input { width: 100%; }
+  .up-pickers, .up-actions { flex-direction: column; align-items: stretch; }
+  .up-pickers .btn, .up-actions .btn { justify-content: center; width: 100%; }
+  .up-actions { justify-content: stretch; }
+  .up-job-path { white-space: normal; overflow-wrap: anywhere; }
+  .up-job-side { flex-direction: row; align-items: center; justify-content: flex-end; width: 100%; }
+  .dialog .dhead, .dialog .dbody { padding-left: 16px; padding-right: 16px; }
+  .dialog .dfoot { padding: 12px 16px 16px; flex-wrap: wrap; }
+  .dialog .dfoot .btn { flex: 1; justify-content: center; }
+  .backup-head > div { margin-left: 0 !important; }
+  .backup-intro { margin-bottom: 18px; padding: 13px 14px; }
+  .backup-status { padding: 14px; }
+  .backup-status .up-job-title { flex-wrap: wrap; }
+  .backup-status .up-kind { margin-left: auto; }
+  .backup-pickers { display: grid; grid-template-columns: 1fr; }
+  .backup-actions .btn { min-height: 40px; }
+  .backup-actions .btn.subtle { order: 3; }
+}
 
 /* Floating upload progress panel (global, shown on any page except /upload) */
 .fup {
@@ -1504,6 +1578,13 @@ button { font-family: inherit; }
 .fsb-pick:hover { background: var(--accent); color: #fff; }
 .fsb-foot { display: flex; justify-content: flex-end; gap: 9px; padding: 13px 18px; border-top: 1px solid var(--line); }
 
+@media (max-width: 560px) {
+  .fsb-overlay { padding: 0; }
+  .fsb { width: 100%; max-width: none; max-height: 100dvh; border-radius: 0; }
+  .fsb-head, .fsb-shortcuts, .fsb-bar { padding-left: 14px; padding-right: 14px; }
+  .fsb-foot { padding: 11px 14px; }
+}
+
 /* ===========================================================================
    Error boundary & Login
    =========================================================================== */
@@ -1522,6 +1603,38 @@ button { font-family: inherit; }
 .login-card .input { width: 100%; }
 .login-card .btn.primary { justify-content: center; margin-top: 4px; }
 .login-err { color: #A8362B; font-size: 13px; text-align: center; }
+
+/* Telegram bot handoff page. Keep it on the same theme as the authenticated app and
+   let the card shrink cleanly on narrow in-app browsers. */
+.botdrop-wrap {
+  min-height: 100dvh; display: grid; place-items: center; padding: 20px;
+  background: var(--paper); overflow-x: hidden;
+}
+.botdrop-card {
+  width: min(520px, 100%); background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: 28px; box-shadow: var(--sh-3);
+}
+.botdrop-card h1, .botdrop-card h2 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+.botdrop-sub { color: var(--muted); font-size: 13.5px; margin: 0 0 22px; }
+.botdrop-form { display: flex; flex-direction: column; gap: 18px; }
+.botdrop-form > div { display: flex; flex-direction: column; gap: 7px; }
+.botdrop-form label { font-size: 12px; color: var(--muted); font-weight: 500; }
+.botdrop-form label span { color: #A8362B; }
+.botdrop-form select.input { appearance: auto; }
+.botdrop-submit { width: 100%; justify-content: center; }
+.botdrop-message { padding: 12px 14px; border-radius: var(--r-md); font-size: 13px; }
+.botdrop-message.error { color: #A8362B; background: color-mix(in oklab, #B23A2E 10%, var(--card)); border: 1px solid color-mix(in oklab, #B23A2E 28%, var(--line)); }
+.botdrop-message.success { color: #2f6a64; background: color-mix(in oklab, #3C7A74 10%, var(--card)); border: 1px solid color-mix(in oklab, #3C7A74 28%, var(--line)); }
+.botdrop-error, .botdrop-success { text-align: center; }
+.botdrop-error h2 { color: #A8362B; }
+.botdrop-icon { color: var(--accent); font-weight: 600; margin-bottom: 8px; }
+.botdrop-success p, .botdrop-error p { color: var(--muted); font-size: 13.5px; line-height: 1.55; margin: 0 0 20px; }
+
+@media (max-width: 560px) {
+  .botdrop-wrap { padding: 12px; align-items: start; padding-top: max(12px, env(safe-area-inset-top)); }
+  .botdrop-card { padding: 20px 16px; }
+  .botdrop-card h1 { font-size: 20px; }
+}
 
 /* ===========================================================================
    Loading — skeleton (shimmer) & spinner
@@ -1791,6 +1904,12 @@ body:has(.viewer) .fup { display: none; }
   20%, 80% { transform: translateX(2px); }
   30%, 50%, 70% { transform: translateX(-5px); }
   40%, 60% { transform: translateX(5px); }
+}
+
+@media (max-width: 380px) {
+  .pinlock { padding: 16px; }
+  .pin-pad { max-width: 230px; gap: 10px; }
+  .pin-dots { gap: 8px; }
 }
 
 
