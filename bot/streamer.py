@@ -183,6 +183,9 @@ MIME_MAP = {
     ".mov": "video/quicktime", ".mkv": "video/x-matroska",
     ".avi": "video/x-msvideo", ".flv": "video/x-flv",
     ".3gp": "video/3gpp", ".ts": "video/mp2t",
+    ".wmv": "video/x-ms-wmv", ".mpg": "video/mpeg", ".mpeg": "video/mpeg",
+    ".m2ts": "video/mp2t", ".mts": "video/mp2t", ".vob": "video/mpeg",
+    ".ogv": "video/ogg",
     # images
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
     ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",

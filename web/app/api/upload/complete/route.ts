@@ -3,9 +3,19 @@ import type { NextRequest } from "next/server";
 import { stat } from "node:fs/promises";
 import { db } from "@/lib/db";
 import { jobDir, stagedFilePath } from "@/lib/staging";
+import { STAGING_HEADROOM_BYTES, stagingStat } from "@/lib/stagingHealth";
+import { SPLIT_THRESHOLD_BYTES, VIDEO_EXTS } from "@/lib/uploadClient";
 import type { Kind } from "@/lib/types";
 import { isAppAuthenticated } from "@/lib/apiAuth";
 import { isPrivateUnlocked } from "@/app/actions/private";
+
+// Same routing the watcher uses (plan_media): an oversized file with a video
+// extension is re-segmented, which needs ~a second copy of the file on disk.
+function isVideoName(n: string): boolean {
+  const dot = n.lastIndexOf(".");
+  const ext = dot >= 0 ? n.slice(dot).toLowerCase() : "";
+  return (VIDEO_EXTS as readonly string[]).includes(ext);
+}
 
 // Finalize a resumable upload: verify the staged file is fully received, then queue
 // an upload_job for the watcher (origin='upload', cleanup_source=1 → the watcher
@@ -49,16 +59,18 @@ export async function POST(req: NextRequest) {
   }
 
   // The file must exist and be exactly the size the client claims — otherwise the
-  // upload is incomplete (don't queue a truncated/corrupt file).
+  // upload is incomplete (don't queue a truncated/corrupt file). The client
+  // always declares its size, so a missing/zero size is a protocol error, not
+  // an empty file (empty files declare size 0 AND land 0 bytes — still equal).
   let onDisk: number;
   try {
     onDisk = (await stat(file)).size;
   } catch {
     return NextResponse.json({ error: "Staged file not found." }, { status: 404 });
   }
-  if (size > 0 && onDisk !== size) {
+  if (!Number.isFinite(size) || onDisk !== size) {
     return NextResponse.json(
-      { error: `Incomplete upload (${onDisk}/${size} bytes).`, received: onDisk },
+      { error: `Incomplete upload (${onDisk}/${Number.isFinite(size) ? size : "?"} bytes).`, received: onDisk },
       { status: 409 }
     );
   }
@@ -88,6 +100,38 @@ export async function POST(req: NextRequest) {
   const isPrivate = body.isPrivate ? 1 : 0;
   if (isPrivate && !(await isPrivateUnlocked())) {
     return NextResponse.json({ error: "Private space is locked." }, { status: 403 });
+  }
+
+  // Disk guard: the watcher needs headroom on the shared staging volume while
+  // this job runs — one part window for stream-split files, or ~a full second
+  // copy for an oversized video the watcher must re-segment into playable
+  // parts (split_video refuses below size × 1.05). Refuse early with a message
+  // that distinguishes "never fits this VPS" from "temporarily full".
+  // The staged bytes are kept so the client can retry later once space frees up.
+  const st = stagingStat();
+  const bigVideo =
+    kind === "media" && onDisk > SPLIT_THRESHOLD_BYTES && isVideoName(name);
+  const need = bigVideo
+    ? Math.ceil(onDisk * 1.1) + STAGING_HEADROOM_BYTES
+    : partSize * 1024 * 1024 + STAGING_HEADROOM_BYTES;
+  if (st !== null && st.free < need) {
+    const freeMb = Math.floor(st.free / 1048576);
+    const needMb = Math.floor(need / 1048576);
+    const neverFits = need > st.total;
+    return NextResponse.json(
+      {
+        error: neverFits
+          ? `This file can never fit this VPS (needs ~${needMb} MB headroom, volume is ${Math.floor(st.total / 1048576)} MB total). ` +
+            `Split it on your device first, or free VPS disk. Your staged file is kept.`
+          : bigVideo
+            ? `Not enough VPS space to cut this large video (free ${freeMb} MB, need ~${needMb} MB while segmenting). ` +
+              `Wait for queued uploads to finish, then retry. Your staged file is kept.`
+            : `Not enough VPS staging space (free ${freeMb} MB, need ~${needMb} MB headroom for the Telegram upload). ` +
+              `Wait for queued uploads to finish, then retry. Your staged file is kept.`,
+        retryable: !neverFits,
+      },
+      { status: 507 }
+    );
   }
 
   const rs = await db.execute({

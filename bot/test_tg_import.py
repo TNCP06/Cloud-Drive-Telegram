@@ -124,9 +124,44 @@ def test_derive_title_tags():
     assert t == "" and g == ""
 
 
+def test_inspect_message_meta():
+    import asyncio
+
+    class DummyFile:
+        def __init__(self, name, size):
+            self.name = name
+            self.size = size
+
+    class DummyMsg:
+        def __init__(self, mid, message, fname, size):
+            self.id = mid
+            self.media = True
+            self.message = message
+            self.file = DummyFile(fname, size)
+            self.grouped_id = None
+
+    class DummyClient:
+        async def get_entity(self, chat):
+            return chat
+        async def get_messages(self, entity, ids):
+            if ids == 42:
+                return DummyMsg(42, "#action #movie Awesome Show Ep 01", "show_01.mp4", 104857600)
+            return None
+
+    client = DummyClient()
+    res = asyncio.run(tg_import.inspect_message_meta(client, "-1001234567890", 42))
+    assert res["ok"] is True
+    assert res["title"] == "Awesome Show Ep 01"
+    assert res["tags"] == "action, movie"
+    assert res["filename"] == "show_01.mp4"
+    assert res["size"] == 104857600
+    assert res["num_files"] == 1
+
+
 if __name__ == "__main__":
     test_parse_tg_links()
     test_parse_import_command()
     test_formatters()
     test_derive_title_tags()
+    test_inspect_message_meta()
     print("All tg_import tests passed!")

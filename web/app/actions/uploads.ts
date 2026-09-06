@@ -1,10 +1,20 @@
 "use server";
 
+import { rm } from "node:fs/promises";
+import path from "node:path";
 import { db } from "@/lib/db";
+import { STAGING_ROOT } from "@/lib/staging";
 import { revalidatePath } from "next/cache";
 import type { Kind } from "@/lib/types";
 
 // --- Upload queue (executed by watcher.py) ------------------------------------
+
+// A staging dir may only ever be deleted when it is provably ours (inside the
+// shared staging root) and never the root itself.
+function isDeletableStagingDir(p: string): boolean {
+  const rel = path.relative(STAGING_ROOT, path.resolve(p));
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
 
 export async function enqueueUpload(input: {
   kind: Kind;
@@ -59,11 +69,48 @@ export async function updateUploadJob(
 }
 
 export async function cancelUpload(id: number) {
-  await db.execute({
-    sql: "UPDATE upload_jobs SET status = 'canceled', updated_at = now_text() WHERE id = ? AND status IN ('queued','pending')",
+  const cur = await db.execute({
+    sql: "SELECT source_path, origin FROM upload_jobs WHERE id = ?",
     args: [id],
   });
+  // Conditional ownership: only the caller whose UPDATE actually flips a
+  // queued/pending/error row may delete staging. If the watcher claimed the
+  // job in between (→ running), rowsAffected is 0 and the live staging dir is
+  // left alone — deleting it would destroy an upload that is still in flight.
+  const upd = await db.execute({
+    sql: "UPDATE upload_jobs SET status = 'canceled', updated_at = now_text() WHERE id = ? AND status IN ('queued','pending','error')",
+    args: [id],
+  });
+  // 'error' is included: giving up on a failed job discards its staged retry
+  // copy (the backup page exposes this as "Buang"). Staging left by abandoned
+  // errors is otherwise reclaimed by the watcher's 7-day error retention.
+  const row = cur.rows[0] as { source_path?: unknown; origin?: unknown } | undefined;
+  const dir = row ? String(row.source_path ?? "") : "";
+  if (
+    Number(upd.rowsAffected ?? 0) > 0 &&
+    row &&
+    String(row.origin ?? "") === "upload" &&
+    dir &&
+    isDeletableStagingDir(dir)
+  ) {
+    try {
+      await rm(dir, { recursive: true, force: true });
+    } catch {
+      /* best-effort: the watcher's orphan sweep reclaims it later */
+    }
+  }
   revalidatePath("/upload");
+  revalidatePath("/backup-hp");
+}
+
+// Retry every failed job at once (backup runs can fail dozens of files on a
+// flaky connection — retrying one by one is not acceptable). Keeps parts_done.
+export async function retryAllFailedUploads() {
+  await db.execute(
+    "UPDATE upload_jobs SET status='pending', message='bulk retry requested...', updated_at=now_text() WHERE status='error'"
+  );
+  revalidatePath("/upload");
+  revalidatePath("/backup-hp");
 }
 
 // Trigger execution: queued → pending (the watcher will pick it up).
@@ -83,6 +130,7 @@ export async function retryUpload(id: number) {
     args: [id],
   });
   revalidatePath("/upload");
+  revalidatePath("/backup-hp");
 }
 
 export async function startAllUploads() {
@@ -90,6 +138,7 @@ export async function startAllUploads() {
     "UPDATE upload_jobs SET status='pending', message='start requested...', updated_at=now_text() WHERE status='queued'"
   );
   revalidatePath("/upload");
+  revalidatePath("/backup-hp");
 }
 
 export async function clearFinishedUploads() {
@@ -97,4 +146,5 @@ export async function clearFinishedUploads() {
     "DELETE FROM upload_jobs WHERE status IN ('done','error','canceled')"
   );
   revalidatePath("/upload");
+  revalidatePath("/backup-hp");
 }

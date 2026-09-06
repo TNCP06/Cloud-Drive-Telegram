@@ -19,7 +19,9 @@ API notes:
 
 import asyncio
 import html
+import json
 import os
+import time
 from datetime import time as dtime
 
 import httpx
@@ -726,6 +728,231 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
+# Phone backup session (/backup … /backup_done) — one-button archive of an old
+# phone for files ≤ Telegram's ~2 GB per-file cap. Everything sent while the
+# session is on skips the Title/Tags questionnaire and is copied server-side
+# (copy_message: no VPS disk, no VPS egress) with auto metadata + hp-backup
+# tag. One living summary message tracks ok/fail so a dead phone simply
+# resumes by sending the rest — retry = forward the failed files again.
+# Bigger files go through the web backup page (/backup-hp), which splits them.
+#
+# Restart-safe: the session is cached in user_data but persisted in
+# bot_settings, so a bot redeploy mid-run only loses the in-flight file — the
+# next file reloads the counters from the DB instead of falling back to the
+# questionnaire.
+# ---------------------------------------------------------------------------
+def _backup_key(user_id: int) -> str:
+    return f"backup:{user_id}"
+
+
+def _backup_blank() -> dict:
+    return {"active": False, "ok": 0, "fail": 0, "failed": [],
+            "last_edit": 0.0, "prog_id": None}
+
+
+async def _backup_load(context: ContextTypes.DEFAULT_TYPE, user_id: int, db):
+    """Session dict, from the user_data cache or the DB backup after a restart."""
+    sess = context.user_data.get("backup_sess")
+    if isinstance(sess, dict):
+        return sess
+    sess = _backup_blank()
+    try:
+        rs = await db.execute(
+            "SELECT value FROM bot_settings WHERE key = ?", [_backup_key(user_id)])
+        if rs.rows and rs.rows[0][0]:
+            loaded = json.loads(rs.rows[0][0])
+            if isinstance(loaded, dict):
+                sess.update({k: loaded.get(k, v) for k, v in sess.items()})
+    except Exception:  # noqa: BLE001 — a corrupt row just starts a fresh session
+        log.debug("backup session load failed", exc_info=True)
+    context.user_data["backup_sess"] = sess
+    return sess
+
+
+async def _backup_save(context: ContextTypes.DEFAULT_TYPE, user_id: int, db):
+    sess = context.user_data.get("backup_sess") or _backup_blank()
+    try:
+        await db.execute(
+            "INSERT INTO bot_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [_backup_key(user_id), json.dumps(sess)],
+        )
+    except Exception:  # noqa: BLE001 — persistence is best-effort; memory still works
+        log.debug("backup session save failed", exc_info=True)
+
+
+async def _backup_clear(context: ContextTypes.DEFAULT_TYPE, user_id: int, db):
+    context.user_data.pop("backup_sess", None)
+    try:
+        await db.execute("DELETE FROM bot_settings WHERE key = ?", [_backup_key(user_id)])
+    except Exception:  # noqa: BLE001
+        log.debug("backup session clear failed", exc_info=True)
+
+
+def _safe_backup_title(title) -> str:
+    """Caption-safe title: no contract-breaking '|' and bounded length."""
+    return (str(title or "").replace("|", "/").strip()[:200]) or "backup"
+
+
+def _safe_backup_caption(title: str, tags_str: str) -> str:
+    """Contract caption kept under Telegram's ~1024-char caption cap."""
+    caption = f"{title} | 1/1 | {tags_str}"
+    if len(caption) <= 950:
+        return caption
+    # Trim tags first (title carries the identity), then the title as a backstop.
+    room = 950 - len(title) - len(" | 1/1 | ")
+    tags_str = tags_str[:max(room, 0)].rsplit(",", 1)[0].rstrip(" ,")
+    caption = f"{title} | 1/1 | {tags_str}"
+    return caption if len(caption) <= 1000 else caption[:1000]
+
+
+async def _backup_progress_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, force: bool = False):
+    sess = context.user_data.get("backup_sess") or {}
+    now = time.monotonic()
+    if not force and now - float(sess.get("last_edit", 0)) < 5:
+        return  # ≤1 edit per ~5 s — stay far under Telegram's edit flood limits
+    sess["last_edit"] = now
+    ok = int(sess.get("ok", 0))
+    fail = int(sess.get("fail", 0))
+    failed = sess.get("failed") or []
+    text = (
+        f"📦 <b>Backup HP berjalan…</b>\n"
+        f"• Berhasil: <b>{ok}</b> · Gagal: <b>{fail}</b>\n"
+    )
+    if failed:
+        shown = "\n".join(f"– <code>{html.escape(str(n)[:60])}</code>" for n in failed[-8:])
+        text += f"\nTerakhir gagal (forward ulang pesannya untuk retry):\n{shown}"
+    else:
+        text += "\n<i>Kirim/forward file berikutnya — tanpa perlu jawab apa pun.</i>"
+    try:
+        prog_id = sess.get("prog_id")
+        if prog_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=prog_id, text=text, parse_mode="HTML")
+        else:
+            m = await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            sess["prog_id"] = m.message_id
+    except Exception:  # noqa: BLE001 — progress must never break the backup
+        log.debug("backup progress edit failed", exc_info=True)
+
+
+async def _backup_record(context, user_id: int, db, chat_id: int, ok_inc: int,
+                         fail_name: "str | None" = None):
+    """Advance the persisted counters and refresh the living summary."""
+    sess = context.user_data.get("backup_sess") or _backup_blank()
+    context.user_data["backup_sess"] = sess
+    sess["ok"] = int(sess.get("ok", 0)) + ok_inc
+    if fail_name is not None:
+        sess["fail"] = int(sess.get("fail", 0)) + 1
+        (sess.setdefault("failed", [])).append(fail_name[:120])
+    await _backup_save(context, user_id, db)
+    await _backup_progress_edit(context, chat_id)
+
+
+async def backup_copy_one(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                          message, kind: str, file_name, file_size, auto_meta):
+    chat_id = message.chat_id
+    user_id = update.effective_user.id if update.effective_user else 0
+    db = context.bot_data["db"]
+    title = _safe_backup_title(
+        (auto_meta.get("title") if auto_meta else None) or file_name
+        or f"backup-{message.message_id}")
+    tags = list((auto_meta.get("tags") if auto_meta else None) or [])
+    if not any(t.lower() == "hp-backup" for t in tags):
+        tags.append("hp-backup")
+    tags_str = ", ".join(tags)
+    try:
+        copied_msg = await context.bot.copy_message(
+            chat_id=STORAGE_CHANNEL_ID,
+            from_chat_id=chat_id,
+            message_id=message.message_id,
+            caption=_safe_backup_caption(title, tags_str),
+        )
+        try:
+            cid = copied_msg.message_id
+            slug = f"{slugify(title)}-{cid}" if kind == "media" else slugify(title)
+            await index_bot_copy(
+                context, db, cid, title=title, tags=tags,
+                part_number=1, total=1, kind=kind, slug=slug,
+                set_title=True, source_message=message,
+            )
+        except Exception:  # noqa: BLE001 — indexing failure shouldn't hide success
+            log.exception("Inline index failed for backup copy msg %s", copied_msg.message_id)
+        await _backup_record(context, user_id, db, chat_id, 1)
+    except Exception as e:  # noqa: BLE001 — record and continue with the next file
+        log.exception("Backup copy failed for msg %s", message.message_id)
+        await _backup_record(
+            context, user_id, db, chat_id, 0, f"{file_name or message.message_id} ({e})".strip())
+
+
+async def on_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not message or not user:
+        return
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        await message.reply_text(
+            "⛔ Access denied. Use `/auth <password>` to authorize or ask the owner.")
+        return
+    sess = await _backup_load(context, user.id, db)
+    if sess.get("active"):
+        await message.reply_text(
+            "📦 Backup HP sudah berjalan — kirim/forward saja file-filenya.\n"
+            "Selesai? Ketik /backup_done untuk ringkasan akhir.")
+        return
+    sess.update({"active": True, "ok": 0, "fail": 0, "failed": [],
+                 "last_edit": 0.0, "prog_id": None})
+    await _backup_save(context, user.id, db)
+    await message.reply_text(
+        "📦 <b>Backup HP dimulai!</b>\n\n"
+        "Kirim atau forward <b>file apa pun</b> ke chat ini — tiap file langsung "
+        "tersimpan ke drive <b>tanpa tanya Title/Tags</b> (otomatis + tag "
+        "<code>hp-backup</code>).\n\n"
+        "• Boleh banyak sekaligus / album — masing-masing jadi 1 item.\n"
+        "• HP mati di tengah? Buka lagi, kirim sisanya — progres ikut di bawah.\n"
+        "• File &gt; ~2 GB tidak bisa lewat Telegram: pakai halaman web "
+        "<b>Backup HP</b> (/backup-hp) untuk itu.\n\n"
+        "Selesai? Ketik /backup_done",
+        parse_mode="HTML",
+    )
+    await _backup_progress_edit(context, message.chat_id, force=True)
+
+
+async def on_backup_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    message = update.message
+    if not message or not user:
+        return
+    db = context.bot_data["db"]
+    if not await is_user_authorized(db, user.id):
+        return
+    sess = await _backup_load(context, user.id, db)
+    if not sess.get("active"):
+        await message.reply_text("Tidak ada sesi backup yang berjalan. Mulai dengan /backup")
+        return
+    ok = int(sess.get("ok", 0))
+    fail = int(sess.get("fail", 0))
+    failed = sess.get("failed") or []
+    await _backup_clear(context, user.id, db)
+    text = (
+        f"🎉 <b>Backup HP selesai!</b>\n"
+        f"• Berhasil: <b>{ok}</b> · Gagal: <b>{fail}</b>\n"
+    )
+    if failed:
+        # Bounded: Telegram caps one message (~4096 chars) — list the first 30,
+        # count the rest instead of failing the summary itself.
+        shown = "\n".join(f"– <code>{html.escape(str(n)[:80])}</code>" for n in failed[:30])
+        extra = f"\n…dan {len(failed) - 30} lainnya." if len(failed) > 30 else ""
+        text += (
+            f"\nYang gagal <b>belum tersimpan</b> — forward ulang pesannya ke bot "
+            f"(atau /backup lagi lalu kirim ulang):\n{shown}{extra}")
+    else:
+        text += "\nSemua file sudah di drive dan bisa dicari via web. 🎊"
+    await message.reply_text(text, parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
 # Cancel upload flow
 # ---------------------------------------------------------------------------
 async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -757,6 +984,14 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if "upload_file" in context.user_data or "upload_state" in context.user_data or "upload_queue" in context.user_data:
         # Clean up the questionnaire messages of the active flow + every queued item.
+        uf = context.user_data.get("upload_file")
+        if uf and uf.get("import_job_id"):
+            db = context.bot_data.get("db")
+            if db:
+                try:
+                    await db.execute("UPDATE tg_import_jobs SET status='cancelled', error='Cancelled by user', updated_at=now_text() WHERE id=?", [uf["import_job_id"]])
+                except Exception:
+                    pass
         flow_ids = list((context.user_data.get("upload_file") or {}).get("flow_msg_ids", []))
         for it in context.user_data.get("upload_queue", []):
             flow_ids += it.get("flow_msg_ids", [])
@@ -836,7 +1071,9 @@ async def process_next_in_queue(update: Update, context: ContextTypes.DEFAULT_TY
                  f"🔗 Alternatively, you can complete the details via the <a href=\"{link}\">web</a>!",
             reply_markup=reply_markup,
             parse_mode="HTML",
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
+            reply_to_message_id=msg_id,
+            allow_sending_without_reply=True,
         )
         next_file.setdefault("flow_msg_ids", []).append(prompt.message_id)
     except Exception as e:
@@ -887,21 +1124,29 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if the file already has a valid caption contract matching Title | part/total | tags
     caption_meta = parse_caption(message.caption)
     if caption_meta:
-        title = caption_meta["title"]
+        title = _safe_backup_title(caption_meta["title"])
         part = caption_meta["part"]
         total = caption_meta["total"]
-        tags_str = ", ".join(caption_meta["tags"])
-        
+        tags = list(caption_meta["tags"])
+        # Inside a backup session the contract file still counts — keep the
+        # user's metadata, just force the session tag so it stays findable.
+        in_backup = (await _backup_load(context, user.id, db)).get("active", False)
+        if in_backup and not any(t.lower() == "hp-backup" for t in tags):
+            tags.append("hp-backup")
+        tags_str = ", ".join(tags)
+
         status_msg = await context.bot.send_message(
             chat_id=message.chat_id,
-            text="📤 Copying file directly to storage channel..."
+            text="📤 Copying file directly to storage channel...",
+            reply_to_message_id=message.message_id,
+            allow_sending_without_reply=True,
         )
         try:
             copied_msg = await context.bot.copy_message(
                 chat_id=STORAGE_CHANNEL_ID,
                 from_chat_id=message.chat_id,
                 message_id=message.message_id,
-                caption=message.caption
+                caption=_safe_backup_caption(title, tags_str) if in_backup else message.caption
             )
             # The bot's own channel post is NOT echoed back as a channel_post update,
             # so index it inline here instead of relying on on_channel_post.
@@ -913,12 +1158,14 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     slug = slugify(title)
                 await index_bot_copy(
                     context, db, cid,
-                    title=title, tags=caption_meta["tags"],
+                    title=title, tags=tags,
                     part_number=part, total=total, kind=kind,
                     slug=slug, set_title=True, source_message=message,
                 )
             except Exception:  # noqa: BLE001 — indexing failure shouldn't hide upload success
                 log.exception("Inline index failed for direct-caption copy msg %s", copied_msg.message_id)
+            if in_backup:
+                await _backup_record(context, user.id, db, message.chat_id, 1)
             await status_msg.edit_text(
                 f"🎉 <b>Success!</b>\n\n"
                 f"File has been successfully uploaded and indexed directly via caption contract.\n"
@@ -930,11 +1177,26 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             log.exception("Failed to copy user file to channel directly")
+            if in_backup:
+                await _backup_record(
+                    context, user.id, db, message.chat_id, 0,
+                    f"{file_name or message.message_id} ({e})".strip())
             await status_msg.edit_text(
                 f"❌ <b>Error copying file:</b> {html.escape(str(e))}\n"
                 "Please check bot configuration and try again.",
                 parse_mode="HTML"
             )
+        return
+
+    # Phone-backup session: no questionnaire — every file is copied with auto
+    # metadata straight to the storage channel (server-side copy, no VPS bytes).
+    # Files over Telegram's ~2 GB per-file cap cannot arrive here at all; those
+    # go through the web backup page (/backup-hp) instead.
+    # Restart-safe: the session lives in bot_settings, so a bot redeploy mid-run
+    # only loses at most the in-flight file — the next file reloads the session.
+    backup_sess = await _backup_load(context, user.id, db)
+    if backup_sess.get("active"):
+        await backup_copy_one(update, context, message, kind, file_name, file_size, auto_meta)
         return
 
     active_upload = context.user_data.get("upload_file")
@@ -1055,8 +1317,7 @@ async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
             joined = ", ".join(auto_tags)
             btn_tags = joined[:37] + "..." if len(joined) > 40 else joined
             tags_btn_label = f"✨ Use Auto Tags: {btn_tags}"
-        elif uf.get("is_link_import"):
-            # NULL passthrough — the watcher derives tags from the source caption.
+        elif uf.get("is_link_import") and not uf.get("auto_title"):
             tags_btn_label = "✨ Use Auto Tags (from source caption)"
         else:
             tags_btn_label = "✨ Use Auto Tags: none"
@@ -1068,12 +1329,15 @@ async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         message = update.message or update.callback_query.message
+        orig_msg_id = (uf.get("message_ids") or [None])[0]
         prompt = await context.bot.send_message(
             chat_id=message.chat_id,
             text="🏷️ <b>Title set!</b>\n\nWhat are the <b>Tags</b> for this file? (Separate with commas, e.g. <code>holiday, video</code>)\n"
                  "Or click the button below to use the Auto Tags.",
             reply_markup=reply_markup,
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_to_message_id=orig_msg_id,
+            allow_sending_without_reply=True,
         )
         uf.setdefault("flow_msg_ids", []).append(prompt.message_id)
     except Exception as e:
@@ -1098,6 +1362,7 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = upload_file["chat_id"]
     message_ids = upload_file["message_ids"]
+    orig_msg_id = message_ids[0] if message_ids else None
     src_messages = upload_file.get("messages") or []
     kind = upload_file.get("kind", "media")
     db = context.bot_data["db"]
@@ -1107,6 +1372,7 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw_link = upload_file["raw_link"]
         target_chat = upload_file["target_chat"]
         target_msg_id = upload_file["target_msg_id"]
+        import_job_id = upload_file.get("import_job_id")
 
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
@@ -1116,13 +1382,21 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  f"• Source: <code>{target_chat} / {target_msg_id}</code>\n"
                  f"• Status: <i>Menunggu worker…</i>",
             parse_mode="HTML",
+            reply_to_message_id=orig_msg_id,
+            allow_sending_without_reply=True,
         )
         try:
-            await db.execute(
-                "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, title, tags, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
-                [raw_link, target_chat, target_msg_id, chat_id, status_msg.message_id, title, tags_str],
-            )
+            if import_job_id:
+                await db.execute(
+                    "UPDATE tg_import_jobs SET status='queued', message_id=?, title=?, tags=?, updated_at=now_text() WHERE id=?",
+                    [status_msg.message_id, title, tags_str, import_job_id],
+                )
+            else:
+                await db.execute(
+                    "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, title, tags, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
+                    [raw_link, target_chat, target_msg_id, chat_id, status_msg.message_id, title, tags_str],
+                )
             log.info("Queued tg_import job via questionnaire: %s / %s (Title: %s)", target_chat, target_msg_id, title)
         except Exception as e:
             log.exception("Failed to insert tg_import_job from questionnaire")
@@ -1132,10 +1406,12 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await process_next_in_queue(update, context)
         return
 
-    # Send status message
+    # Send status message replying to the original forwarded / uploaded message
     status_msg = await context.bot.send_message(
         chat_id=chat_id,
-        text="📤 Copying files to storage channel..."
+        text="📤 Copying files to storage channel...",
+        reply_to_message_id=orig_msg_id,
+        allow_sending_without_reply=True,
     )
 
     try:
@@ -1214,18 +1490,63 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Telegram Message Link Import (/import <link>)
 # ---------------------------------------------------------------------------
 async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT_TYPE, raw_link: str, target_chat: str, target_msg_id: int):
-    """Start interactive Title/Tags questionnaire for a Telegram link (reusing standard flow)."""
+    """Start interactive Title/Tags questionnaire for a Telegram link (with inspected preview parity)."""
     msg_id = message.message_id
     chat_id = message.chat_id
+    db = context.bot_data["db"]
 
-    # The bot process has no MTProto access to the source message, so "auto" here means
-    # NULL passthrough: the watcher's tg_import worker owns the Telethon client and derives
-    # Title/Tags from the real caption exactly like the forward path does.
+    prompt = await message.reply_text(
+        f"🔍 <i>Memeriksa link Telegram…</i>\n• Source: <code>{target_chat} / {target_msg_id}</code>",
+        parse_mode="HTML",
+        allow_sending_without_reply=True,
+    )
+
+    import_job_id = None
+    file_name = f"msg_{target_msg_id}"
+    file_size = 0
     auto_title = None
     auto_tags = None
 
+    try:
+        rs = await db.execute(
+            "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, status) "
+            "VALUES (?, ?, ?, ?, ?, 'inspecting') RETURNING id",
+            [raw_link, target_chat, target_msg_id, chat_id, prompt.message_id],
+        )
+        if rs.rows:
+            import_job_id = rs.rows[0][0]
+
+            for _ in range(20):
+                await asyncio.sleep(0.15)
+                check = await db.execute(
+                    "SELECT status, filename, size, title, tags, error FROM tg_import_jobs WHERE id=?",
+                    [import_job_id],
+                )
+                if not check.rows:
+                    break
+                row_status = check.rows[0][0]
+                if row_status == "inspected":
+                    file_name = check.rows[0][1] or file_name
+                    file_size = check.rows[0][2] or 0
+                    auto_title = check.rows[0][3] or None
+                    raw_tags = check.rows[0][4]
+                    if raw_tags:
+                        auto_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+                    break
+                elif row_status == "inspect_failed":
+                    err_msg = check.rows[0][5] or "Gagal mengakses pesan sumber."
+                    await prompt.edit_text(
+                        f"❌ <b>Gagal mengakses pesan Telegram:</b>\n{html.escape(err_msg)}\n"
+                        f"• Source: <code>{target_chat} / {target_msg_id}</code>",
+                        parse_mode="HTML",
+                    )
+                    return
+    except Exception as e:
+        log.warning("Link inspection request error: %s", e)
+
     context.user_data["upload_file"] = {
         "is_link_import": True,
+        "import_job_id": import_job_id,
         "raw_link": raw_link,
         "target_chat": target_chat,
         "target_msg_id": target_msg_id,
@@ -1233,10 +1554,11 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
         "messages": [message],
         "chat_id": chat_id,
         "kind": "media",
-        "file_name": f"msg_{target_msg_id}",
-        "file_size": 0,
+        "file_name": file_name,
+        "file_size": file_size,
         "auto_title": auto_title,
         "auto_tags": auto_tags,
+        "flow_msg_ids": [prompt.message_id],
     }
     context.user_data["upload_state"] = "WAITING_TITLE"
 
@@ -1252,15 +1574,18 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    prompt = await message.reply_text(
+    size_line = f"• File Size: <code>{file_size / 1024 / 1024:.2f} MB</code>\n" if file_size else ""
+    await prompt.edit_text(
         f"📥 <b>Telegram Link Received!</b>\n"
+        f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
+        f"{size_line}"
         f"• Source: <code>{target_chat} / {target_msg_id}</code>\n\n"
         f"Please reply with a <b>Title</b> for this upload.\n"
-        f"Or click the button below to use the defaults derived from the source message's caption (same as forwards).",
+        f"Or click the button below to use the Auto Title.",
         reply_markup=reply_markup,
-        parse_mode="HTML"
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
-    context.user_data["upload_file"].setdefault("flow_msg_ids", []).append(prompt.message_id)
 
 
 async def on_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1501,6 +1826,12 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "upload:cancel":
+        upload_file = context.user_data.get("upload_file")
+        if upload_file and upload_file.get("import_job_id"):
+            try:
+                await db.execute("UPDATE tg_import_jobs SET status='cancelled', error='Cancelled by user', updated_at=now_text() WHERE id=?", [upload_file["import_job_id"]])
+            except Exception:
+                pass
         # Clean the questionnaire trail; keep THIS message (we edit it into the cancelled notice).
         flow_ids = list((context.user_data.get("upload_file") or {}).get("flow_msg_ids", []))
         for it in context.user_data.get("upload_queue", []):
@@ -1536,6 +1867,9 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>Option A — Direct Drop / Forward:</b>\n"
             "1. Send or <b>forward</b> any file (video, photo, document, animation) directly to this chat.\n"
             "2. Set Title & Tags when prompted (or skip).\n\n"
+            "<b>Option A2 — Phone Backup (no questions asked):</b>\n"
+            "1. Send <code>/backup</code>, then send/forward any files (each ≤ ~2 GB).\n"
+            "2. Finish with <code>/backup_done</code> for the final tally. Bigger files go via the web <b>Backup HP</b> page.\n\n"
             "<b>Option B — Telegram Message Link Import (Protected Channels):</b>\n"
             "1. Copy message link from any public or private channel.\n"
             "2. Send <code>/import &lt;link&gt;</code> or paste the link directly into this chat.\n"
@@ -1770,6 +2104,8 @@ def main():
     app.add_handler(CommandHandler("list_users", on_list_users))
     app.add_handler(CommandHandler("set_web_url", on_set_web_url))
     app.add_handler(CommandHandler("cancel", on_cancel))
+    app.add_handler(CommandHandler("backup", on_backup))
+    app.add_handler(CommandHandler("backup_done", on_backup_done))
     app.add_handler(CommandHandler("menu", on_menu))
     app.add_handler(CommandHandler("pikpak", on_pikpak))
     app.add_handler(CommandHandler("pikpak_ls", on_ls))

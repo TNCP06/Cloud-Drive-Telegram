@@ -185,7 +185,7 @@ CREATE TABLE IF NOT EXISTS tg_import_jobs (
     tags          TEXT,
     size          BIGINT NOT NULL DEFAULT 0,
     status        TEXT NOT NULL DEFAULT 'queued'
-                    CHECK (status IN ('queued','running','downloading','downloaded','uploading','done','failed','cancelled')),
+                    CHECK (status IN ('inspecting','inspect_running','inspected','inspect_failed','queued','running','downloading','downloaded','uploading','done','failed','cancelled')),
     progress      INTEGER NOT NULL DEFAULT 0,
     speed         TEXT,
     error         TEXT,

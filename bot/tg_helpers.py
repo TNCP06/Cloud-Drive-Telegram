@@ -6,8 +6,12 @@ import os
 import re
 import unicodedata
 
-# Common extension sets
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp", ".mpg", ".mpeg"}
+# Common extension sets. VIDEO_EXTS decides the oversized-file strategy in
+# watcher.plan_media: listed container extensions are re-segmented into playable
+# parts, anything else oversized is raw byte-split (stored, not streamable).
+# Keep in sync with VIDEO_EXTS in web/lib/uploadClient.ts and _VIDEO_EXTS in
+# bot/tg_botapi_upload.py.
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp", ".mpg", ".mpeg", ".m2ts", ".mts", ".vob", ".ogv"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"}
 AUDIO_EXTS = {".mp3", ".m4a", ".flac", ".wav", ".ogg"}
 MEDIA_EXTS = VIDEO_EXTS | IMAGE_EXTS | AUDIO_EXTS

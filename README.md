@@ -162,6 +162,7 @@ to that directory, then `docker compose up -d --build`. Tune limits with the `PI
 ## 📖 Usage
 
 - **Upload:** dashboard → *Upload files* → pick a file, many files, or a folder (resumable). Or DM/forward a file to the bot and finish the title/tags in Telegram or on the web.
+- **Phone backup:** dashboard → *Backup HP* for archiving an old phone (folder picks accumulate in one queue, auto titles/tags, big files auto-split, one-button bulk retry, auto-pause when VPS disk runs tight). Files ≤ ~2 GB can also go via the bot: `/backup`, send/forward files (no questions asked), `/backup_done`.
 - **Caption contract:** files posted to the channel must use `Title | part/total | tag1, tag2` (archives require it; media can omit it). Use `Folder/Sub/Name` titles to auto-create nested folders.
 - **Download:** item ⋮ → *Download* → the bot copies it straight to your Telegram chat (full speed, any device).
 - **PikPak remote-download:** open `/menu` → **☁️ PikPak** → **Browse & download** to navigate the remote and tap a file — no typing. Or type `/pikpak <path>` to fetch, `/pikpak_ls [folder]` to browse, `/pikpak_jobs` to see recent jobs (progress edits live). Requires rclone installed + a remote configured with `rclone config` **on the server** (see below); the bot image ships rclone and mounts your host `rclone.conf`.

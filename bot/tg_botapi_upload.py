@@ -36,7 +36,7 @@ BOT_API_VISIBLE_PREFIXES = tuple(
 )
 
 _PHOTO_EXTS = {".jpg", ".jpeg", ".png"}
-_VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp"}
+_VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp", ".mpg", ".mpeg", ".m2ts", ".mts", ".vob", ".ogv"}
 
 
 def available(path: str) -> bool:

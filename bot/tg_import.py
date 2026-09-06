@@ -129,7 +129,7 @@ async def ensure_schema(db):
             tags          TEXT,
             size          BIGINT NOT NULL DEFAULT 0,
             status        TEXT NOT NULL DEFAULT 'queued'
-                            CHECK (status IN ('queued','running','downloading','downloaded','uploading','done','failed','cancelled')),
+                            CHECK (status IN ('inspecting','inspect_running','inspected','inspect_failed','queued','running','downloading','downloaded','uploading','done','failed','cancelled')),
             progress      INTEGER NOT NULL DEFAULT 0,
             speed         TEXT,
             error         TEXT,
@@ -138,6 +138,15 @@ async def ensure_schema(db):
             updated_at    TEXT NOT NULL DEFAULT now_text()
         )
     """)
+    try:
+        await db.execute("ALTER TABLE tg_import_jobs DROP CONSTRAINT IF EXISTS tg_import_jobs_status_check")
+        await db.execute("""
+            ALTER TABLE tg_import_jobs ADD CONSTRAINT tg_import_jobs_status_check
+            CHECK (status IN ('inspecting','inspect_running','inspected','inspect_failed','queued','running','downloading','downloaded','uploading','done','failed','cancelled'))
+        """)
+    except Exception as e:
+        log.debug("Constraint update for tg_import_jobs status: %s", e)
+
     await db.execute("CREATE INDEX IF NOT EXISTS idx_tg_import_jobs_status ON tg_import_jobs(status)")
     await db.execute("""
         CREATE OR REPLACE FUNCTION notify_tg_import_change() RETURNS trigger
@@ -153,6 +162,11 @@ async def ensure_schema(db):
         UPDATE tg_import_jobs
         SET status='queued', progress=0, updated_at=now_text()
         WHERE status IN ('running', 'downloading')
+    """)
+    await db.execute("""
+        UPDATE tg_import_jobs
+        SET status='cancelled', error='Aborted on restart', updated_at=now_text()
+        WHERE status IN ('inspecting', 'inspect_running')
     """)
 
 
@@ -590,16 +604,124 @@ async def _process(client, db, job):
         await _safe_edit(chat_id, msg_id, f"❌ <b>Import Error:</b>\n{html.escape(err_msg[:300])}")
 
 
+async def inspect_message_meta(client, target_chat: str, target_msg_id: int) -> dict:
+    """Inspect a message via Telethon MTProto to extract caption, auto title/tags, filename, and size."""
+    try:
+        try:
+            chat_entity = int(target_chat)
+        except ValueError:
+            chat_entity = target_chat
+        entity = await client.get_entity(chat_entity)
+        msg = await client.get_messages(entity, ids=target_msg_id)
+    except Exception as e:
+        err_str = str(e)
+        if "ChannelPrivateError" in err_str or "Could not find the input entity" in err_str:
+            return {"ok": False, "error": "Akun worker belum bergabung (join) ke channel/grup privat tersebut."}
+        return {"ok": False, "error": f"Gagal mengakses pesan: {err_str}"}
+
+    if not msg:
+        return {"ok": False, "error": f"Pesan ID {target_msg_id} tidak ditemukan."}
+    if not msg.media:
+        return {"ok": False, "error": f"Pesan ID {target_msg_id} tidak memiliki file / video / media untuk diunduh."}
+
+    messages_to_fetch = [msg]
+    if getattr(msg, "grouped_id", None):
+        try:
+            min_id = max(1, target_msg_id - 15)
+            max_id = target_msg_id + 15
+            surrounding = await client.get_messages(entity, min_id=min_id, max_id=max_id)
+            album_msgs = [m for m in surrounding if getattr(m, "grouped_id", None) == msg.grouped_id and m.media]
+            if not any(m.id == msg.id for m in album_msgs):
+                album_msgs.append(msg)
+            album_msgs.sort(key=lambda m: m.id)
+            if len(album_msgs) > 1:
+                messages_to_fetch = album_msgs
+        except Exception as e:
+            log.warning("Album check failed during inspect for msg %s: %s", target_msg_id, e)
+
+    caption_text = ""
+    for m in messages_to_fetch:
+        if m.message and m.message.strip():
+            caption_text = m.message.strip()
+            break
+
+    title, tags = _derive_title_tags(caption_text, None, None)
+    if not title:
+        first_fname = getattr(messages_to_fetch[0].file, "name", None)
+        title = (os.path.splitext(first_fname)[0] if first_fname
+                 else f"Media {messages_to_fetch[0].date:%Y-%m-%d}")
+
+    total_batch_size = sum(int(getattr(m.file, "size", 0) or getattr(m, "size", 0) or 0) for m in messages_to_fetch)
+    first_fname = getattr(messages_to_fetch[0].file, "name", None)
+    if not first_fname:
+        first_fname = f"Album ({len(messages_to_fetch)} files)" if len(messages_to_fetch) > 1 else f"item_{target_msg_id}.mp4"
+
+    return {
+        "ok": True,
+        "title": title,
+        "tags": tags,
+        "filename": first_fname if len(messages_to_fetch) == 1 else f"Album ({len(messages_to_fetch)} files)",
+        "size": total_batch_size,
+        "num_files": len(messages_to_fetch),
+    }
+
+
+async def _process_inspection(client, db, job_id: int, target_chat: str, target_msg_id: int):
+    try:
+        res = await inspect_message_meta(client, target_chat, target_msg_id)
+        if res.get("ok"):
+            await db.execute(
+                "UPDATE tg_import_jobs SET status='inspected', filename=?, size=?, title=?, tags=?, updated_at=now_text() WHERE id=?",
+                [res["filename"], res["size"], res["title"], res["tags"], job_id],
+            )
+            log.info("Inspected tg_import job #%s: title='%s', tags='%s', file='%s', size=%s", job_id, res["title"], res["tags"], res["filename"], res["size"])
+        else:
+            await db.execute(
+                "UPDATE tg_import_jobs SET status='inspect_failed', error=?, updated_at=now_text() WHERE id=?",
+                [res.get("error", "Inspection failed")[:400], job_id],
+            )
+            log.warning("Inspect failed for tg_import job #%s: %s", job_id, res.get("error"))
+    except Exception as e:
+        log.exception("Unexpected error inspecting tg_import job #%s", job_id)
+        await db.execute(
+            "UPDATE tg_import_jobs SET status='inspect_failed', error=?, updated_at=now_text() WHERE id=?",
+            [str(e)[:400], job_id],
+        )
+
+
+async def _poll_inspections(client, db):
+    """Check for pending inspection requests and dispatch them concurrently."""
+    try:
+        rs = await db.execute("SELECT id, target_chat, target_msg_id FROM tg_import_jobs WHERE status='inspecting' ORDER BY id ASC")
+        for r in rs.rows:
+            jid, t_chat, t_mid = r[0], r[1], r[2]
+            claim = await db.execute("UPDATE tg_import_jobs SET status='inspect_running', updated_at=now_text() WHERE id=? AND status='inspecting' RETURNING id", [jid])
+            if claim.rows:
+                asyncio.create_task(_process_inspection(client, db, jid, t_chat, t_mid))
+    except Exception as e:
+        log.debug("Error checking tg_import inspections: %s", e)
+
+
+async def _inspection_loop(client, db):
+    while True:
+        await _poll_inspections(client, db)
+        await asyncio.sleep(0.2)
+
+
 async def worker_loop(client, db):
     """Background worker loop in watcher.py for tg_import jobs."""
     log.info("Telegram link import worker started")
-    while True:
-        try:
-            job = await _claim_next(db)
-            if job:
-                await _process(client, db, job)
-            else:
+    inspect_task = asyncio.create_task(_inspection_loop(client, db))
+    try:
+        while True:
+            try:
+                job = await _claim_next(db)
+                if job:
+                    await _process(client, db, job)
+                else:
+                    await asyncio.sleep(POLL_INTERVAL)
+            except Exception as e:
+                log.exception("tg_import worker loop error: %s", e)
                 await asyncio.sleep(POLL_INTERVAL)
-        except Exception as e:
-            log.exception("tg_import worker loop error: %s", e)
-            await asyncio.sleep(POLL_INTERVAL)
+    finally:
+        inspect_task.cancel()

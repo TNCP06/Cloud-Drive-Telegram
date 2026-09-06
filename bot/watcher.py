@@ -48,7 +48,7 @@ from telethon import TelegramClient
 from pg_db import create_client
 
 from bot_config import PIKPAK_MAX_BYTES
-from tg_helpers import VIDEO_EXTS as _VIDEO_EXTS, encode_thumbnail_async
+from tg_helpers import VIDEO_EXTS as _VIDEO_EXTS, encode_thumbnail_async, slugify
 import tg_botapi_upload as botapi
 import tg_import
 import unpack
@@ -542,6 +542,10 @@ async def process(client, db, channel, job):
     stream_src: "str | None" = None   # staged file we stream-split (don't pre-split)
     source_dir_to_delete: "str | None" = None  # whole staging dir for browser uploads
     video_segments = False       # parts are playable video segments → one item each
+    succeeded = False  # staging is only freed on success — an errored job keeps
+    # its staged file so retryUpload can resume from parts_done instead of failing
+    # with "Staged upload not found". Orphans (cancel/crash/abandon) are reclaimed
+    # by sweep_orphan_staging().
 
     try:
         part_bytes = part_mb * 1024 * 1024
@@ -618,6 +622,25 @@ async def process(client, db, channel, job):
             state["pct"] = min(99, int(parts_done / total * 100))
         await set_status(db, jid, "running", f"uploading {total} part(s)…", state["pct"])
 
+        # Crash-resume reconcile: a part sent to Telegram but not yet checkpointed
+        # (crash between _send_part and set_parts_done) would be re-sent AND
+        # re-indexed on retry. upsert_part is keyed on channel_msg_id, so the
+        # duplicate lands as a SECOND part row and corrupts the item totals.
+        # Archive items group deterministically by slug, so part numbers already
+        # indexed are skipped below. (Video segments become one item EACH with a
+        # per-message slug, so they cannot be reconciled — residual risk noted.)
+        indexed_parts: set[int] = set()
+        if parts_done and kind == "archive" and not video_segments:
+            try:
+                rs = await db.execute(
+                    "SELECT p.part_number FROM parts p "
+                    "JOIN items i ON i.id = p.item_id WHERE i.slug = ?",
+                    [slugify(title)],
+                )
+                indexed_parts = {int(r[0]) for r in rs.rows}
+            except Exception:  # noqa: BLE001 — best-effort; the checkpoint still guards
+                indexed_parts = set()
+
         # ---- thumbnail (media only) --------------------------------------
         # Video segments become one item EACH (index_uploaded gives every media message its own
         # slug), so each one gets a cover cut from its OWN first frame — a shared cover would
@@ -646,6 +669,11 @@ async def process(client, db, channel, job):
                 base = os.path.basename(stream_src)
                 size = os.path.getsize(stream_src)
                 for i in range(parts_done + 1, total + 1):
+                    if i in indexed_parts:
+                        # Sent + indexed by the crashed run, checkpoint missed it.
+                        state["pct"] = min(99, int(i / total * 100))
+                        await set_parts_done(db, jid, i)
+                        continue
                     offset = (i - 1) * part_bytes
                     length = min(part_bytes, size - offset)
                     part_path = os.path.join(OUT_DIR, f"{base}.{i:03d}")
@@ -684,6 +712,12 @@ async def process(client, db, channel, job):
                         part_no = _volume_no(p) or i
                         part_title, part_total = title, max(total, part_no)
                         own_thumb = thumb_path
+                        if part_no in indexed_parts:
+                            # Sent + indexed by the crashed run, checkpoint missed
+                            # it — skip instead of creating a duplicate part row.
+                            state["pct"] = min(99, int(i / total * 100))
+                            await set_parts_done(db, jid, i)
+                            continue
                     caption = build_caption(part_title, part_no, part_total, tags)
                     print(f"  [{part_no}/{part_total}] {os.path.basename(p)}")
                     msg_id = await _send_part(
@@ -743,6 +777,7 @@ async def process(client, db, channel, job):
 
         msg = f"{total} part(s) uploaded" + (f" — cleaned up {removed} file(s)" if removed else "")
         await set_status(db, jid, "done", msg, 100)
+        succeeded = True
         print(f"  ✓ Job #{jid} done. {msg}")
     except Exception as e:  # noqa: BLE001
         state["running"] = False
@@ -760,12 +795,159 @@ async def process(client, db, channel, job):
                         os.remove(p)
                 except OSError:
                     pass
-        if source_dir_to_delete:
+        # Staging survives errors (resume needs it); cancel/crash/abandon leftovers
+        # are reclaimed by sweep_orphan_staging(), and web cancelUpload deletes live
+        # staging for jobs that never ran.
+        if succeeded and source_dir_to_delete:
             try:
                 if os.path.exists(source_dir_to_delete):
                     shutil.rmtree(source_dir_to_delete, ignore_errors=True)
             except OSError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Orphan staging sweep — backup runs stage dozens of files, and any of these
+# leave bytes behind on the shared volume: a browser tab closed before
+# /complete (token dir, no job row), a crash mid-rmtree (done/canceled job but
+# the dir survived), or a killed window copy in OUT_DIR. Error jobs keep their
+# staging for a week of retries, then are reclaimed with a note on the job row.
+# ---------------------------------------------------------------------------
+_ORPHAN_MAX_AGE_S = int(float(os.environ.get("STAGING_ORPHAN_MAX_AGE_H", 24))) * 3600  # only delete
+# job-less dirs older than this, so an in-flight chunked upload (job row not yet
+# created) can never be swept.
+_ERROR_RETENTION_S = int(float(os.environ.get("STAGING_ERROR_RETENTION_DAYS", 7))) * 24 * 3600  # error jobs
+# keep staging this long for retries; older than that the user has abandoned them,
+# so the disk is reclaimed (the job row stays 'error' with a note — re-select the
+# file to retry from scratch).
+
+
+def _staging_root() -> "str | None":
+    """Shared staging root, or None when it cannot be determined safely.
+
+    In compose UPLOAD_STAGING_DIR=/staging and OUT_DIR=/staging/_parts; locally
+    OUT_DIR falls back to the OS temp dir, whose parent must NOT be swept.
+    """
+    explicit = os.environ.get("UPLOAD_STAGING_DIR")
+    if explicit and os.path.isdir(explicit):
+        return explicit
+    if os.path.basename(os.path.normpath(OUT_DIR)) == "_parts":
+        parent = os.path.dirname(os.path.normpath(OUT_DIR))
+        if os.path.isdir(parent):
+            return parent
+    return None
+
+
+def _dir_size(path: str) -> int:
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+async def sweep_orphan_staging(db) -> int:
+    """Delete staging that no live job can still need. Returns bytes freed."""
+    root = _staging_root()
+    if not root:
+        print("  [sweep] staging root unknown — skipping orphan sweep")
+        return 0
+    try:
+        rs = await db.execute(
+            "SELECT source_path, status FROM upload_jobs WHERE origin = 'upload'"
+        )
+    except Exception as e:  # noqa: BLE001 — never let the sweep kill startup
+        print(f"  [sweep] job lookup failed ({e}) — skipping")
+        return 0
+    live: set[str] = set()      # queued/pending/running → keep, any age
+    terminal: set[str] = set()  # done/canceled → rmtree leftover, any age
+    error_dirs: set[str] = set()  # error → keep 7 days for retries, then reclaim
+    for r in rs.rows:
+        p = os.path.normpath(str(r[0] or ""))
+        if not p:
+            continue
+        if str(r[1]) in ("queued", "pending", "running"):
+            live.add(p)
+        elif str(r[1]) == "error":
+            error_dirs.add(p)
+        else:
+            terminal.add(p)
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return 0
+    now = time.time()
+    freed = 0
+    protected = live | error_dirs
+    for n in names:
+        # Owned by other pipelines with their own reclaim: downloader staging,
+        # unpack workdirs, and our own window-copy output (swept by age below).
+        if n in ("_pikpak", "_unpack", "_parts"):
+            continue
+        p = os.path.join(root, n)
+        if not os.path.isdir(p) or os.path.islink(p):
+            continue
+        norm = os.path.normpath(p)
+        if norm in live:
+            continue
+        if norm in error_dirs:
+            # Abandoned-failure retention: a week of retry grace, then reclaim.
+            try:
+                age = now - os.path.getmtime(p)
+            except OSError:
+                continue
+            if age > _ERROR_RETENTION_S:
+                freed += _dir_size(p)
+                shutil.rmtree(p, ignore_errors=True)
+                try:
+                    await db.execute(
+                        "UPDATE upload_jobs SET message='Staged retry copy discarded after 7 days "
+                        "— re-select the file to retry from scratch.', updated_at=now_text() "
+                        "WHERE source_path = ? AND status = 'error'",
+                        [norm],
+                    )
+                except Exception:  # noqa: BLE001 — the disk is already reclaimed; note is bonus
+                    pass
+            continue
+        if norm in terminal:
+            freed += _dir_size(p)
+            shutil.rmtree(p, ignore_errors=True)
+            continue
+        # No job row at all (never completed, abandoned): age-gated, and never
+        # when a live/error job still nests inside (future-proofing deeper layouts).
+        if any(q == norm or q.startswith(norm + os.sep) for q in protected):
+            continue
+        try:
+            age = now - os.path.getmtime(p)
+        except OSError:
+            continue
+        if age > _ORPHAN_MAX_AGE_S:
+            freed += _dir_size(p)
+            shutil.rmtree(p, ignore_errors=True)
+    # Stale window/segment copies in OUT_DIR (a killed job's <name>.001, …).
+    # Anything still in flight is fresh; the age gate keeps this safe.
+    try:
+        for n in os.listdir(OUT_DIR):
+            p = os.path.join(OUT_DIR, n)
+            if not os.path.isfile(p):
+                continue
+            try:
+                if now - os.path.getmtime(p) > _ORPHAN_MAX_AGE_S:
+                    try:
+                        freed += os.path.getsize(p)
+                    except OSError:
+                        pass
+                    os.remove(p)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    if freed:
+        print(f"  [sweep] reclaimed {freed // 1048576} MB of orphan staging")
+    return freed
 
 
 # ---------------------------------------------------------------------------
@@ -853,6 +1035,9 @@ async def main():
                 "UPDATE upload_jobs SET status='pending', message='resumed after restart', "
                 "updated_at=now_text() WHERE status='running'"
             )
+            # Reclaim staging orphaned by crashes/abandoned browser tabs so a big
+            # backup run never slowly fills the shared volume with dead bytes.
+            await sweep_orphan_staging(db)
             print("Polling upload_jobs… (Ctrl+C to stop)")
             while True:
                 job = await claim_next(db)

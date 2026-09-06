@@ -54,10 +54,11 @@ function tx(db: IDBDatabase, mode: IDBTransactionMode, store = STORE): IDBObject
   return db.transaction(store, mode).objectStore(store);
 }
 
-// Save (or overwrite) a queue item. Best-effort: a quota error degrades to in-memory
-// only (the item still uploads this session; it just won't survive a refresh).
-export async function putUpload(rec: PersistedUpload): Promise<void> {
-  if (!hasIDB()) return;
+// Save (or overwrite) a queue item. Returns false when persistence failed
+// (quota/eviction/private mode) — the item still uploads this session from
+// memory, but it will NOT survive a refresh, so the caller must warn.
+export async function putUpload(rec: PersistedUpload): Promise<boolean> {
+  if (!hasIDB()) return false;
   try {
     const db = await openDb();
     await new Promise<void>((resolve, reject) => {
@@ -66,8 +67,10 @@ export async function putUpload(rec: PersistedUpload): Promise<void> {
       r.onerror = () => reject(r.error);
     });
     db.close();
+    return true;
   } catch (e) {
     console.warn("[uploadDb] persist failed (continuing in-memory)", e);
+    return false;
   }
 }
 

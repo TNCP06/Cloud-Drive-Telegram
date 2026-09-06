@@ -75,10 +75,16 @@ interface UploadContextValue {
   readyCount: number;
   uploadingNow: boolean;
   activeCount: number;
+  // Files whose bytes could NOT be persisted (quota/eviction/private mode):
+  // they upload fine this session but won't survive a refresh — UI must warn.
+  persistFailed: number;
   addFiles: (files: File[], folder: boolean, defaults: UploadDefaults) => void;
   runQueue: () => void;
   pauseRun: () => void;
   cancelRun: () => void;
+  // Bulk retry: every locally-failed item back to ready, then run. The server
+  // side has its own bulk action (retryAllFailedUploads) for error jobs.
+  retryAllFailed: () => void;
   removeLocal: (id: string) => void;
   updateLocal: (id: string, patch: Partial<LocalItem>) => void;
   clearDone: () => void;
@@ -116,6 +122,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
   const abortRef = useRef<AbortController | null>(null);
   const [speed, setSpeed] = useState(0);
   const [running, setRunning] = useState(false);
+  const [persistFailed, setPersistFailed] = useState(0);
 
   const runQueue = useCallback(async () => {
     if (runningRef.current) return;
@@ -269,7 +276,9 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
           isPrivate: defaults.isPrivate,
         };
         // Persist the bytes + metadata so a refresh can resume without a re-pick.
-        putUpload({
+        // A false return means the browser refused storage — count it so the UI
+        // can warn instead of promising resume it cannot deliver.
+        void putUpload({
           token: item.token,
           tokenKey: item.tokenKey,
           file: f,
@@ -280,6 +289,8 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
           tags: item.tags,
           partSize: item.partSize,
           errored: false,
+        }).then((saved) => {
+          if (!saved) setPersistFailed((n) => n + 1);
         });
         return item;
       });
@@ -297,6 +308,18 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     cancelRef.current = true;
     abortRef.current?.abort();
   }, []);
+
+  const retryAllFailed = useCallback(() => {
+    const failed = itemsRef.current.filter((i) => i.stage === "error");
+    if (!failed.length) return;
+    for (const f of failed) void markUploadErrored(f.token, false);
+    setItems((prev) =>
+      prev.map((it) =>
+        it.stage === "error" ? { ...it, stage: "ready" as const, error: undefined, sent: 0 } : it
+      )
+    );
+    void runQueue();
+  }, [runQueue, setItems]);
 
   const removeLocal = useCallback(
     (id: string) => {
@@ -344,15 +367,17 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     readyCount,
     uploadingNow,
     activeCount,
+    persistFailed,
     addFiles,
     runQueue,
     pauseRun,
     cancelRun,
+    retryAllFailed,
     removeLocal,
     updateLocal: persistMeta,
     clearDone,
-  }), [items, speed, running, readyCount, uploadingNow, activeCount,
-       addFiles, runQueue, pauseRun, cancelRun, removeLocal, persistMeta, clearDone]);
+  }), [items, speed, running, readyCount, uploadingNow, activeCount, persistFailed,
+       addFiles, runQueue, pauseRun, cancelRun, retryAllFailed, removeLocal, persistMeta, clearDone]);
 
   return <UploadContext.Provider value={value}>{children}</UploadContext.Provider>;
 }

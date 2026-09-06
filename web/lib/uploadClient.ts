@@ -18,7 +18,14 @@ export const DEFAULT_PART_MB = 1500;
 
 const VIDEO_EXTS = [
   ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp",
+  ".mpg", ".mpeg", ".m2ts", ".mts", ".vob", ".ogv",
 ];
+
+// Shared with the finalize guard (complete/route.ts): an oversized file with one
+// of these extensions is re-segmented by the watcher (needs ~a second copy on
+// disk); anything else oversized is raw byte-split (needs one part window).
+// Keep in sync with VIDEO_EXTS in bot/tg_helpers.py.
+export { VIDEO_EXTS };
 
 // Auto-pick the upload kind for a file when no explicit kind is chosen: split big files,
 // keep everything else as a single media file. Big VIDEOS stay "media" — the watcher cuts
@@ -140,7 +147,7 @@ export async function uploadResumable(
       try {
         const chunkStart = offset;
         const res = await postChunk(
-          `/api/upload?token=${token}&name=${encodeURIComponent(name)}&offset=${offset}`,
+          `/api/upload?token=${token}&name=${encodeURIComponent(name)}&offset=${offset}&total=${file.size}`,
           blob,
           ac,
           // Live byte progress within this chunk: report the running total and a
@@ -169,6 +176,12 @@ export async function uploadResumable(
           onProgress(offset, 0);
           ok = true;
           break;
+        }
+        // 507 = VPS disk guard (file cannot fit / staging full). Retrying the
+        // same chunk is pointless — surface the server's message immediately.
+        if (res.status === 507) {
+          const j = res.json() as { error?: string };
+          return { status: "error", error: j.error || "VPS disk full — free space, then retry." };
         }
         if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
         const j = res.json() as { received?: number };

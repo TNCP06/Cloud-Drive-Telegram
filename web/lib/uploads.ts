@@ -3,8 +3,7 @@ import { db } from "./db";
 import { sqliteToMs } from "./format";
 import type { Kind, UploadJob, UploadStatus } from "./types";
 
-export async function getUploadJobs(): Promise<UploadJob[]> {
-  let rs;
+export async function getUploadJobs(): Promise<UploadJob[]> {  let rs;
   try {
     rs = await db.execute(
       "SELECT id, kind, title, tags, source_path, part_size, origin, parts_done, total_bytes, status, progress, message, created_at, updated_at " +
@@ -31,4 +30,19 @@ export async function getUploadJobs(): Promise<UploadJob[]> {
     createdAt: sqliteToMs(String(r.created_at)),
     updatedAt: sqliteToMs(String(r.updated_at)),
   }));
+}
+
+// Totals over ALL jobs (the list above is capped at 100 — a phone backup can
+// queue hundreds, so the backup page counts from here, not from the slice).
+export async function getUploadJobStats(): Promise<Record<string, number>> {
+  try {
+    const rs = await db.execute(
+      "SELECT status, COUNT(*) AS c FROM upload_jobs GROUP BY status"
+    );
+    const out: Record<string, number> = {};
+    for (const r of rs.rows) out[String(r.status)] = Number(r.c);
+    return out;
+  } catch {
+    return {};
+  }
 }

@@ -96,6 +96,61 @@ No manual 7-Zip. Requires the watcher running on the server (Docker — see DEPL
 
 ---
 
+## A2b. Phone backup / archive (HP lama — puluhan GB, HP boleh mati)
+
+Goal: archive an old phone with minimal taps, surviving dead phones and a small
+VPS disk. Two routes, split automatically by size:
+
+**Route 1 — bot `/backup` (files ≤ ~2 GB each, zero VPS disk/egress).**
+`/backup` opens a session (`bot/bot.py: on_backup`): every file sent/forwarded
+while it is on skips the questionnaire and is `copy_message`d server-side with
+auto title/tags + `hp-backup` tag (`backup_copy_one`, inline `index_bot_copy`).
+One living summary message tracks ok/fail (edit-throttled ~5 s); `/backup_done`
+prints the final tally + failed names (first 30, then a count — one message can
+never exceed Telegram's length cap). The session persists in `bot_settings`,
+so a bot redeploy mid-run resumes counting on the next file. Files arriving
+with a valid caption contract keep their metadata, gain the `hp-backup` tag,
+and count toward the session. Retry = forward the failed files again.
+A dead phone simply sends the rest later — nothing is lost because each file is
+safe in Telegram the moment its copy succeeds.
+
+**Route 2 — web `/backup-hp` (bigger files + full folders).**
+Folder picks accumulate in one persisted queue (`BackupHpManager`, tags default
+`hp-backup`, titles from the relative path under `HP Backup/`, per-file
+`autoKind`). Each pick enumerates ALL files up front into IndexedDB, so a phone
+that dies at 30% loses nothing — reopening the page resumes from server offsets
+(token-keyed idempotency, `complete` is a no-op for finished staging). One
+**"Ulangi yang gagal"** button retries local errors (provider `retryAllFailed`)
+and server errors (`retryAllFailedUploads`) at once, and the failed list shows
+file names so the user knows WHAT failed.
+
+**Disk discipline (shared `/staging` volume, often < 10 GB free):**
+- The FIRST chunk carries the full file size: if the whole file cannot fit the
+  volume, the upload is refused with 507 before a single gigabyte is wasted
+  (distinguishing "never fits this VPS" from "temporarily full, retry later").
+- `POST /api/upload/complete` re-checks headroom for the Telegram phase — one
+  part window normally, ~a full second copy for an oversized video that must be
+  re-segmented (same rule `split_video` enforces).
+- `GET /api/staging-status` (free / pending / active + the effective pause/resume
+  thresholds) drives the page's auto-pause brake (`BACKUP_PAUSE_GB`, resume at
+  `BACKUP_RESUME_GB`; hysteresis avoids flapping) with auto-resume; the watcher
+  keeps draining while paused. Job counts come from server-side totals (the list
+  is capped), and list transitions arrive live over the existing upload SSE.
+- Staging is freed per finished job; `cancelUpload` deletes staging only when
+  its conditional status flip actually wins the race against the watcher;
+  error jobs KEEP staging for `STAGING_ERROR_RETENTION_DAYS` of `parts_done`
+  resume, then the boot-time `sweep_orphan_staging()` reclaims them with a note
+  on the row (plus never-completed token dirs older than
+  `STAGING_ORPHAN_MAX_AGE_H` and stale `_parts` windows).
+- Crash-resume is idempotent for archives: parts already indexed (matched by
+  the deterministic item slug) are skipped instead of re-sent, so a crash
+  between Telegram-accept and checkpoint cannot duplicate part rows.
+- Browser persistence (IndexedDB) is best-effort: failures are counted and
+  warned instead of promising resume; re-picking the same folder resumes from
+  server offsets via the stable per-file token.
+
+---
+
 ## A3. Remote-download from cloud drives (PikPak + Baidu via OpenList)
 
 Pull a file straight from a cloud drive onto the VPS from Telegram, then let the normal upload
