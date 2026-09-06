@@ -649,11 +649,19 @@ async def _enqueue_download_job(target_msg, db, remote_path, drive_key, size, fn
     chat_id = getattr(sent, "chat_id", None) or getattr(target_msg, "chat_id", None)
     message_id = getattr(sent, "message_id", None) or getattr(target_msg, "message_id", None)
 
-    rs = await db.execute(
-        "INSERT INTO download_jobs (source, remote_path, filename, size, status, chat_id, message_id) "
-        "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?) RETURNING id",
-        [drive_key, remote_path, fname, size, chat_id, message_id],
-    )
+    try:
+        rs = await db.execute(
+            "INSERT INTO download_jobs (source, remote_path, filename, size, status, chat_id, message_id) "
+            "VALUES (?, ?, ?, ?, 'queued', ?, ?) RETURNING id",
+            [drive_key, remote_path, fname, size, chat_id, message_id],
+        )
+    except Exception as e:  # noqa: BLE001 (don't leave a fake "Queued" message on DB failure)
+        log.warning("%s job queue failed for %s: %s", name, remote_path, e)
+        try:
+            await sent.edit_text(f"❌ Failed to queue {fname}: {str(e)[:200]}")
+        except Exception:  # noqa: BLE001
+            pass
+        return
     jid = rs.rows[0][0] if rs.rows else "?"
     log.info("%s job #%s queued: %s (%s)", name, jid, remote_path, human_size(size))
 
