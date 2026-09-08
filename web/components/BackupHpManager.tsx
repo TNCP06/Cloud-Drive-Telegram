@@ -35,6 +35,32 @@ export function BackupHpManager({ jobs, stats }: { jobs: UploadJob[]; stats: Rec
   // without this the list/counts below would freeze at page-load values.
   useLiveRefresh("upload", { debounceMs: 1000 });
 
+  // Keep the phone awake while the user has explicitly started the backup, and
+  // warn before a refresh/close can interrupt the browser-side queue.
+  useEffect(() => {
+    if (!uploadingNow) return;
+    let lock: { release: () => Promise<void> } | null = null;
+    const wake = async () => {
+      try {
+        if ("wakeLock" in navigator) {
+          lock = await (navigator as Navigator & { wakeLock: { request: (type: "screen") => Promise<{ release: () => Promise<void> }> } }).wakeLock.request("screen");
+        }
+      } catch {
+        /* Wake Lock is optional and may be denied by the device. */
+      }
+    };
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    void wake();
+    window.addEventListener("beforeunload", warn);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      void lock?.release();
+    };
+  }, [uploadingNow]);
+
   // VPS disk health, polled so the page can pace itself.
   useEffect(() => {
     let stop = false;

@@ -138,9 +138,21 @@ export async function POST(req: NextRequest) {
     sql:
       "INSERT INTO upload_jobs (kind, title, tags, source_path, part_size, origin, cleanup_source, total_bytes, status, is_private) " +
       "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'queued', ?) " +
-      "ON CONFLICT (source_path) WHERE origin = 'upload' DO UPDATE SET source_path=excluded.source_path RETURNING id",
+      // Do not name the partial source_path index here. Older databases may not
+      // have the bot's optional migration yet; the lookup above still makes the
+      // normal retry path idempotent without turning Backup HP into a 500.
+      "ON CONFLICT DO NOTHING RETURNING id",
     args: [kind, title, tags, dir, partSize, onDisk, isPrivate],
   });
 
-  return NextResponse.json({ ok: true, jobId: Number(rs.rows[0]?.id ?? 0) });
+  const jobId = Number(rs.rows[0]?.id ?? 0);
+  if (jobId) return NextResponse.json({ ok: true, jobId });
+
+  // Another request won the insert race. Return its job just like the lookup
+  // above, rather than reporting a successful upload with jobId 0.
+  const raced = await db.execute({
+    sql: "SELECT id FROM upload_jobs WHERE source_path = ? LIMIT 1",
+    args: [dir],
+  });
+  return NextResponse.json({ ok: true, jobId: Number(raced.rows[0]?.id ?? 0) });
 }

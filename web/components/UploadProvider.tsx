@@ -93,6 +93,12 @@ interface UploadContextValue {
 const UploadContext = createContext<UploadContextValue | null>(null);
 
 const stripExt = (s: string) => s.replace(/\.[^.]+$/, "");
+const FILE_RETRIES = 3;
+const retryDelay = (attempt: number) => new Promise((resolve) => setTimeout(resolve, Math.min(30000, 5000 * 2 ** attempt)));
+
+function canRetryFile(error: string): boolean {
+  return !/VPS|disk|never fit|larger than|title is required|unauthorized|private space|invalid/i.test(error);
+}
 
 export function UploadProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -146,17 +152,21 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
         const next = itemsRef.current.find((i) => i.stage === "ready");
         if (!next) break;
         updateLocal(next.id, { stage: "uploading", error: undefined });
-        const res = await uploadResumable(
-          next.file,
-          next.name,
-          next.token,
+        let res = await uploadResumable(
+          next.file, next.name, next.token,
           { kind: next.kind, title: next.title, tags: next.tags, partSize: next.partSize, isPrivate: next.isPrivate },
-          (sent, sp) => {
-            updateLocal(next.id, { sent });
-            if (sp) setSpeed(sp);
-          },
-          ctl
+          (sent, sp) => { updateLocal(next.id, { sent }); if (sp) setSpeed(sp); }, ctl
         );
+        for (let attempt = 0; res.status === "error" && attempt < FILE_RETRIES && canRetryFile(res.error); attempt++) {
+          updateLocal(next.id, { error: `Koneksi gagal — mencoba lagi (${attempt + 1}/${FILE_RETRIES})…` });
+          await retryDelay(attempt);
+          if (ctl.cancel) break;
+          res = await uploadResumable(
+            next.file, next.name, next.token,
+            { kind: next.kind, title: next.title, tags: next.tags, partSize: next.partSize, isPrivate: next.isPrivate },
+            (sent, sp) => { updateLocal(next.id, { sent }); if (sp) setSpeed(sp); }, ctl
+          );
+        }
         if (res.status === "paused" || res.status === "canceled") {
           updateLocal(next.id, { stage: "ready" });
           break;
@@ -315,7 +325,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     for (const f of failed) void markUploadErrored(f.token, false);
     setItems((prev) =>
       prev.map((it) =>
-        it.stage === "error" ? { ...it, stage: "ready" as const, error: undefined, sent: 0 } : it
+        it.stage === "error" ? { ...it, stage: "ready" as const, error: undefined } : it
       )
     );
     void runQueue();

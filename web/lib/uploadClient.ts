@@ -9,6 +9,17 @@ const CHUNK = 16 * 1024 * 1024; // 16 MB per request
 const MAX_RETRY = 6;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function responseJson(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  if (!text.trim()) return {};
+  try {
+    const value: unknown = JSON.parse(text);
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
 // Telegram (via the local Bot API) caps one file at ~2 GB. Anything larger MUST be split
 // to upload at all, so the auto picker routes big files to the splitting pipeline
 // (kind="archive", stream-split by the watcher) with the default part size; everything
@@ -216,9 +227,12 @@ export async function uploadResumable(
         isPrivate: opts.isPrivate,
       }),
     });
-    const j = await res.json();
-    if (!res.ok) throw new Error(j.error || "Failed to queue upload.");
-    return { status: "done", jobId: typeof j.jobId === "number" ? j.jobId : undefined };
+     const j = await responseJson(res);
+     if (!res.ok) {
+       const serverError = typeof j.error === "string" ? j.error : "";
+       throw new Error(serverError || `Failed to queue upload (HTTP ${res.status}).`);
+     }
+     return { status: "done", jobId: typeof j.jobId === "number" ? j.jobId : undefined };
   } catch (e) {
     return { status: "error", error: e instanceof Error ? e.message : "Failed to queue upload." };
   }
