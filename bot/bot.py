@@ -27,6 +27,7 @@ from datetime import time as dtime
 import httpx
 from pg_db import create_client
 from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault, ForceReply
+from telegram.error import NetworkError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -1020,6 +1021,18 @@ async def _delete_messages(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg
             pass
 
 
+async def _edit_upload_status(context, chat_id, message_id, text, parse_mode=None):
+    """Retry safe status edits while the local Bot API restarts."""
+    for attempt in range(3):
+        try:
+            return await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=text, parse_mode=parse_mode)
+        except NetworkError:
+            if attempt == 2:
+                raise
+            await asyncio.sleep(2 ** attempt)
+
+
 # ---------------------------------------------------------------------------
 # Helper to process next file in the upload queue
 # ---------------------------------------------------------------------------
@@ -1340,6 +1353,7 @@ async def prompt_for_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
             allow_sending_without_reply=True,
         )
         uf.setdefault("flow_msg_ids", []).append(prompt.message_id)
+        uf["status_message_id"] = prompt.message_id
     except Exception as e:
         log.exception("Failed to prompt for tags")
         message = update.message or update.callback_query.message
@@ -1406,15 +1420,20 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await process_next_in_queue(update, context)
         return
 
-    # Send status message replying to the original forwarded / uploaded message
-    status_msg = await context.bot.send_message(
-        chat_id=chat_id,
-        text="📤 Copying files to storage channel...",
-        reply_to_message_id=orig_msg_id,
-        allow_sending_without_reply=True,
-    )
-
+    status_msg_id = upload_file.get("status_message_id")
     try:
+        if status_msg_id:
+            await _edit_upload_status(
+                context, chat_id, status_msg_id, "📤 Copying files to storage channel...")
+        else:
+            status_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text="📤 Copying files to storage channel...",
+                reply_to_message_id=orig_msg_id,
+                allow_sending_without_reply=True,
+            )
+            status_msg_id = status_msg.message_id
+
         if total_parts == 1:
             caption = f"{title} | 1/1 | {tags_str}"
             copied_msg = await context.bot.copy_message(
@@ -1463,25 +1482,37 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:  # noqa: BLE001
                     log.exception("Inline index failed for album member msg %s", copied_msg.message_id)
 
-        await status_msg.edit_text(
+        await _edit_upload_status(
+            context, chat_id, status_msg_id,
             f"🎉 <b>Success!</b>\n\n"
             f"All {total_parts} file(s) have been successfully uploaded and indexed.\n"
             f"• <b>Title</b>: <code>{html.escape(title)}</code>\n"
             f"• <b>Tags</b>: <code>{html.escape(tags_str if tags_str else 'none')}</code>\n\n"
             f"They are now being indexed and will appear on the website shortly!",
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
     except Exception as e:
         log.exception("Failed to copy user files to channel")
-        await status_msg.edit_text(
-            f"❌ <b>Error copying files:</b> {html.escape(str(e))}\n"
-            "Please check bot configuration and try again.",
-            parse_mode="HTML"
-        )
+        if status_msg_id:
+            detail = (
+                "The Telegram API disconnected, so the copy result is unknown. "
+                "Check the storage channel before retrying to avoid a duplicate."
+                if isinstance(e, NetworkError)
+                else f"Error: {html.escape(str(e))}"
+            )
+            try:
+                await _edit_upload_status(
+                    context, chat_id, status_msg_id,
+                    f"❌ <b>Copy did not complete normally.</b>\n{detail}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                log.exception("Failed to update upload status after copy error")
     finally:
         # Tidy the chat: drop the Title/Tags questionnaire messages (prompts + the user's typed
         # replies), keeping the original file(s) and the final status summary above.
-        await _delete_messages(context, chat_id, upload_file.get("flow_msg_ids"))
+        await _delete_messages(
+            context, chat_id, upload_file.get("flow_msg_ids"), keep_id=status_msg_id)
         # Check queue
         await process_next_in_queue(update, context)
 
