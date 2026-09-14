@@ -392,6 +392,15 @@ export function PreviewDrawer({
     : [{ partId: item.firstPartId ?? 0, fileName: item.fileName, thumb: item.thumb, size: item.size }];
   const activePart = partsList[Math.min(activeIdx, partsList.length - 1)] as GalleryPart | undefined;
 
+  // Top-left title follows the file actually on stage. For a multi-part album each part
+  // has its own file name (video1.mp4 … video100.mkv) while `item.name` is the album
+  // title, so navigating parts via Shift+arrows/filmstrip left the old title stuck.
+  const itemTitle = item.version ? item.family : item.name;
+  const viewerTitle =
+    partsList.length > 1 && activePart?.fileName?.trim()
+      ? activePart.fileName
+      : itemTitle;
+
   // Items without images (archives/etc.) still display full-screen with a large
   // icon + title + kebab; details appear when the kebab is pressed, same as for photos.
   const last = partsList.length - 1;
@@ -731,7 +740,7 @@ export function PreviewDrawer({
               ) : isImageStage ? (
                 <img
                   src={loadedStreamSrc || activePart?.thumb || (activePart?.partId ? `/api/stream/${activePart.partId}` : "")}
-                  alt={item.name}
+                  alt={viewerTitle}
                   onError={(e) => {
                     // Fallback to thumbnail if stream fails
                     const target = e.currentTarget as HTMLImageElement;
@@ -756,7 +765,7 @@ export function PreviewDrawer({
                 details (kebab), a divider, then the ✕ close on the right. The ONLY ways to
                 leave the viewer are this ✕ button or the Esc key. */}
             <div className="viewer-top">
-              <span className="viewer-name">{item.version ? item.family : item.name}</span>
+              <span className="viewer-name" title={viewerTitle}>{viewerTitle}</span>
               <div className="viewer-tools">
                 {onDownload && (
                   <button className="viewer-iconbtn" onClick={onDownload} title="Download">
