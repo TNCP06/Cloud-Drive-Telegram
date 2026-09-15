@@ -300,11 +300,11 @@ Saving Content proteksi using the MTProto worker session (`worker.session`).
 
 1. **Trigger**:
    - User types `/import <link> [Custom Title] [| tag1, tag2]` or simply pastes any `https://t.me/...` link into the bot PM.
-   - Supports public (`https://t.me/channel/42`), private (`https://t.me/c/1234567890/42`), topics (`https://t.me/c/1234567890/10/42`), and batch message ranges (`https://t.me/c/1234567890/10-15`).
+   - Supports public (`https://t.me/channel/42`), private (`https://t.me/c/1234567890/42`), topics (`https://t.me/c/1234567890/10/42`), batch message ranges (`https://t.me/c/1234567890/10-15`), and comment links (`https://t.me/channel/42?comment=123` — stored as `comment_id`, the worker resolves the post's linked discussion group and imports that comment message instead of the channel post).
    - Bot validates user authorization, sends an initial progress message, and inserts row(s) into `tg_import_jobs` (`status='queued'`).
 2. **MTProto Worker** (`bot/tg_import.py`, runs inside `watcher.py` process):
    - Claims the queued job (`status='running'`).
-   - Fetches the message entity and media via Telethon MTProto user account (`client.get_messages`).
+   - Resolves the target message via Telethon MTProto user account (`client.get_messages`); for `?comment=`/`?thread=` links it follows the channel's linked discussion group (`GetFullChannelRequest`) and fetches the comment message there.
    - Extracts file metadata (filename, size, title from caption or filename, tags).
    - Downloads the file into staging (`/staging/tgimport_<jid>/`) using chunked `iter_download` with flood-wait resilience and live byte/speed progress reporting back to Telegram.
 3. **Handoff to Upload Pipeline**:

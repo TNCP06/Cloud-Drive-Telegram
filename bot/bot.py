@@ -23,6 +23,7 @@ import json
 import os
 import time
 from datetime import time as dtime
+from typing import Optional
 
 import httpx
 from pg_db import create_client
@@ -1386,14 +1387,16 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw_link = upload_file["raw_link"]
         target_chat = upload_file["target_chat"]
         target_msg_id = upload_file["target_msg_id"]
+        comment_id = upload_file.get("comment_id")
         import_job_id = upload_file.get("import_job_id")
+        src_desc = f"{target_chat} / {target_msg_id}" + (f" · comment {comment_id}" if comment_id else "")
 
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
             text=f"📥 <b>Telegram Import Queued</b>\n"
                  f"• Title: <b>{html.escape(title or '(otomatis dari pesan sumber)')}</b>\n"
                  f"• Tags: <code>{html.escape(tags_str if tags_str else 'none')}</code>\n"
-                 f"• Source: <code>{target_chat} / {target_msg_id}</code>\n"
+                 f"• Source: <code>{src_desc}</code>\n"
                  f"• Status: <i>Menunggu worker…</i>",
             parse_mode="HTML",
             reply_to_message_id=orig_msg_id,
@@ -1407,9 +1410,9 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 await db.execute(
-                    "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, title, tags, status) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
-                    [raw_link, target_chat, target_msg_id, chat_id, status_msg.message_id, title, tags_str],
+                    "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, title, tags, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
+                    [raw_link, target_chat, target_msg_id, comment_id, chat_id, status_msg.message_id, title, tags_str],
                 )
             log.info("Queued tg_import job via questionnaire: %s / %s (Title: %s)", target_chat, target_msg_id, title)
         except Exception as e:
@@ -1520,14 +1523,15 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 # Telegram Message Link Import (/import <link>)
 # ---------------------------------------------------------------------------
-async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT_TYPE, raw_link: str, target_chat: str, target_msg_id: int):
+async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT_TYPE, raw_link: str, target_chat: str, target_msg_id: int, comment_id: Optional[int] = None):
     """Start interactive Title/Tags questionnaire for a Telegram link (with inspected preview parity)."""
     msg_id = message.message_id
     chat_id = message.chat_id
     db = context.bot_data["db"]
+    src_desc = f"{target_chat} / {target_msg_id}" + (f" · comment {comment_id}" if comment_id else "")
 
     prompt = await message.reply_text(
-        f"🔍 <i>Memeriksa link Telegram…</i>\n• Source: <code>{target_chat} / {target_msg_id}</code>",
+        f"🔍 <i>Memeriksa link Telegram…</i>\n• Source: <code>{src_desc}</code>",
         parse_mode="HTML",
         allow_sending_without_reply=True,
     )
@@ -1540,9 +1544,9 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
 
     try:
         rs = await db.execute(
-            "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, status) "
-            "VALUES (?, ?, ?, ?, ?, 'inspecting') RETURNING id",
-            [raw_link, target_chat, target_msg_id, chat_id, prompt.message_id],
+            "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'inspecting') RETURNING id",
+            [raw_link, target_chat, target_msg_id, comment_id, chat_id, prompt.message_id],
         )
         if rs.rows:
             import_job_id = rs.rows[0][0]
@@ -1568,7 +1572,7 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
                     err_msg = check.rows[0][5] or "Gagal mengakses pesan sumber."
                     await prompt.edit_text(
                         f"❌ <b>Gagal mengakses pesan Telegram:</b>\n{html.escape(err_msg)}\n"
-                        f"• Source: <code>{target_chat} / {target_msg_id}</code>",
+                        f"• Source: <code>{src_desc}</code>",
                         parse_mode="HTML",
                     )
                     return
@@ -1581,6 +1585,7 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
         "raw_link": raw_link,
         "target_chat": target_chat,
         "target_msg_id": target_msg_id,
+        "comment_id": comment_id,
         "message_ids": [msg_id],
         "messages": [message],
         "chat_id": chat_id,
@@ -1610,7 +1615,7 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
         f"📥 <b>Telegram Link Received!</b>\n"
         f"• File Name: <code>{html.escape(file_name or 'Photo/Media')}</code>\n"
         f"{size_line}"
-        f"• Source: <code>{target_chat} / {target_msg_id}</code>\n\n"
+        f"• Source: <code>{src_desc}</code>\n\n"
         f"Please reply with a <b>Title</b> for this upload.\n"
         f"Or click the button below to use the Auto Title.",
         reply_markup=reply_markup,
@@ -1649,29 +1654,31 @@ async def on_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # If single link with NO title/tags provided, prompt for title & tags interactively
     if len(targets) == 1 and not title and not tags:
         t = targets[0]
-        await start_link_import_flow(message, context, t["raw_link"], t["target_chat"], t["target_msg_id"])
+        await start_link_import_flow(message, context, t["raw_link"], t["target_chat"], t["target_msg_id"], t.get("comment_id"))
         return
 
     # Fast Mode / Batch Mode: directly queue
     for t in targets:
         target_chat = t["target_chat"]
         target_msg_id = t["target_msg_id"]
+        comment_id = t.get("comment_id")
         raw_link = t["raw_link"]
+        src_desc = f"{target_chat} / {target_msg_id}" + (f" · comment {comment_id}" if comment_id else "")
 
         status_msg = await message.reply_text(
             f"📥 <b>Telegram Import Queued</b>\n"
-            f"• Source: <code>{target_chat} / {target_msg_id}</code>\n"
+            f"• Source: <code>{src_desc}</code>\n"
             f"• Status: <i>Menunggu worker…</i>",
             parse_mode="HTML",
         )
 
         try:
             await db.execute(
-                "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, title, tags, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
-                [raw_link, target_chat, target_msg_id, message.chat_id, status_msg.message_id, title, tags],
+                "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, title, tags, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
+                [raw_link, target_chat, target_msg_id, comment_id, message.chat_id, status_msg.message_id, title, tags],
             )
-            log.info("Queued tg_import job: %s / %s for user %s", target_chat, target_msg_id, user.id)
+            log.info("Queued tg_import job: %s / %s (comment: %s) for user %s", target_chat, target_msg_id, comment_id, user.id)
         except Exception as e:
             log.exception("Failed to insert tg_import_job")
             await status_msg.edit_text(f"❌ Database error: {e}")
@@ -1737,25 +1744,27 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             targets, title, tags = tg_import.parse_import_command(msg_text)
             if len(targets) == 1 and not title and not tags:
                 t = targets[0]
-                await start_link_import_flow(message, context, t["raw_link"], t["target_chat"], t["target_msg_id"])
+                await start_link_import_flow(message, context, t["raw_link"], t["target_chat"], t["target_msg_id"], t.get("comment_id"))
                 return
             for t in targets:
                 target_chat = t["target_chat"]
                 target_msg_id = t["target_msg_id"]
+                comment_id = t.get("comment_id")
                 raw_link = t["raw_link"]
+                src_desc = f"{target_chat} / {target_msg_id}" + (f" · comment {comment_id}" if comment_id else "")
                 status_msg = await message.reply_text(
                     f"📥 <b>Telegram Import Queued</b>\n"
-                    f"• Source: <code>{target_chat} / {target_msg_id}</code>\n"
+                    f"• Source: <code>{src_desc}</code>\n"
                     f"• Status: <i>Menunggu worker…</i>",
                     parse_mode="HTML",
                 )
                 try:
                     await db.execute(
-                        "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, chat_id, message_id, title, tags, status) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')",
-                        [raw_link, target_chat, target_msg_id, message.chat_id, status_msg.message_id, title, tags],
+                        "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, title, tags, status) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
+                        [raw_link, target_chat, target_msg_id, comment_id, message.chat_id, status_msg.message_id, title, tags],
                     )
-                    log.info("Queued tg_import job via direct link: %s / %s", target_chat, target_msg_id)
+                    log.info("Queued tg_import job via direct link: %s / %s (comment: %s)", target_chat, target_msg_id, comment_id)
                 except Exception as e:
                     log.exception("Failed to insert tg_import_job")
                     await status_msg.edit_text(f"❌ Database error: {e}")

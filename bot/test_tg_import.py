@@ -61,6 +61,29 @@ def test_parse_tg_links():
     assert links[0]["target_chat"] == "-100111" and links[0]["target_msg_id"] == 10
     assert links[1]["target_chat"] == "public" and links[1]["target_msg_id"] == 20
 
+    # 7. Comment link: ?comment= targets one message in the post's discussion group
+    links = tg_import.parse_tg_links("https://t.me/gsxjjf/1648?comment=39725")
+    assert len(links) == 1
+    assert links[0]["target_chat"] == "gsxjjf"
+    assert links[0]["target_msg_id"] == 1648
+    assert links[0]["comment_id"] == 39725
+    assert links[0]["raw_link"] == "https://t.me/gsxjjf/1648?comment=39725"
+
+    # 8. Comment link with extra params (?single) and legacy ?thread= form
+    links = tg_import.parse_tg_links("https://t.me/gsxjjf/1648?comment=39725&single")
+    assert links[0]["comment_id"] == 39725
+    links = tg_import.parse_tg_links("https://t.me/c/1234567890/42?thread=77")
+    assert links[0]["target_msg_id"] == 42 and links[0]["comment_id"] == 77
+
+    # 9. Plain query (?single only) → post itself, no comment target
+    links = tg_import.parse_tg_links("https://t.me/gsxjjf/1648?single")
+    assert links[0]["comment_id"] is None
+
+    # 10. Range link with a comment query → comment is dropped (single-message semantics)
+    links = tg_import.parse_tg_links("https://t.me/gsxjjf/100-102?comment=39725")
+    assert len(links) == 3
+    assert all(l["comment_id"] is None for l in links)
+
 
 def test_parse_import_command():
     # Basic command
@@ -84,6 +107,17 @@ def test_parse_import_command():
     assert links[0]["target_msg_id"] == 55
     assert title == "Tutorial Video"
     assert tags is None
+
+    # Comment link alone must NOT leak its query string into the custom title
+    links, title, tags = tg_import.parse_import_command("/import https://t.me/gsxjjf/1648?comment=39725")
+    assert len(links) == 1
+    assert links[0]["comment_id"] == 39725
+    assert title is None and tags is None
+
+    # Comment link with a real custom title still parses the title cleanly
+    links, title, tags = tg_import.parse_import_command("/import https://t.me/gsxjjf/1648?comment=39725 My Title | v")
+    assert links[0]["comment_id"] == 39725
+    assert title == "My Title" and tags == "v"
 
 
 def test_formatters():
@@ -158,10 +192,75 @@ def test_inspect_message_meta():
     assert res["num_files"] == 1
 
 
+def test_comment_target_resolution():
+    import asyncio
+
+    class DummyFile:
+        def __init__(self, name, size):
+            self.name = name
+            self.size = size
+
+    class DummyMsg:
+        def __init__(self, mid, message, fname, size):
+            self.id = mid
+            self.media = True
+            self.message = message
+            self.file = DummyFile(fname, size)
+            self.grouped_id = None
+
+    class DummyChat:
+        def __init__(self, cid):
+            self.id = cid
+
+    class DummyFull:
+        class full_chat:
+            linked_chat_id = 555
+        chats = [DummyChat(111), DummyChat(555)]
+
+    class DummyClient:
+        def __init__(self):
+            self.requests = []
+
+        async def get_entity(self, chat):
+            return chat
+
+        async def __call__(self, request):
+            self.requests.append(type(request).__name__)
+            return DummyFull()
+
+        async def get_messages(self, entity, ids):
+            # The comment message lives in the linked discussion group, not the channel.
+            if ids == 39725 and getattr(entity, "id", None) == 555:
+                return DummyMsg(39725, "resource video comment", "resource.mp4", 2048)
+            return None
+
+    client = DummyClient()
+    res = asyncio.run(tg_import.inspect_message_meta(client, "gsxjjf", 1648, comment_id=39725))
+    assert res["ok"] is True
+    assert res["filename"] == "resource.mp4"
+    assert res["size"] == 2048
+    assert client.requests == ["GetFullChannelRequest"]
+
+    # Comment on a channel with no linked discussion group → user-facing error.
+    class NoLinkFull:
+        class full_chat:
+            linked_chat_id = None
+        chats = []
+
+    class NoLinkClient(DummyClient):
+        async def __call__(self, request):
+            return NoLinkFull()
+
+    res = asyncio.run(tg_import.inspect_message_meta(NoLinkClient(), "gsxjjf", 1648, comment_id=39725))
+    assert res["ok"] is False
+    assert "diskusi" in res["error"]
+
+
 if __name__ == "__main__":
     test_parse_tg_links()
     test_parse_import_command()
     test_formatters()
     test_derive_title_tags()
     test_inspect_message_meta()
+    test_comment_target_resolution()
     print("All tg_import tests passed!")

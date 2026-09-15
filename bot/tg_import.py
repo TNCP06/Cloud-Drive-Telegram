@@ -21,6 +21,7 @@ from typing import List, Optional, Tuple
 
 import httpx
 from telethon.errors import FloodError
+from telethon.tl import functions as tl_functions
 
 from bot_config import (
     BOT_TOKEN,
@@ -37,8 +38,13 @@ PROGRESS_THROTTLE_S = 4.0
 DB_THROTTLE_S = 5.0
 
 TG_LINK_RE = re.compile(
-    r"(?:https?://)?t\.me/(?:c/(\d+)|([a-zA-Z0-9_]+))/(?:(\d+)/)?(\d+)(?:-(\d+))?"
+    r"(?:https?://)?t\.me/(?:c/(\d+)|([a-zA-Z0-9_]+))/(?:(\d+)/)?(\d+)(?:-(\d+))?(?:\?(\S*))?"
 )
+
+# ?comment= (current) / ?thread= (legacy) on a channel-post link points at ONE message
+# in the post's linked discussion group — e.g. the video "resource" channels post in
+# comments while the post itself is only a photo.
+COMMENT_QUERY_RE = re.compile(r"(?:^|&)(?:comment|thread)=(\d+)")
 
 
 class TgImportError(Exception):
@@ -64,17 +70,26 @@ def parse_tg_links(text: str) -> List[dict]:
         start_msg_id = int(m.group(4))
         end_msg_id = int(m.group(5)) if m.group(5) else start_msg_id
 
+        # A comment/thread query targets one discussion-group message, so it only
+        # applies to single-message links (it is meaningless across a range import).
+        comment_id = None
+        if not m.group(5):
+            cm = COMMENT_QUERY_RE.search(m.group(6) or "")
+            if cm:
+                comment_id = int(cm.group(1))
+
         if end_msg_id < start_msg_id:
             end_msg_id = start_msg_id
         end_msg_id = min(end_msg_id, start_msg_id + 50)
 
         for mid in range(start_msg_id, end_msg_id + 1):
-            key = (target_chat, mid)
+            key = (target_chat, mid, comment_id)
             if key not in seen:
                 seen.add(key)
                 results.append({
                     "target_chat": target_chat,
                     "target_msg_id": mid,
+                    "comment_id": comment_id,
                     "raw_link": m.group(0),
                 })
     return results
@@ -147,6 +162,9 @@ async def ensure_schema(db):
     except Exception as e:
         log.debug("Constraint update for tg_import_jobs status: %s", e)
 
+    # ?comment= links: the discussion-group message to import instead of the channel post.
+    await db.execute("ALTER TABLE tg_import_jobs ADD COLUMN IF NOT EXISTS comment_id BIGINT")
+
     await db.execute("CREATE INDEX IF NOT EXISTS idx_tg_import_jobs_status ON tg_import_jobs(status)")
     await db.execute("""
         CREATE OR REPLACE FUNCTION notify_tg_import_change() RETURNS trigger
@@ -205,7 +223,7 @@ async def _claim_next(db):
             LIMIT 1
             FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, link, target_chat, target_msg_id, chat_id, message_id, title, tags
+        RETURNING id, link, target_chat, target_msg_id, comment_id, chat_id, message_id, title, tags
     """)
     if not rs.rows:
         return None
@@ -215,10 +233,11 @@ async def _claim_next(db):
         "link": r[1],
         "target_chat": r[2],
         "target_msg_id": r[3],
-        "chat_id": r[4],
-        "message_id": r[5],
-        "title": r[6],
-        "tags": r[7],
+        "comment_id": r[4],
+        "chat_id": r[5],
+        "message_id": r[6],
+        "title": r[7],
+        "tags": r[8],
     }
 
 
@@ -227,6 +246,39 @@ async def _is_cancelled(db, jid: int) -> bool:
     if rs.rows and rs.rows[0][0] == "cancelled":
         return True
     return False
+
+
+async def _fetch_target_message(client, target_chat: str, target_msg_id: int, comment_id: Optional[int]):
+    """Resolve and fetch the import target message.
+
+    A ?comment=/?thread= link points at ONE message in the channel post's linked
+    discussion group (channels that say "see comments for the resource" keep the
+    actual media there while the post itself is just a photo), so follow the
+    channel's linked chat and fetch that comment message instead of the post.
+
+    Returns (chat, msg): the chat the message lives in — the discussion group for
+    comment targets, the channel itself otherwise — so callers scan album
+    (media-group) siblings in the right chat.
+    """
+    try:
+        chat_entity = int(target_chat)
+    except ValueError:
+        chat_entity = target_chat
+    entity = await client.get_entity(chat_entity)
+
+    if not comment_id:
+        msg = await client.get_messages(entity, ids=target_msg_id)
+        return entity, msg
+
+    full = await client(tl_functions.channels.GetFullChannelRequest(entity))
+    linked_id = getattr(full.full_chat, "linked_chat_id", None)
+    if not linked_id:
+        raise TgImportError("Postingan ini tidak memiliki grup diskusi (section komentar).")
+    discussion = next((c for c in full.chats if getattr(c, "id", None) == linked_id), None)
+    if discussion is None:
+        discussion = await client.get_entity(int(f"-100{linked_id}"))
+    msg = await client.get_messages(discussion, ids=comment_id)
+    return discussion, msg
 
 
 async def _download_part_stream(client, msg, dst_path, on_progress=None):
@@ -372,6 +424,7 @@ async def _process(client, db, job):
     msg_id = job["message_id"]
     target_chat = job["target_chat"]
     target_msg_id = job["target_msg_id"]
+    comment_id = job.get("comment_id")
     custom_title = job["title"]
     custom_tags = job["tags"]
 
@@ -397,16 +450,12 @@ async def _process(client, db, job):
         if await _is_cancelled(db, jid):
             return
 
-        await _safe_edit(chat_id, msg_id, f"🔍 <b>Mengambil informasi pesan…</b>\n<code>{target_chat} / {target_msg_id}</code>", kb=cancel_kb)
+        src_desc = f"{target_chat} / {target_msg_id}" + (f" · comment {comment_id}" if comment_id else "")
+        await _safe_edit(chat_id, msg_id, f"🔍 <b>Mengambil informasi pesan…</b>\n<code>{src_desc}</code>", kb=cancel_kb)
 
-        # 1. Resolve entity & get message
+        # 1. Resolve entity & get message (follows ?comment= into the discussion group)
         try:
-            try:
-                chat_entity = int(target_chat)
-            except ValueError:
-                chat_entity = target_chat
-            entity = await client.get_entity(chat_entity)
-            msg = await client.get_messages(entity, ids=target_msg_id)
+            src_chat, msg = await _fetch_target_message(client, target_chat, target_msg_id, comment_id)
         except Exception as e:
             err_str = str(e)
             if "ChannelPrivateError" in err_str or "Could not find the input entity" in err_str:
@@ -414,17 +463,19 @@ async def _process(client, db, job):
             raise TgImportError(f"Gagal mengakses pesan: {err_str}")
 
         if not msg:
-            raise TgImportError(f"Pesan ID {target_msg_id} tidak ditemukan.")
+            which = f"Pesan komentar {comment_id}" if comment_id else f"Pesan ID {target_msg_id}"
+            raise TgImportError(f"{which} tidak ditemukan.")
         if not msg.media:
-            raise TgImportError(f"Pesan ID {target_msg_id} tidak memiliki file / video / media untuk diunduh.")
+            which = f"Pesan komentar {comment_id}" if comment_id else f"Pesan ID {target_msg_id}"
+            raise TgImportError(f"{which} tidak memiliki file / video / media untuk diunduh.")
 
         # Check if this message is part of an album / media group
         messages_to_fetch = [msg]
         if getattr(msg, "grouped_id", None):
             try:
-                min_id = max(1, target_msg_id - 15)
-                max_id = target_msg_id + 15
-                surrounding = await client.get_messages(entity, min_id=min_id, max_id=max_id)
+                min_id = max(1, (comment_id or target_msg_id) - 15)
+                max_id = (comment_id or target_msg_id) + 15
+                surrounding = await client.get_messages(src_chat, min_id=min_id, max_id=max_id)
                 album_msgs = [m for m in surrounding if getattr(m, "grouped_id", None) == msg.grouped_id and m.media]
                 if not any(m.id == msg.id for m in album_msgs):
                     album_msgs.append(msg)
@@ -604,15 +655,10 @@ async def _process(client, db, job):
         await _safe_edit(chat_id, msg_id, f"❌ <b>Import Error:</b>\n{html.escape(err_msg[:300])}")
 
 
-async def inspect_message_meta(client, target_chat: str, target_msg_id: int) -> dict:
+async def inspect_message_meta(client, target_chat: str, target_msg_id: int, comment_id: Optional[int] = None) -> dict:
     """Inspect a message via Telethon MTProto to extract caption, auto title/tags, filename, and size."""
     try:
-        try:
-            chat_entity = int(target_chat)
-        except ValueError:
-            chat_entity = target_chat
-        entity = await client.get_entity(chat_entity)
-        msg = await client.get_messages(entity, ids=target_msg_id)
+        src_chat, msg = await _fetch_target_message(client, target_chat, target_msg_id, comment_id)
     except Exception as e:
         err_str = str(e)
         if "ChannelPrivateError" in err_str or "Could not find the input entity" in err_str:
@@ -620,16 +666,19 @@ async def inspect_message_meta(client, target_chat: str, target_msg_id: int) -> 
         return {"ok": False, "error": f"Gagal mengakses pesan: {err_str}"}
 
     if not msg:
-        return {"ok": False, "error": f"Pesan ID {target_msg_id} tidak ditemukan."}
+        which = f"Pesan komentar {comment_id}" if comment_id else f"Pesan ID {target_msg_id}"
+        return {"ok": False, "error": f"{which} tidak ditemukan."}
     if not msg.media:
-        return {"ok": False, "error": f"Pesan ID {target_msg_id} tidak memiliki file / video / media untuk diunduh."}
+        which = f"Pesan komentar {comment_id}" if comment_id else f"Pesan ID {target_msg_id}"
+        return {"ok": False, "error": f"{which} tidak memiliki file / video / media untuk diunduh."}
 
     messages_to_fetch = [msg]
     if getattr(msg, "grouped_id", None):
         try:
-            min_id = max(1, target_msg_id - 15)
-            max_id = target_msg_id + 15
-            surrounding = await client.get_messages(entity, min_id=min_id, max_id=max_id)
+            anchor_id = comment_id or target_msg_id
+            min_id = max(1, anchor_id - 15)
+            max_id = anchor_id + 15
+            surrounding = await client.get_messages(src_chat, min_id=min_id, max_id=max_id)
             album_msgs = [m for m in surrounding if getattr(m, "grouped_id", None) == msg.grouped_id and m.media]
             if not any(m.id == msg.id for m in album_msgs):
                 album_msgs.append(msg)
@@ -666,9 +715,9 @@ async def inspect_message_meta(client, target_chat: str, target_msg_id: int) -> 
     }
 
 
-async def _process_inspection(client, db, job_id: int, target_chat: str, target_msg_id: int):
+async def _process_inspection(client, db, job_id: int, target_chat: str, target_msg_id: int, comment_id: Optional[int]):
     try:
-        res = await inspect_message_meta(client, target_chat, target_msg_id)
+        res = await inspect_message_meta(client, target_chat, target_msg_id, comment_id)
         if res.get("ok"):
             await db.execute(
                 "UPDATE tg_import_jobs SET status='inspected', filename=?, size=?, title=?, tags=?, updated_at=now_text() WHERE id=?",
@@ -692,12 +741,12 @@ async def _process_inspection(client, db, job_id: int, target_chat: str, target_
 async def _poll_inspections(client, db):
     """Check for pending inspection requests and dispatch them concurrently."""
     try:
-        rs = await db.execute("SELECT id, target_chat, target_msg_id FROM tg_import_jobs WHERE status='inspecting' ORDER BY id ASC")
+        rs = await db.execute("SELECT id, target_chat, target_msg_id, comment_id FROM tg_import_jobs WHERE status='inspecting' ORDER BY id ASC")
         for r in rs.rows:
-            jid, t_chat, t_mid = r[0], r[1], r[2]
+            jid, t_chat, t_mid, t_cid = r[0], r[1], r[2], r[3]
             claim = await db.execute("UPDATE tg_import_jobs SET status='inspect_running', updated_at=now_text() WHERE id=? AND status='inspecting' RETURNING id", [jid])
             if claim.rows:
-                asyncio.create_task(_process_inspection(client, db, jid, t_chat, t_mid))
+                asyncio.create_task(_process_inspection(client, db, jid, t_chat, t_mid, t_cid))
     except Exception as e:
         log.debug("Error checking tg_import inspections: %s", e)
 
