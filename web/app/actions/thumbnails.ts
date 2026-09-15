@@ -12,7 +12,7 @@ import { authorizeItem } from "@/lib/resourceAuth";
 export async function getGallery(itemId: number): Promise<GalleryPart[]> {
   if (!(await authorizeItem(itemId))) return [];
   const rs = await db.execute({
-    sql: `SELECT p.id AS part_id, p.file_name, p.file_size, t.mime, t.data
+    sql: `SELECT p.id AS part_id, p.file_name, p.file_size, p.channel_msg_id, t.mime, t.data
           FROM parts p
           LEFT JOIN thumbnails t ON p.id = t.part_id
           WHERE p.item_id = ?
@@ -20,12 +20,32 @@ export async function getGallery(itemId: number): Promise<GalleryPart[]> {
     args: [itemId],
   });
 
-  return rs.rows.map((r) => ({
+  const rows = rs.rows.map((r) => ({
     partId: Number(r.part_id),
-    fileName: r.file_name ? String(r.file_name) : null,
+    rawName: r.file_name ? String(r.file_name).trim() : "",
     thumb: r.data ? `data:${String(r.mime)};base64,${String(r.data)}` : null,
     size: Number(r.file_size ?? 0),
+    msgId: Number(r.channel_msg_id),
   }));
+
+  // Photos legitimately have no file name, and nameless videos share the synthetic
+  // "video.mp4" — either way the viewer title/filmstrip tooltip was stuck on the album
+  // name while navigating parts. Give every part a distinct display name: synthesized
+  // for unnamed parts, suffixed for duplicates — always keeping a clean trailing
+  // extension so extension-based video/photo detection keeps working.
+  const counts = new Map<string, number>();
+  for (const r of rows) if (r.rawName) counts.set(r.rawName, (counts.get(r.rawName) ?? 0) + 1);
+  const seq = new Map<string, number>();
+  return rows.map((r) => {
+    let fileName = r.rawName || `photo_${r.msgId}.jpg`;
+    if ((counts.get(r.rawName) ?? 0) > 1) {
+      const n = (seq.get(r.rawName) ?? 0) + 1;
+      seq.set(r.rawName, n);
+      const dot = fileName.lastIndexOf(".");
+      fileName = dot > 0 ? `${fileName.slice(0, dot)}_${n}${fileName.slice(dot)}` : `${fileName}_${n}`;
+    }
+    return { partId: r.partId, fileName, thumb: r.thumb, size: r.size };
+  });
 }
 
 // Repair thumbnails missed at index time: forward each thumbnail-less part's channel
