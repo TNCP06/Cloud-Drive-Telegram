@@ -10,12 +10,12 @@ export function LoginForm({ from }: { from: string }) {
 
   return (
     <div className="login-wrap">
-      <form action={action} className="login-card">
+      <form action={action} className="login-card" suppressHydrationWarning>
         <div className="login-mark">
           <Icon name="cloud" size={24} stroke={1.7} />
         </div>
         <h1>Vault</h1>
-        <p className="login-sub">Enter your password to sign in</p>
+        <p className="login-sub" suppressHydrationWarning>Enter your password to sign in</p>
 
         <input type="hidden" name="from" value={from} />
         <input
@@ -26,10 +26,11 @@ export function LoginForm({ from }: { from: string }) {
           autoFocus
           required
           autoComplete="current-password"
+          suppressHydrationWarning
         />
-        {state?.error && <div className="login-err">{state.error}</div>}
+        {state?.error && <div className="login-err" suppressHydrationWarning>{state.error}</div>}
 
-        <button className="btn primary" type="submit" disabled={pending}>
+        <button className="btn primary" type="submit" disabled={pending} suppressHydrationWarning>
           {pending ? <span className="spinner sm" /> : <Icon name="check" size={16} />}
           Sign in
         </button>

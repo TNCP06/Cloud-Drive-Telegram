@@ -387,8 +387,9 @@ export function PreviewDrawer({
 
   // Always ≥1 entry (the item itself when there's no multi-part gallery) so the bottom box's
   // filmstrip stays consistent — and present — even for single/thumbless media.
-  const partsList: GalleryPart[] = gallery && gallery.length > 0
-    ? gallery
+  const activeGallery = (gallery && gallery.length > 0 ? gallery : null) ?? galMap[item.id];
+  const partsList: GalleryPart[] = activeGallery && activeGallery.length > 0
+    ? activeGallery
     : [{ partId: item.firstPartId ?? 0, fileName: item.fileName, thumb: item.thumb, size: item.size }];
   const activePart = partsList[Math.min(activeIdx, partsList.length - 1)] as GalleryPart | undefined;
 
@@ -765,7 +766,7 @@ export function PreviewDrawer({
                 details (kebab), a divider, then the ✕ close on the right. The ONLY ways to
                 leave the viewer are this ✕ button or the Esc key. */}
             <div className="viewer-top">
-              <span className="viewer-name" title={viewerTitle}>{viewerTitle}</span>
+              <span className="viewer-name" title={viewerTitle} translate="no">{viewerTitle}</span>
               <div className="viewer-tools">
                 {onDownload && (
                   <button className="viewer-iconbtn" onClick={onDownload} title="Download">
@@ -886,6 +887,7 @@ export function PreviewDrawer({
                       className={"viewer-thumb" + (t.active ? " on" : "")}
                       onClick={t.onClick}
                       title={t.title}
+                      translate="no"
                     >
                       {t.thumb ? (
                         <Image src={t.thumb} alt="" fill unoptimized loading="lazy" style={{ objectFit: "cover" }} />

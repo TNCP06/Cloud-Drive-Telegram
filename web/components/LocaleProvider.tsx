@@ -551,18 +551,34 @@ function applyTranslations(locale: Locale) {
   while ((node = walker.nextNode())) {
     const parent = node.parentElement;
     if (!parent || ["SCRIPT", "STYLE", "INPUT", "TEXTAREA"].includes(parent.tagName)) continue;
+    if (parent.closest('[translate="no"]')) continue;
     const source = node.textContent || "";
-    const original = originalText.get(node) || source;
+    const prevOriginal = originalText.get(node);
+    const original =
+      !prevOriginal ||
+      (source !== prevOriginal &&
+       source !== translate(prevOriginal, "id") &&
+       source !== translate(prevOriginal, "en"))
+        ? source
+        : prevOriginal;
     originalText.set(node, original);
     const next = translate(original, locale);
     if (node.textContent !== next) node.textContent = next;
   }
   document.querySelectorAll<HTMLElement>("[title], [aria-label], [placeholder]").forEach((el) => {
+    if (el.closest('[translate="no"]')) return;
     for (const attr of ["title", "aria-label", "placeholder"]) {
       const value = el.getAttribute(attr);
       if (!value) continue;
       const originals = originalAttributes.get(el) || {};
-      const original = originals[attr] || value;
+      const prevOriginal = originals[attr];
+      const original =
+        !prevOriginal ||
+        (value !== prevOriginal &&
+         value !== translate(prevOriginal, "id") &&
+         value !== translate(prevOriginal, "en"))
+          ? value
+          : prevOriginal;
       const next = translate(original, locale);
       if (value !== next) el.setAttribute(attr, next);
       originals[attr] = original;
@@ -582,20 +598,35 @@ export function LanguageToggle() {
     document.documentElement.lang = next;
 
     // Let the App Router finish hydrating server-rendered children before changing their DOM.
-    // Otherwise a saved ID preference can replace English text while React is still hydrating.
+    // Otherwise a saved ID preference can replace English text while React is still hydrating,
+    // especially for async/streamed Server Components like /login.
     let observer: MutationObserver | null = null;
-    const frame = window.requestAnimationFrame(() => {
-      const afterHydration = window.requestAnimationFrame(() => {
-        applyTranslations(localeRef.current);
-        observer = new MutationObserver(() => applyTranslations(localeRef.current));
-        observer.observe(document.body, { childList: true, subtree: true });
-      });
-      cleanupFrame = () => window.cancelAnimationFrame(afterHydration);
-    });
-    let cleanupFrame = () => {};
+    let cancelled = false;
+
+    const start = () => {
+      if (cancelled) return;
+      applyTranslations(localeRef.current);
+      observer = new MutationObserver(() => applyTranslations(localeRef.current));
+      observer.observe(document.body, { childList: true, subtree: true });
+    };
+
+    const scheduleStart = () => {
+      if (typeof window.requestIdleCallback !== "undefined") {
+        window.requestIdleCallback(() => setTimeout(start, 50), { timeout: 1000 });
+      } else {
+        setTimeout(start, 100);
+      }
+    };
+
+    if (document.readyState === "complete") {
+      scheduleStart();
+    } else {
+      window.addEventListener("load", scheduleStart, { once: true });
+    }
+
     return () => {
-      window.cancelAnimationFrame(frame);
-      cleanupFrame();
+      cancelled = true;
+      window.removeEventListener("load", scheduleStart);
       observer?.disconnect();
     };
   }, []);
