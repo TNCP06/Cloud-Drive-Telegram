@@ -156,6 +156,26 @@ def test_split_reassembly_byte_identical():
         assert rejoined == payload, "concatenated parts must be byte-identical to the source"
 
 
+def test_active_procs_registry():
+    assert hasattr(pikpak, "_ACTIVE_PROCS")
+    assert isinstance(pikpak._ACTIVE_PROCS, dict)
+    class DummyProc:
+        returncode = None
+        killed = False
+        def kill(self):
+            self.killed = True
+
+    proc = DummyProc()
+    pikpak._ACTIVE_PROCS[999] = proc
+    assert pikpak._ACTIVE_PROCS.get(999) is proc
+    p = pikpak._ACTIVE_PROCS.get(999)
+    if p and p.returncode is None:
+        p.kill()
+    assert proc.killed is True
+    pikpak._ACTIVE_PROCS.pop(999, None)
+    assert 999 not in pikpak._ACTIVE_PROCS
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

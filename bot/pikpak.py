@@ -75,6 +75,8 @@ _STATUS_ICON = {
     "uploading": "⬆️", "done": "✅", "failed": "❌", "paused": "⏸",
 }
 
+_ACTIVE_PROCS: dict[int, asyncio.subprocess.Process] = {}
+
 
 class PikpakError(Exception):
     """A user-facing rclone/PikPak failure (message is safe to send to Telegram)."""
@@ -337,19 +339,48 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
     win_bytes, win_t = done, now  # no-progress window anchor
 
     while done < size:
+        rs = await db.execute("SELECT status FROM download_jobs WHERE id=?", [job["id"]])
+        st = rs.rows[0][0] if rs.rows else "failed"
+        if st in ("failed", "paused"):
+            await _set(db, job["id"], bytes_done=done)
+            raise DownloadCancelled() if st == "failed" else DownloadPaused()
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 RCLONE_BIN, "cat", remote, "--offset", str(done),
-                "--low-level-retries=10", "--timeout=300s", "--contimeout=60s",
+                "--low-level-retries=3", "--timeout=60s", "--contimeout=30s",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
+            _ACTIVE_PROCS[job["id"]] = proc
         except FileNotFoundError:
             raise PikpakError(f"rclone binary not found ('{RCLONE_BIN}').")
         try:
             with open(fpath, "r+b") as f:
                 f.seek(done)
                 while True:
-                    chunk = await proc.stdout.read(1 << 20)
+                    try:
+                        chunk = await asyncio.wait_for(proc.stdout.read(1 << 20), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        now = time.monotonic()
+                        rs = await db.execute("SELECT status FROM download_jobs WHERE id=?", [job["id"]])
+                        st = rs.rows[0][0] if rs.rows else "failed"
+                        if st in ("failed", "paused"):
+                            proc.kill(); await proc.wait()
+                            await _set(db, job["id"], bytes_done=done)
+                            raise DownloadCancelled() if st == "failed" else DownloadPaused()
+                        if now - win_t > STALL_WINDOW_S:
+                            proc.kill(); await proc.wait()
+                            await _set(db, job["id"], bytes_done=done)
+                            raise PikpakError(
+                                f"⏱ Aborted {fname} — no progress for {STALL_WINDOW_S // 60} min "
+                                f"({drive.get('display', drive['remote'])} stalled at {human_size(done)}).")
+                        if now - state["start"] > MAX_DL_SECONDS:
+                            proc.kill(); await proc.wait()
+                            await _set(db, job["id"], bytes_done=done)
+                            raise PikpakError(
+                                f"⏱ Aborted {fname} — hit the {MAX_DL_SECONDS // 3600}h ceiling at "
+                                f"{human_size(done)}/{human_size(size)}.")
+                        continue
                     if not chunk:
                         break
                     f.write(chunk)
@@ -398,6 +429,7 @@ async def _rclone_copy(bot, db, job, dst, state, drive):
                             state, kb=_CANCEL_KB)
             await proc.wait()
         finally:
+            _ACTIVE_PROCS.pop(job["id"], None)
             if proc.returncode is None:
                 proc.kill(); await proc.wait()
         if proc.returncode == 0 and done >= size:
@@ -557,7 +589,7 @@ async def _worker_loop(bot, db):
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001  (never let the loop die)
-            log.warning("PikPak worker loop error: %s", e)
+            log.exception("PikPak worker loop error: %s", e)
             await asyncio.sleep(POLL_INTERVAL)
 
 
@@ -793,10 +825,16 @@ async def cancel_download(query, db, progress_msg_id):
             msg.chat_id, "⚠️ Too late to cancel — this download already finished or is uploading.")
         return
     jid, fname, prev = row
+    p = _ACTIVE_PROCS.get(jid)
+    if p and p.returncode is None:
+        try:
+            p.kill()
+        except Exception:
+            pass
     await db.execute(
         "UPDATE download_jobs SET status='failed', error='cancelled by user', updated_at=now_text() "
         "WHERE id=? AND status IN ('queued','downloading','paused')", [jid])
-    if prev != "downloading":
+    if prev != "downloading" and jid not in _ACTIVE_PROCS:
         # No worker holds a queued/paused job → delete the partial here; a downloading job's worker
         # notices the flip within ~5 s and cleans up itself.
         shutil.rmtree(os.path.join(PIKPAK_STAGING_DIR, str(jid)), ignore_errors=True)
@@ -825,6 +863,12 @@ async def pause_download(query, db):
         await msg.reply_text("⚠️ Can't pause — this download already finished or is uploading.")
         return
     jid, fname = rs.rows[0]
+    p = _ACTIVE_PROCS.get(jid)
+    if p and p.returncode is None:
+        try:
+            p.kill()
+        except Exception:
+            pass
     try:
         await msg.edit_text(f"⏸ Paused: {fname} — progress kept; tap Resume to continue.",
                             reply_markup=_PAUSED_KB)
