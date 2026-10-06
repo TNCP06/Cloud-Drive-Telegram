@@ -28,6 +28,7 @@ from bot_config import (
     DRIVE_SPLIT_PART_MB,
     PIKPAK_MAX_BYTES,
     PIKPAK_STAGING_DIR,
+    STORAGE_CHANNEL_ID,
     TELEGRAM_API_URL,
     log,
 )
@@ -164,6 +165,7 @@ async def ensure_schema(db):
 
     # ?comment= links: the discussion-group message to import instead of the channel post.
     await db.execute("ALTER TABLE tg_import_jobs ADD COLUMN IF NOT EXISTS comment_id BIGINT")
+    await db.execute("ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS channel_msg_ids TEXT")
 
     await db.execute("CREATE INDEX IF NOT EXISTS idx_tg_import_jobs_status ON tg_import_jobs(status)")
     await db.execute("""
@@ -210,6 +212,52 @@ async def _safe_edit(chat_id: Optional[int], message_id: Optional[int], text: st
             await cli.post(url, json=payload)
     except Exception as e:
         log.debug("Failed to edit tg_import progress msg (%s, %s): %s", chat_id, message_id, e)
+
+
+async def _copy_message_to_user(chat_id: Optional[int], from_chat_id: int, message_id: int, caption: Optional[str] = None) -> bool:
+    """Copy message from storage channel to user DM via Bot API HTTP."""
+    if not chat_id or not message_id or not BOT_TOKEN:
+        return False
+    base_url = (TELEGRAM_API_URL or "https://api.telegram.org").rstrip("/")
+    url = f"{base_url}/bot{BOT_TOKEN}/copyMessage"
+    payload = {
+        "chat_id": chat_id,
+        "from_chat_id": from_chat_id,
+        "message_id": message_id,
+    }
+    if caption is not None:
+        payload["caption"] = caption[:1024]
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as cli:
+            r = await cli.post(url, json=payload)
+            data = r.json()
+            if not data.get("ok"):
+                log.warning("copyMessage API failed for msg %s -> chat %s: %s", message_id, chat_id, data.get("description"))
+                return False
+            return True
+    except Exception as e:
+        log.warning("Failed to copy message %s to chat %s: %s", message_id, chat_id, e)
+        return False
+
+
+async def _delete_message(chat_id: Optional[int], message_id: Optional[int]) -> bool:
+    """Delete message via Bot API HTTP."""
+    if not chat_id or not message_id or not BOT_TOKEN:
+        return False
+    base_url = (TELEGRAM_API_URL or "https://api.telegram.org").rstrip("/")
+    url = f"{base_url}/bot{BOT_TOKEN}/deleteMessage"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as cli:
+            r = await cli.post(url, json=payload)
+            data = r.json()
+            return bool(data.get("ok"))
+    except Exception as e:
+        log.debug("Failed to delete msg %s in chat %s: %s", message_id, chat_id, e)
+        return False
 
 
 async def _claim_next(db):
@@ -339,7 +387,7 @@ def _derive_title_tags(caption_text: str, custom_title: Optional[str], custom_ta
     return title or "", tags or ""
 
 
-async def _track_upload_jobs(db, jid: int, upload_ids: List[int], chat_id: Optional[int], msg_id: Optional[int], title: str, size: int, tags: str, dst_dir: str):
+async def _track_upload_jobs(db, jid: int, upload_ids: List[int], chat_id: Optional[int], msg_id: Optional[int], title: str, size: int, tags: str, dst_dir: str, source_captions: Optional[List[str]] = None):
     """Poll upload_jobs until all parts complete, then mark tg_import_job done and clean staging."""
     if not upload_ids:
         shutil.rmtree(dst_dir, ignore_errors=True)
@@ -398,8 +446,53 @@ async def _track_upload_jobs(db, jid: int, upload_ids: List[int], chat_id: Optio
                 f"📊 <b>Size:</b> <code>{human_size(size)}</code>\n"
                 f"🏷 <b>Tags:</b> <code>{html.escape(tags or '-')}</code>"
             )
-            await _safe_edit(chat_id, msg_id, success_text)
-            log.info("tg_import job #%s complete (all %s upload jobs done)", jid, total_jobs)
+
+            # Option A: Copy the media message(s) directly to user's chat with the original caption
+            copied_any = False
+            if chat_id:
+                try:
+                    rs_msgs = await db.execute(
+                        f"SELECT channel_msg_ids FROM upload_jobs WHERE id IN ({placeholders}) ORDER BY id ASC",
+                        upload_ids,
+                    )
+                    all_channel_msg_ids: List[int] = []
+                    for r in rs_msgs.rows:
+                        if r[0]:
+                            for mid_str in str(r[0]).split(","):
+                                mid_str = mid_str.strip()
+                                if mid_str.isdigit():
+                                    all_channel_msg_ids.append(int(mid_str))
+
+                    if all_channel_msg_ids:
+                        for idx_c, chan_mid in enumerate(all_channel_msg_ids):
+                            caption_for_msg = None
+                            if source_captions:
+                                if idx_c < len(source_captions):
+                                    caption_for_msg = source_captions[idx_c]
+                                elif len(source_captions) == 1:
+                                    caption_for_msg = source_captions[0] if idx_c == 0 else ""
+                            # Pass original caption (or "" if none, so caption contract is not leaked)
+                            ok = await _copy_message_to_user(
+                                chat_id, STORAGE_CHANNEL_ID, chan_mid,
+                                caption=(caption_for_msg if caption_for_msg is not None else "")
+                            )
+                            if ok:
+                                copied_any = True
+                            if idx_c < len(all_channel_msg_ids) - 1:
+                                await asyncio.sleep(0.3)
+                except Exception as e:
+                    log.warning("Failed to copy uploaded media to chat %s: %s", chat_id, e)
+
+            # If media was copied to user chat, delete the progress message to keep chat tidy;
+            # otherwise fall back to editing the progress message with the success summary.
+            if copied_any and msg_id:
+                deleted = await _delete_message(chat_id, msg_id)
+                if not deleted:
+                    await _safe_edit(chat_id, msg_id, success_text)
+            else:
+                await _safe_edit(chat_id, msg_id, success_text)
+
+            log.info("tg_import job #%s complete (all %s upload jobs done, copied=%s)", jid, total_jobs, copied_any)
             return
 
         now = time.monotonic()
@@ -488,10 +581,13 @@ async def _process(client, db, job):
         # 2. Extract metadata & Caption — defaults mirror the forward path (see
         #    _derive_title_tags); filename / message-date as the last resort.
         caption_text = ""
-        for m in messages_to_fetch:
-            if m.message and m.message.strip():
-                caption_text = m.message.strip()
+        source_captions = [m.message.strip() if (m.message and m.message.strip()) else "" for m in messages_to_fetch]
+        for c in source_captions:
+            if c:
+                caption_text = c
                 break
+        if caption_text and source_captions and not source_captions[0]:
+            source_captions[0] = caption_text
 
         title, tags = _derive_title_tags(caption_text, custom_title, custom_tags)
         if not title:
@@ -633,7 +729,10 @@ async def _process(client, db, job):
             f"<i>Sedang diproses oleh watcher (upload/segmentasi jika &gt;2GB)…</i>"
         )
 
-        asyncio.create_task(_track_upload_jobs(db, jid, upload_ids, chat_id, msg_id, title, total_batch_size, tags, dst_dir))
+        asyncio.create_task(_track_upload_jobs(
+            db, jid, upload_ids, chat_id, msg_id, title, total_batch_size, tags, dst_dir,
+            source_captions=source_captions,
+        ))
 
     except (asyncio.CancelledError, TgImportError) as e:
         shutil.rmtree(dst_dir, ignore_errors=True)

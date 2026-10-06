@@ -310,8 +310,8 @@ Saving Content proteksi using the MTProto worker session (`worker.session`).
 3. **Handoff to Upload Pipeline**:
    - Inserts `upload_jobs` row (`origin='upload'`, `cleanup_source=1`).
    - The watcher splits/segments if > 2 GB or uploads whole if <= 2 GB into the storage channel.
-   - The bot indexes the channel post into `items` & `parts`.
-   - The worker marks `tg_import_jobs` status as `done` and updates the bot's progress message with full details.
+   - The worker marks `tg_import_jobs` status as `done`.
+   - The bot copies the uploaded media directly to the user's chat with the original source caption (via `copyMessage` from the storage channel) and deletes the progress status message (or edits it with the summary if copy fails).
 
 
 ---

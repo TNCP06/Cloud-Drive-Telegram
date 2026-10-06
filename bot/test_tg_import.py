@@ -4,6 +4,7 @@ Run:
     python bot/test_tg_import.py
 """
 
+import asyncio
 import os
 import sys
 import types
@@ -276,6 +277,109 @@ def test_comment_target_resolution():
     assert "diskusi" in res["error"]
 
 
+def test_track_upload_jobs_copy_and_delete():
+    """Verify that _track_upload_jobs copies media messages with original caption and deletes progress message."""
+    copied = []
+    deleted = []
+    edits = []
+
+    async def fake_copy(chat_id, from_chat, mid, caption=None):
+        copied.append({"chat_id": chat_id, "from_chat": from_chat, "mid": mid, "caption": caption})
+        return True
+
+    async def fake_delete(chat_id, mid):
+        deleted.append({"chat_id": chat_id, "mid": mid})
+        return True
+
+    async def fake_edit(chat_id, mid, text, kb=None):
+        edits.append({"chat_id": chat_id, "mid": mid, "text": text})
+
+    class FakeDb:
+        def __init__(self, upload_rows, msg_rows):
+            self.upload_rows = upload_rows
+            self.msg_rows = msg_rows
+
+        async def execute(self, sql, params=None):
+            class Res:
+                def __init__(self, rows):
+                    self.rows = rows
+            if "FROM upload_jobs WHERE id IN" in sql and "channel_msg_ids" not in sql:
+                return Res(self.upload_rows)
+            elif "SELECT channel_msg_ids FROM upload_jobs" in sql:
+                return Res(self.msg_rows)
+            return Res([])
+
+    orig_copy = tg_import._copy_message_to_user
+    orig_del = tg_import._delete_message
+    orig_edit = tg_import._safe_edit
+
+    try:
+        tg_import._copy_message_to_user = fake_copy
+        tg_import._delete_message = fake_delete
+        tg_import._safe_edit = fake_edit
+
+        # Case 1: Single file with original caption
+        db = FakeDb(
+            upload_rows=[(1, "done", "uploaded")],
+            msg_rows=[("5001",)],
+        )
+        asyncio.run(tg_import._track_upload_jobs(
+            db, jid=10, upload_ids=[1], chat_id=123, msg_id=999,
+            title="Cool Video", size=1024, tags="test", dst_dir="/tmp/test_dir",
+            source_captions=["Trailer Film #action"]
+        ))
+        assert len(copied) == 1
+        assert copied[0] == {"chat_id": 123, "from_chat": tg_import.STORAGE_CHANNEL_ID, "mid": 5001, "caption": "Trailer Film #action"}
+        assert len(deleted) == 1
+        assert deleted[0] == {"chat_id": 123, "mid": 999}
+        assert len(edits) == 0
+
+        # Case 2: Multi-part segmented video (1 source message split into 2 parts)
+        copied.clear()
+        deleted.clear()
+        db = FakeDb(
+            upload_rows=[(1, "done", "uploaded"), (2, "done", "uploaded")],
+            msg_rows=[("6001",), ("6002",)],
+        )
+        asyncio.run(tg_import._track_upload_jobs(
+            db, jid=11, upload_ids=[1, 2], chat_id=123, msg_id=998,
+            title="Big Movie", size=2048, tags="hd", dst_dir="/tmp/test_dir",
+            source_captions=["Full Movie 1080p"]
+        ))
+        assert len(copied) == 2
+        assert copied[0]["mid"] == 6001 and copied[0]["caption"] == "Full Movie 1080p"
+        assert copied[1]["mid"] == 6002 and copied[1]["caption"] == ""
+        assert len(deleted) == 1
+        assert deleted[0]["mid"] == 998
+
+        # Case 3: Copy failure triggers fallback to message edit instead of delete
+        copied.clear()
+        deleted.clear()
+        edits.clear()
+
+        async def fail_copy(chat_id, from_chat, mid, caption=None):
+            return False
+
+        tg_import._copy_message_to_user = fail_copy
+        db = FakeDb(
+            upload_rows=[(1, "done", "uploaded")],
+            msg_rows=[("7001",)],
+        )
+        asyncio.run(tg_import._track_upload_jobs(
+            db, jid=12, upload_ids=[1], chat_id=123, msg_id=997,
+            title="Video", size=100, tags="", dst_dir="/tmp/test_dir",
+            source_captions=["Caption"]
+        ))
+        assert len(deleted) == 0
+        assert len(edits) == 1
+        assert "Berhasil diimpor ke Cloud Drive" in edits[0]["text"]
+
+    finally:
+        tg_import._copy_message_to_user = orig_copy
+        tg_import._delete_message = orig_del
+        tg_import._safe_edit = orig_edit
+
+
 if __name__ == "__main__":
     test_parse_tg_links()
     test_parse_import_command()
@@ -283,4 +387,5 @@ if __name__ == "__main__":
     test_derive_title_tags()
     test_inspect_message_meta()
     test_comment_target_resolution()
+    test_track_upload_jobs_copy_and_delete()
     print("All tg_import tests passed!")

@@ -230,8 +230,13 @@ async def set_progress(db, jid, pct):
     )
 
 
-async def set_status(db, jid, status, message, pct=None):
-    if pct is None:
+async def set_status(db, jid, status, message, pct=None, channel_msg_ids=None):
+    if channel_msg_ids is not None:
+        await db.execute(
+            "UPDATE upload_jobs SET status=?, message=?, progress=COALESCE(?, progress), channel_msg_ids=?, updated_at=now_text() WHERE id=?",
+            [status, message, pct, channel_msg_ids, jid],
+        )
+    elif pct is None:
         await db.execute(
             "UPDATE upload_jobs SET status=?, message=?, updated_at=now_text() WHERE id=?",
             [status, message, jid],
@@ -725,6 +730,7 @@ async def process(client, db, channel, job):
                          title=part_title, tags=tags, part_no=part_no,
                          total=part_total, kind=kind, is_private=is_private,
                     )
+                    uploaded_msg_ids.append(msg_id)
                     if video_segments:
                         if own_thumb:
                             try:
@@ -738,8 +744,6 @@ async def process(client, db, channel, job):
                                     os.remove(own_thumb)
                                 except OSError:
                                     pass
-                    else:
-                        uploaded_msg_ids.append(msg_id)
                     state["pct"] = min(99, int(i / total * 100))
                     if p in temp_parts:
                         try:
@@ -776,7 +780,10 @@ async def process(client, db, channel, job):
             removed += 1
 
         msg = f"{total} part(s) uploaded" + (f" — cleaned up {removed} file(s)" if removed else "")
-        await set_status(db, jid, "done", msg, 100)
+        await set_status(
+            db, jid, "done", msg, 100,
+            channel_msg_ids=",".join(str(m) for m in uploaded_msg_ids) if uploaded_msg_ids else None,
+        )
         succeeded = True
         print(f"  ✓ Job #{jid} done. {msg}")
     except Exception as e:  # noqa: BLE001
