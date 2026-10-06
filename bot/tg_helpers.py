@@ -49,12 +49,18 @@ def parse_caption(caption: str | None):
     m = CAPTION_RE.match(caption.strip())
     if not m:
         return None
-    tags = [t.strip() for t in m.group("tags").split(",") if t.strip()]
+    raw_tags = m.group("tags").strip()
+    if "," in raw_tags:
+        tags = [t.strip("#＃ ").strip() for t in raw_tags.split(",") if t.strip()]
+    elif raw_tags:
+        tags = [t.lstrip("#＃").strip("_-") for t in re.findall(r"[#＃][\w-]+|\w+", raw_tags) if t.strip()]
+    else:
+        tags = []
     return {
         "title": m.group("title").strip(),
         "part": int(m.group("part")),
         "total": int(m.group("total")),
-        "tags": tags,
+        "tags": list(dict.fromkeys(tags)),
     }
 
 
@@ -105,9 +111,10 @@ def get_file_id(message) -> str | None:
 
 
 def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
-    """Extract clean title and tags from a free-form caption.
+    """Extract clean title and tags from a free-form caption or filename.
 
-    - Hashtags (#tag) are extracted into tags (deduplicated, preserving order).
+    - Hashtags (#tag or ＃tag) are extracted into tags (deduplicated, preserving order).
+    - Handles hyphenated and decorated tags (#hp-backup, 【_#tag_】).
     - Promotional links (http://..., https://..., t.me/..., @channel) are stripped.
     - Pipe characters '|' are converted to '-' to prevent corrupting caption contracts.
     - Scans across lines to find the first meaningful text line for title.
@@ -120,7 +127,11 @@ def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
     text = caption.strip()
 
     # 1. Extract hashtags (preserving encounter order without duplicates)
-    raw_tags = [t.lstrip("#") for t in re.findall(r"#\w+", text)]
+    raw_tags = []
+    for m in re.finditer(r"[#＃][\w-]+", text):
+        t = m.group(0).lstrip("#＃").strip("_-")
+        if t:
+            raw_tags.append(t)
     tags: list[str] = list(dict.fromkeys(raw_tags))
 
     # 2. Extract title: scan lines from top to bottom
@@ -129,12 +140,14 @@ def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
         # Remove URLs and telegram username handles
         cleaned = re.sub(r"https?://\S+|t\.me/\S+", "", line)
         cleaned = re.sub(r"@\w+", "", cleaned)
-        # Remove hashtags
-        cleaned = re.sub(r"#\w+", "", cleaned)
+        # Remove hashtags (including optional underscore wrappers e.g. _#tag_)
+        cleaned = re.sub(r"_?[#＃][\w-]+_?", "", cleaned)
+        # Remove empty brackets leftover from stripped hashtags
+        cleaned = re.sub(r"【[_\s]*】|\[[_\s]*\]|\([_\s]*\)|<[_\s]*>", "", cleaned)
         # Replace pipe '|' with '-' to avoid collision with Title | part/total | tags
         cleaned = cleaned.replace("|", "-")
-        # Strip common decorative bullet/border characters and whitespace
-        cleaned = cleaned.strip(" \t\r\n-|•~*_")
+        # Normalize whitespace and strip common decorative bullet/border characters
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" \t\r\n-|•~*")
         if cleaned:
             title = cleaned[:120].strip(" -|")
             break
@@ -151,16 +164,24 @@ def derive_media_meta(message):
 
     Always produces a title (never None) so media is never lost.
     Returns (parsed_dict, has_caption); has_caption=True when the title came from
-    the actual caption — used so album members WITHOUT a caption don't overwrite
+    an explicit caption — used so album members WITHOUT a caption don't overwrite
     the title set by the member that HAS one (album update order is not guaranteed).
+    Also scans filename for hashtags so tags are never lost even if the caption is absent.
     """
     caption = getattr(message, "caption", None) or getattr(message, "message", None) or ""
     title, tags = extract_caption_meta(caption)
     has_caption = title is not None
-    if not title:
-        file_name, _ = get_file_meta(message)
-        if file_name:
-            title = os.path.splitext(os.path.basename(file_name))[0]
+
+    file_name, _ = get_file_meta(message)
+    if file_name:
+        fn_stem = os.path.splitext(os.path.basename(file_name))[0]
+        fn_title, fn_tags = extract_caption_meta(fn_stem)
+        if not title and fn_title:
+            title = fn_title
+        for t in fn_tags:
+            if t not in tags:
+                tags.append(t)
+
     if not title:
         msg_date = getattr(message, "date", None)
         date_str = f"{msg_date:%Y-%m-%d}" if msg_date else "Unknown"

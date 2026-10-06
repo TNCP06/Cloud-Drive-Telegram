@@ -174,9 +174,76 @@ def test_derive_title_tags():
     assert t == "Cool Video Clip"
     assert g == "viral"
 
+    # Full-width Chinese hash ＃ is recognized
+    t, g = tg_import._derive_title_tags("＃奶妹 作品合集", None, None)
+    assert t == "作品合集"
+    assert g == "奶妹"
+
+    # Hyphenated tags (e.g. hp-backup)
+    t, g = tg_import._derive_title_tags("#hp-backup #my-tag Backup Archive", None, None)
+    assert t == "Backup Archive"
+    assert g == "hp-backup, my-tag"
+
+    # Decorative bracket wrapper around hashtag
+    t, g = tg_import._derive_title_tags("【_#玫瑰_】萝莉少女_听话乖巧", None, None)
+    assert t == "萝莉少女_听话乖巧"
+    assert g == "玫瑰"
+
+    # Preserves parenthesis in title while extracting hashtag
+    t, g = tg_import._derive_title_tags("Naimei0727 #奶妹 (2)", None, None)
+    assert t == "Naimei0727 (2)"
+    assert g == "奶妹"
+
     # No caption at all → empty defaults (caller falls back to filename/date)
     t, g = tg_import._derive_title_tags("", None, None)
     assert t == "" and g == ""
+
+
+def test_filename_tags_and_batch_meta():
+    from unittest.mock import MagicMock
+    from tg_helpers import derive_media_meta, parse_caption
+
+    # 1. Filename with hashtags and empty caption extracts title and tags
+    msg = MagicMock()
+    msg.caption = None
+    msg.message = None
+    msg.document = MagicMock()
+    msg.document.file_name = "Naimei0727 #奶妹 (2).MOV"
+    msg.document.file_size = 12345
+    msg.video = None
+    msg.animation = None
+    msg.photo = None
+    msg.date = None
+
+    meta, has_caption = derive_media_meta(msg)
+    assert meta["title"] == "Naimei0727 (2)"
+    assert meta["tags"] == ["奶妹"]
+    assert has_caption is False
+
+    # 2. Contract caption with space-separated hashtags in tags segment
+    p = parse_caption("Action Show | 1/1 | #action #comedy")
+    assert p["title"] == "Action Show"
+    assert p["tags"] == ["action", "comedy"]
+
+    # 3. Batch metadata accumulation across multiple messages and filenames
+    class DummyFile:
+        def __init__(self, name):
+            self.name = name
+
+    class DummyMsg:
+        def __init__(self, message, fname):
+            self.message = message
+            self.file = DummyFile(fname) if fname else None
+            self.date = None
+
+    batch = [
+        DummyMsg("Great Album Title", "part1.mp4"),
+        DummyMsg("#anime #japan", "part2.mp4"),
+        DummyMsg("", "bonus #ost.mp3"),
+    ]
+    t, g = tg_import._extract_batch_meta(batch)
+    assert t == "Great Album Title"
+    assert g == "anime, japan, ost"
 
 
 def test_inspect_message_meta():

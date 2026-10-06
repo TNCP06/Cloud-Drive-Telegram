@@ -58,6 +58,7 @@ from tg_helpers import (  # noqa: F401  (re-exported)
     get_file_meta,
     get_file_id,
     derive_media_meta,
+    extract_caption_meta,
     pick_thumb_file_id,
     encode_thumbnail,
 )
@@ -1221,29 +1222,39 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             active_upload.setdefault("messages", []).append(message)
             if file_size:
                 active_upload["file_size"] += file_size
-            if not active_upload.get("has_caption"):
-                member_meta, member_has_caption = derive_media_meta(message)
-                if member_has_caption:
+            member_meta, member_has_caption = derive_media_meta(message)
+            for t in member_meta.get("tags") or []:
+                if t not in active_upload.setdefault("auto_tags", []):
+                    active_upload["auto_tags"].append(t)
+
+            cur_has_caption = active_upload.get("has_caption", False)
+            title_updated = False
+            if member_has_caption:
+                if not cur_has_caption:
                     active_upload["has_caption"] = True
                     active_upload["auto_title"] = member_meta["title"]
-                    active_upload["auto_tags"] = member_meta["tags"]
-                    prompt_ids = active_upload.get("flow_msg_ids") or []
-                    if prompt_ids and context.user_data.get("upload_state") == "WAITING_TITLE":
-                        btn_title = member_meta["title"]
-                        if len(btn_title) > 40:
-                            btn_title = btn_title[:37] + "..."
-                        keyboard = [
-                            [InlineKeyboardButton(f"✨ Use Auto Title: {btn_title}", callback_data="upload:skip_title")],
-                            [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
-                        ]
-                        try:
-                            await context.bot.edit_message_reply_markup(
-                                chat_id=message.chat_id,
-                                message_id=prompt_ids[0],
-                                reply_markup=InlineKeyboardMarkup(keyboard),
-                            )
-                        except Exception:
-                            pass
+                    title_updated = True
+                elif active_upload["auto_title"] in (active_upload.get("auto_tags") or []) and member_meta["title"] not in (active_upload.get("auto_tags") or []):
+                    active_upload["auto_title"] = member_meta["title"]
+                    title_updated = True
+
+            prompt_ids = active_upload.get("flow_msg_ids") or []
+            if prompt_ids and context.user_data.get("upload_state") == "WAITING_TITLE" and title_updated:
+                btn_title = active_upload["auto_title"]
+                if len(btn_title) > 40:
+                    btn_title = btn_title[:37] + "..."
+                keyboard = [
+                    [InlineKeyboardButton(f"✨ Use Auto Title: {btn_title}", callback_data="upload:skip_title")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
+                ]
+                try:
+                    await context.bot.edit_message_reply_markup(
+                        chat_id=message.chat_id,
+                        message_id=prompt_ids[0],
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                    )
+                except Exception:
+                    pass
             return
 
         # Check if this belongs to an item already in the queue
@@ -1257,12 +1268,19 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     item.setdefault("messages", []).append(message)
                     if file_size:
                         item["file_size"] += file_size
-                    if not item.get("has_caption"):
-                        member_meta, member_has_caption = derive_media_meta(message)
-                        if member_has_caption:
+
+                    member_meta, member_has_caption = derive_media_meta(message)
+                    for t in member_meta.get("tags") or []:
+                        if t not in item.setdefault("auto_tags", []):
+                            item["auto_tags"].append(t)
+
+                    cur_has = item.get("has_caption", False)
+                    if member_has_caption:
+                        if not cur_has:
                             item["has_caption"] = True
                             item["auto_title"] = member_meta["title"]
-                            item["auto_tags"] = member_meta["tags"]
+                        elif item["auto_title"] in (item.get("auto_tags") or []) and member_meta["title"] not in (item.get("auto_tags") or []):
+                            item["auto_title"] = member_meta["title"]
                     return
 
         # Otherwise, add it as a new item in the queue
@@ -1813,7 +1831,12 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if state == "WAITING_TITLE":
-        context.user_data["upload_file"]["title"] = text
+        typed_title, typed_tags = extract_caption_meta(text)
+        context.user_data["upload_file"]["title"] = typed_title or text
+        auto_tags = context.user_data["upload_file"].setdefault("auto_tags", [])
+        for t in typed_tags:
+            if t not in auto_tags:
+                auto_tags.append(t)
         # The user's typed Title reply is questionnaire noise — clean it up on finish.
         context.user_data["upload_file"].setdefault("flow_msg_ids", []).append(message.message_id)
         await prompt_for_tags(update, context)

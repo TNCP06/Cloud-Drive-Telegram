@@ -387,6 +387,52 @@ def _derive_title_tags(caption_text: str, custom_title: Optional[str], custom_ta
     return title or "", tags or ""
 
 
+def _extract_batch_meta(messages: list, custom_title: Optional[str] = None, custom_tags: Optional[str] = None) -> Tuple[str, str]:
+    """Scan a batch of Telethon messages and filenames to extract best title and all tags."""
+    all_tags: list[str] = []
+    if custom_tags:
+        all_tags.extend([t.strip() for t in custom_tags.split(",") if t.strip()])
+    best_title = custom_title
+
+    for m in messages:
+        c = (getattr(m, "message", None) or getattr(m, "caption", None) or "").strip()
+        fname = getattr(getattr(m, "file", None), "name", None)
+        if c:
+            parsed = parse_caption(c)
+            if parsed:
+                if not best_title:
+                    best_title = parsed["title"]
+                for t in parsed["tags"]:
+                    if t not in all_tags:
+                        all_tags.append(t)
+            else:
+                c_title, c_tags = extract_caption_meta(c)
+                if not best_title and c_title:
+                    best_title = c_title
+                elif best_title and best_title in all_tags and c_title and c_title not in c_tags:
+                    best_title = c_title
+                for t in c_tags:
+                    if t not in all_tags:
+                        all_tags.append(t)
+        if fname:
+            fn_stem = os.path.splitext(fname)[0]
+            fn_title, fn_tags = extract_caption_meta(fn_stem)
+            if not best_title and fn_title:
+                best_title = fn_title
+            for t in fn_tags:
+                if t not in all_tags:
+                    all_tags.append(t)
+
+    if not best_title and messages:
+        first_fname = getattr(getattr(messages[0], "file", None), "name", None)
+        msg_date = getattr(messages[0], "date", None)
+        date_str = f"{msg_date:%Y-%m-%d}" if msg_date else "Unknown"
+        best_title = (os.path.splitext(first_fname)[0] if first_fname
+                      else f"Media {date_str}")
+
+    return best_title or "", ", ".join(all_tags)
+
+
 async def _track_upload_jobs(db, jid: int, upload_ids: List[int], chat_id: Optional[int], msg_id: Optional[int], title: str, size: int, tags: str, dst_dir: str, source_captions: Optional[List[str]] = None):
     """Poll upload_jobs until all parts complete, then mark tg_import_job done and clean staging."""
     if not upload_ids:
@@ -579,21 +625,9 @@ async def _process(client, db, job):
                 log.warning("Album check failed for msg %s: %s", target_msg_id, e)
 
         # 2. Extract metadata & Caption — defaults mirror the forward path (see
-        #    _derive_title_tags); filename / message-date as the last resort.
-        caption_text = ""
+        #    _extract_batch_meta); filename / message-date as the last resort.
         source_captions = [m.message.strip() if (m.message and m.message.strip()) else "" for m in messages_to_fetch]
-        for c in source_captions:
-            if c:
-                caption_text = c
-                break
-        if caption_text and source_captions and not source_captions[0]:
-            source_captions[0] = caption_text
-
-        title, tags = _derive_title_tags(caption_text, custom_title, custom_tags)
-        if not title:
-            first_fname = getattr(messages_to_fetch[0].file, "name", None)
-            title = (os.path.splitext(first_fname)[0] if first_fname
-                     else f"Media {messages_to_fetch[0].date:%Y-%m-%d}")
+        title, tags = _extract_batch_meta(messages_to_fetch, custom_title, custom_tags)
 
         # 3. Create staging destination (clean any stale files from previous attempts)
         shutil.rmtree(dst_dir, ignore_errors=True)
@@ -786,17 +820,7 @@ async def inspect_message_meta(client, target_chat: str, target_msg_id: int, com
         except Exception as e:
             log.warning("Album check failed during inspect for msg %s: %s", target_msg_id, e)
 
-    caption_text = ""
-    for m in messages_to_fetch:
-        if m.message and m.message.strip():
-            caption_text = m.message.strip()
-            break
-
-    title, tags = _derive_title_tags(caption_text, None, None)
-    if not title:
-        first_fname = getattr(messages_to_fetch[0].file, "name", None)
-        title = (os.path.splitext(first_fname)[0] if first_fname
-                 else f"Media {messages_to_fetch[0].date:%Y-%m-%d}")
+    title, tags = _extract_batch_meta(messages_to_fetch)
 
     total_batch_size = sum(int(getattr(m.file, "size", 0) or getattr(m, "size", 0) or 0) for m in messages_to_fetch)
     first_fname = getattr(messages_to_fetch[0].file, "name", None)
