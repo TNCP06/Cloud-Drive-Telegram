@@ -1133,7 +1133,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _delete_messages(context, message.chat_id, [stale_prompt])
 
     file_name, file_size = get_file_meta(message)
-    auto_meta, _ = derive_media_meta(message)
+    auto_meta, auto_has_caption = derive_media_meta(message)
 
     # Check if the file already has a valid caption contract matching Title | part/total | tags
     caption_meta = parse_caption(message.caption)
@@ -1221,6 +1221,29 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             active_upload.setdefault("messages", []).append(message)
             if file_size:
                 active_upload["file_size"] += file_size
+            if not active_upload.get("has_caption"):
+                member_meta, member_has_caption = derive_media_meta(message)
+                if member_has_caption:
+                    active_upload["has_caption"] = True
+                    active_upload["auto_title"] = member_meta["title"]
+                    active_upload["auto_tags"] = member_meta["tags"]
+                    prompt_ids = active_upload.get("flow_msg_ids") or []
+                    if prompt_ids and context.user_data.get("upload_state") == "WAITING_TITLE":
+                        btn_title = member_meta["title"]
+                        if len(btn_title) > 40:
+                            btn_title = btn_title[:37] + "..."
+                        keyboard = [
+                            [InlineKeyboardButton(f"✨ Use Auto Title: {btn_title}", callback_data="upload:skip_title")],
+                            [InlineKeyboardButton("❌ Cancel", callback_data="upload:cancel")]
+                        ]
+                        try:
+                            await context.bot.edit_message_reply_markup(
+                                chat_id=message.chat_id,
+                                message_id=prompt_ids[0],
+                                reply_markup=InlineKeyboardMarkup(keyboard),
+                            )
+                        except Exception:
+                            pass
             return
 
         # Check if this belongs to an item already in the queue
@@ -1234,6 +1257,12 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     item.setdefault("messages", []).append(message)
                     if file_size:
                         item["file_size"] += file_size
+                    if not item.get("has_caption"):
+                        member_meta, member_has_caption = derive_media_meta(message)
+                        if member_has_caption:
+                            item["has_caption"] = True
+                            item["auto_title"] = member_meta["title"]
+                            item["auto_tags"] = member_meta["tags"]
                     return
 
         # Otherwise, add it as a new item in the queue
@@ -1247,6 +1276,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "file_size": file_size,
             "auto_title": auto_meta["title"],
             "auto_tags": auto_meta["tags"],
+            "has_caption": auto_has_caption,
         }
         context.user_data["upload_queue"].append(queue_item)
         pos = len(context.user_data["upload_queue"])
@@ -1277,6 +1307,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "file_size": file_size,
         "auto_title": auto_title,
         "auto_tags": auto_tags,
+        "has_caption": auto_has_caption,
     }
     context.user_data["upload_state"] = "WAITING_TITLE"
 

@@ -31,7 +31,7 @@ from bot_config import (
     TELEGRAM_API_URL,
     log,
 )
-from tg_helpers import parse_caption, human_size, format_eta as _fmt_eta, MEDIA_EXTS as _MEDIA_EXTS
+from tg_helpers import parse_caption, human_size, format_eta as _fmt_eta, MEDIA_EXTS as _MEDIA_EXTS, extract_caption_meta
 
 POLL_INTERVAL = 3
 PROGRESS_THROTTLE_S = 4.0
@@ -318,9 +318,9 @@ def _sanitize_filename(name: str) -> str:
 
 def _derive_title_tags(caption_text: str, custom_title: Optional[str], custom_tags: Optional[str]) -> Tuple[str, str]:
     """Default Title/Tags from a source caption, mirroring the forward path
-    (bot.py: parse_caption contract first, else derive_media_meta semantics):
+    (bot.py: parse_caption contract first, else extract_caption_meta semantics):
     a contract caption supplies title+tags; any free-form caption contributes
-    its hashtags as tags and its hashtag-free first line as the title — even
+    its hashtags as tags and its clean text as the title — even
     when a custom Title was supplied."""
     title, tags = custom_title, custom_tags
 
@@ -331,12 +331,11 @@ def _derive_title_tags(caption_text: str, custom_title: Optional[str], custom_ta
         if not tags:
             tags = ", ".join(parsed["tags"])
     elif caption_text:
-        hash_tags = [t.lstrip("#") for t in re.findall(r"#\w+", caption_text)]
-        if not tags and hash_tags:
-            tags = ", ".join(hash_tags)
-        if not title:
-            first = re.sub(r"#\w+", "", caption_text.splitlines()[0]).strip(" -|")
-            title = first[:120] or None
+        auto_title, auto_tags = extract_caption_meta(caption_text)
+        if not tags and auto_tags:
+            tags = ", ".join(auto_tags)
+        if not title and auto_title:
+            title = auto_title
     return title or "", tags or ""
 
 

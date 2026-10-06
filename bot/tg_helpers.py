@@ -104,6 +104,48 @@ def get_file_id(message) -> str | None:
     return None
 
 
+def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
+    """Extract clean title and tags from a free-form caption.
+
+    - Hashtags (#tag) are extracted into tags (deduplicated, preserving order).
+    - Promotional links (http://..., https://..., t.me/..., @channel) are stripped.
+    - Pipe characters '|' are converted to '-' to prevent corrupting caption contracts.
+    - Scans across lines to find the first meaningful text line for title.
+    - If no text remains outside hashtags, falls back to the first hashtag as title.
+    - Limits title to 120 chars.
+    """
+    if not caption or not caption.strip():
+        return None, []
+
+    text = caption.strip()
+
+    # 1. Extract hashtags (preserving encounter order without duplicates)
+    raw_tags = [t.lstrip("#") for t in re.findall(r"#\w+", text)]
+    tags: list[str] = list(dict.fromkeys(raw_tags))
+
+    # 2. Extract title: scan lines from top to bottom
+    title = None
+    for line in text.splitlines():
+        # Remove URLs and telegram username handles
+        cleaned = re.sub(r"https?://\S+|t\.me/\S+", "", line)
+        cleaned = re.sub(r"@\w+", "", cleaned)
+        # Remove hashtags
+        cleaned = re.sub(r"#\w+", "", cleaned)
+        # Replace pipe '|' with '-' to avoid collision with Title | part/total | tags
+        cleaned = cleaned.replace("|", "-")
+        # Strip common decorative bullet/border characters and whitespace
+        cleaned = cleaned.strip(" \t\r\n-|•~*_")
+        if cleaned:
+            title = cleaned[:120].strip(" -|")
+            break
+
+    # 3. Fallback: if caption was purely hashtags / links, use the first tag as title
+    if not title and tags:
+        title = tags[0][:120]
+
+    return title or None, tags
+
+
 def derive_media_meta(message):
     """Fallback metadata for MEDIA whose caption doesn't match the contract.
 
@@ -112,23 +154,17 @@ def derive_media_meta(message):
     the actual caption — used so album members WITHOUT a caption don't overwrite
     the title set by the member that HAS one (album update order is not guaranteed).
     """
-    caption = message.caption
-    tags: list[str] = []
-    title = None
-    if caption and caption.strip():
-        text = caption.strip()
-        # Hashtags often appear in forwarded content → treat them as tags.
-        tags = [t.lstrip("#") for t in re.findall(r"#\w+", text)]
-        # Title = first line without hashtags, trimmed.
-        first = re.sub(r"#\w+", "", text.splitlines()[0]).strip(" -|")
-        title = first[:120] or None
+    caption = getattr(message, "caption", None) or getattr(message, "message", None) or ""
+    title, tags = extract_caption_meta(caption)
     has_caption = title is not None
     if not title:
         file_name, _ = get_file_meta(message)
         if file_name:
             title = os.path.splitext(os.path.basename(file_name))[0]
     if not title:
-        title = f"Media {message.date:%Y-%m-%d}"
+        msg_date = getattr(message, "date", None)
+        date_str = f"{msg_date:%Y-%m-%d}" if msg_date else "Unknown"
+        title = f"Media {date_str}"
     return {"title": title, "part": 1, "total": 1, "tags": tags}, has_caption
 
 

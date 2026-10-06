@@ -153,6 +153,26 @@ def test_derive_title_tags():
     t, g = tg_import._derive_title_tags("#anime something long\nsecond line", "T", None)
     assert t == "T" and g == "anime"
 
+    # Free-form caption with hashtags on first line, title on second line
+    t, g = tg_import._derive_title_tags("#anime #hd\nNew release ep 1\nEpisode details here", None, None)
+    assert t == "New release ep 1"
+    assert g == "anime, hd"
+
+    # Pipe in free-form title converted to hyphen (contract safe)
+    t, g = tg_import._derive_title_tags("Great Movie | 2024\n#action #thriller", None, None)
+    assert t == "Great Movie - 2024"
+    assert g == "action, thriller"
+
+    # Pure hashtag caption falls back to first hashtag as title
+    t, g = tg_import._derive_title_tags("#OnePiece #Anime", None, None)
+    assert t == "OnePiece"
+    assert g == "OnePiece, Anime"
+
+    # Promotional URL and username handle stripped
+    t, g = tg_import._derive_title_tags("https://t.me/channel @mychan\nCool Video Clip\n#viral", None, None)
+    assert t == "Cool Video Clip"
+    assert g == "viral"
+
     # No caption at all → empty defaults (caller falls back to filename/date)
     t, g = tg_import._derive_title_tags("", None, None)
     assert t == "" and g == ""

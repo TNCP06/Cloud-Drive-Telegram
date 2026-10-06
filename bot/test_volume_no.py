@@ -22,6 +22,9 @@ for name in ("telethon", "pg_db", "dotenv", "worker"):
 sys.modules["telethon"].TelegramClient = object
 sys.modules["telethon.errors"] = types.ModuleType("telethon.errors")
 sys.modules["telethon.errors"].FloodError = type("FloodError", (Exception,), {})
+sys.modules["telethon.tl"] = types.ModuleType("telethon.tl")
+sys.modules["telethon.tl.functions"] = types.ModuleType("telethon.tl.functions")
+sys.modules["telethon.tl"].functions = sys.modules["telethon.tl.functions"]
 sys.modules["pg_db"].create_client = lambda *a, **k: None
 sys.modules["pg_db"].database_url = lambda *a, **k: "postgresql://x/x"
 sys.modules["dotenv"].load_dotenv = lambda *a, **k: None
