@@ -193,7 +193,7 @@ function folderMeta(itemCount?: number, subfolderCount?: number): string {
   return parts.join(" · ");
 }
 
-/** Version badge (e.g. "v0.6.0") + optional "N versions" button. */
+/** Version badge (e.g. "v0.6.0" or "1080p") + optional "N versions / N qualities" button. */
 function VersionBadge({
   item,
   versionCount,
@@ -201,19 +201,21 @@ function VersionBadge({
 }: Pick<ItemProps, "item" | "versionCount" | "onPickFamily">) {
   if (!item.version) return null;
   const more = (versionCount ?? 1) > 1;
+  const isMedia = item.kind === "media";
+  const unit = isMedia ? "qualities" : "versions";
   return (
     <span className="verwrap">
       <span className="ver">{item.version}</span>
       {more && onPickFamily && (
         <button
           className="vermore"
-          title="Show all versions"
+          title={isMedia ? "Show all qualities" : "Show all versions"}
           onClick={(e) => {
             e.stopPropagation();
             onPickFamily(item.family);
           }}
         >
-          {versionCount} versions
+          {versionCount} {unit}
         </button>
       )}
     </span>

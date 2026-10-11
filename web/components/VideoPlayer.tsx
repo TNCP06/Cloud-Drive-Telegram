@@ -115,15 +115,25 @@ function langLabel(code: string): string {
  * contain` rectangle, falling back to the poster's aspect ratio before the
  * video's own dimensions are known (i.e. while still loading).
  */
+export interface VideoQualityOption {
+  quality: number; // e.g. 1080, 720, 480
+  label: string;   // e.g. "1080p", "720p", "480p"
+  partId: number;  // parts.id for /api/stream/:partId
+  src: string;     // "/api/stream/:partId"
+  size?: number;   // file size in bytes
+}
+
 export function VideoPlayer({
   src,
   poster,
   partId,
+  qualities,
   onToggleFullscreen,
 }: {
   src: string;
   poster?: string;
   partId?: number;
+  qualities?: VideoQualityOption[];
   onToggleFullscreen?: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -231,6 +241,11 @@ export function VideoPlayer({
       // Decide which caption language to auto-activate from the saved global preference.
       const chosenLang = pickCaptionLang(captionLangs, readSubPref());
 
+      // Quality configuration (HTML5 multi-source quality selection)
+      const hasQualities = !!(qualities && qualities.length > 1);
+      const qualityOptions = hasQualities ? qualities.map((q) => q.quality) : [];
+      const defaultQuality = hasQualities ? qualityOptions[0] : undefined;
+
       player = new PlyrCtor(videoRef.current, {
         seekTime: 5, // ←/→ seek by 5 seconds
         clickToPlay: false, // we split frame-click (play) vs letterbox-click (close)
@@ -238,7 +253,14 @@ export function VideoPlayer({
         storage: { enabled: false }, // we manage volume/mute + caption-lang persistence ourselves
         fullscreen: { enabled: true, fallback: false },
         captions: { active: chosenLang != null, language: chosenLang ?? "auto", update: true },
-        settings: ["captions", "speed"],
+        settings: hasQualities ? ["quality", "captions", "speed"] : ["captions", "speed"],
+        quality: hasQualities
+          ? {
+              default: defaultQuality ?? qualityOptions[0] ?? 1080,
+              options: qualityOptions,
+              forced: false,
+            }
+          : undefined,
         controls: [
           "play-large",
           "play",
@@ -268,6 +290,7 @@ export function VideoPlayer({
           exitFullscreen: "Fullscreen (F)",
           pip: "Miniplayer (I)",
           settings: "Settings",
+          quality: "Quality",
         },
         previewThumbnails:
           previewReady && partId ? { enabled: true, src: `/api/seek-preview/${partId}` } : { enabled: false },
@@ -355,8 +378,21 @@ export function VideoPlayer({
       // Resume from the last watched position and keep it up to date while playing. Seek once the
       // duration is known (loadedmetadata); autoplay then continues from there instead of the start.
       if (partId != null) {
+        const qualityPartIds = qualities?.map((q) => q.partId);
+        let hasResumed = false;
         const resume = () => {
-          const saved = readProgress(partId);
+          if (hasResumed) return;
+          hasResumed = true;
+          let saved = readProgress(partId);
+          if (saved == null && qualityPartIds) {
+            for (const qId of qualityPartIds) {
+              const p = readProgress(qId);
+              if (p != null) {
+                saved = p;
+                break;
+              }
+            }
+          }
           const dur = videoRef.current?.duration ?? 0;
           if (saved != null && saved > RESUME_MIN_S && (!dur || saved < dur - RESUME_TAIL_S)) {
             try {
@@ -367,17 +403,30 @@ export function VideoPlayer({
         player.on("loadedmetadata", resume);
         if ((videoRef.current?.readyState ?? 0) >= 1) resume(); // metadata already loaded
 
+        const saveProg = () => {
+          if (!player) return;
+          const cur = player.currentTime;
+          const dur = videoRef.current?.duration ?? 0;
+          writeProgress(partId, cur, dur);
+          if (qualityPartIds) {
+            for (const qId of qualityPartIds) writeProgress(qId, cur, dur);
+          }
+        };
+
         let lastSave = 0;
         player.on("timeupdate", () => {
           const now = Date.now();
           if (!player || now - lastSave < 5000) return; // throttle (timeupdate fires ~4×/s)
           lastSave = now;
-          writeProgress(partId, player.currentTime, videoRef.current?.duration ?? 0);
+          saveProg();
         });
-        player.on("pause", () => {
-          if (player) writeProgress(partId, player.currentTime, videoRef.current?.duration ?? 0);
-        });
-        player.on("ended", () => clearProgress(partId)); // watched to the end → next open restarts
+        player.on("pause", saveProg);
+        player.on("ended", () => {
+          clearProgress(partId);
+          if (qualityPartIds) {
+            for (const qId of qualityPartIds) clearProgress(qId);
+          }
+        }); // watched to the end → next open restarts
       }
 
       // Live subtitle loading: a just-opened/just-uploaded video is subtitled on demand by the
@@ -428,14 +477,19 @@ export function VideoPlayer({
       // Save the position on close/source-switch so reopening resumes from the exact spot.
       try {
         if (partId != null && player) {
-          writeProgress(partId, player.currentTime, video?.duration ?? 0);
+          const cur = player.currentTime;
+          const dur = video?.duration ?? 0;
+          writeProgress(partId, cur, dur);
+          if (qualities) {
+            for (const q of qualities) writeProgress(q.partId, cur, dur);
+          }
         }
       } catch {}
       try {
         player?.destroy();
       } catch {}
     };
-  }, [src, partId]);
+  }, [src, partId, qualities]);
 
   const handleClick = (e: React.MouseEvent) => {
     // The player sits inside .viewer-stage (whose click closes the viewer); stop
@@ -488,7 +542,25 @@ export function VideoPlayer({
 
   return (
     <div className="viewer-video" onClick={handleClick}>
-      <video ref={videoRef} src={src} poster={poster} autoPlay playsInline preload="metadata" />
+      <video
+        ref={videoRef}
+        src={qualities && qualities.length > 1 ? undefined : src}
+        poster={poster}
+        autoPlay
+        playsInline
+        preload="metadata"
+      >
+        {qualities &&
+          qualities.length > 1 &&
+          qualities.map((q) => (
+            <source
+              key={q.partId}
+              src={q.src}
+              type="video/mp4"
+              {...({ size: q.quality } as Record<string, unknown>)}
+            />
+          ))}
+      </video>
     </div>
   );
 }

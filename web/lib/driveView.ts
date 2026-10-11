@@ -3,6 +3,7 @@
 // component stays focused on wiring/state and these side-effect-free pieces stay unit-testable.
 import { relGroup } from "@/lib/format";
 import { fileTypeFor } from "@/lib/fileType";
+import { parseMediaQuality, parseTitle } from "@/lib/version";
 import type { DriveFile, Tag, Folder } from "@/lib/types";
 
 /* ---- Group by (Windows-Explorer-style section grouping) ----
@@ -130,7 +131,37 @@ export function fileReducer(state: DriveFile[], a: FileAction): DriveFile[] {
     case "remove":
       return state.filter((f) => !a.ids.includes(f.id));
     case "meta":
-      return state.map((f) => (f.id === a.id ? { ...f, name: a.title, family: a.title, kind: a.kind } : f));
+      return state.map((f) => {
+        if (f.id !== a.id) return f;
+        let family = a.title;
+        let familyKey = f.slug;
+        let version: string | null = null;
+        let quality: number | null = null;
+        let qualityLabel: string | null = null;
+        if (a.kind === "archive") {
+          const tp = parseTitle(a.title);
+          family = tp.family;
+          familyKey = tp.familyKey;
+          version = tp.version;
+        } else if (a.kind === "media") {
+          const qp = parseMediaQuality(a.title, f.folderId, f.slug);
+          family = qp.family;
+          familyKey = qp.familyKey;
+          version = qp.version;
+          quality = qp.quality;
+          qualityLabel = qp.qualityLabel;
+        }
+        return {
+          ...f,
+          name: a.title,
+          family,
+          familyKey,
+          version,
+          quality,
+          qualityLabel,
+          kind: a.kind,
+        };
+      });
     case "move":
       return state.map((f) => (a.ids.includes(f.id) ? { ...f, folderId: a.folderId } : f));
     default:

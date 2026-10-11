@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/lib/icons";
 import { KINDS, TAG_COLORS } from "@/lib/kinds";
@@ -10,7 +10,7 @@ import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import { getCachedGallery, loadGallery } from "@/lib/gallery-cache";
 import { getCachedPreviewSrc, loadPreviewImage } from "@/lib/preview-cache";
 import { TagPicker } from "./TagPicker";
-import { VideoPlayer } from "./VideoPlayer";
+import { VideoPlayer, type VideoQualityOption } from "./VideoPlayer";
 import { DocPreview } from "./DocPreview";
 import { SubtitleDialog } from "./SubtitleDialog";
 import { reharvestThumbnail, uploadThumbnail } from "@/app/actions";
@@ -83,11 +83,13 @@ export function PreviewDrawer({
   item,
   tags,
   folders = [],
+  allFiles = [],
   hasPrevFile = false,
   hasNextFile = false,
   onNavigateFile,
   onClose,
   onSave,
+  onUngroupVariant,
   onDownload,
   onToggleStar,
   navFiles,
@@ -100,11 +102,16 @@ export function PreviewDrawer({
   item: DriveFile;
   tags: Tag[];
   folders?: Folder[];
+  allFiles?: DriveFile[];
   hasPrevFile?: boolean;
   hasNextFile?: boolean;
   onNavigateFile?: (delta: number) => void;
   onClose: () => void;
-  onSave: (item: DriveFile, input: { title: string; kind: Kind; tags: string }) => void;
+  onSave: (
+    item: DriveFile,
+    input: { title: string; kind: Kind; tags: string; applyToAllVariants?: boolean }
+  ) => void;
+  onUngroupVariant?: (variant: DriveFile, newTitle: string) => void;
   onDownload?: () => void;
   onToggleStar?: () => void;
   navFiles?: DriveFile[];
@@ -119,7 +126,9 @@ export function PreviewDrawer({
   const ft = fileTypeFor(item);
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
 
+  const hasVariants = Boolean(item.variants && item.variants.length > 1);
   const [editing, setEditing] = useState(initialEditing);
+  const [applyToAllVariants, setApplyToAllVariants] = useState(true);
   const [title, setTitle] = useState(item.name);
   const [kind, setKind] = useState<Kind>(item.kind);
   const [tagsText, setTagsText] = useState(itemTags.map((t) => t.name).join(", "));
@@ -222,6 +231,40 @@ export function PreviewDrawer({
   // Holds the fully preloaded high-res image URL so the instant thumbnail stays displayed
   // until the high-res image is completely decoded in memory (avoids top-to-bottom scanlines).
   const [loadedStreamSrc, setLoadedStreamSrc] = useState<string | null>(null);
+
+  // Resolve all quality variants for this video (if any)
+  const qualityOptions = useMemo<VideoQualityOption[]>(() => {
+    if (item.kind !== "media") return [];
+    const vars = (item.variants && item.variants.length > 0)
+      ? item.variants
+      : (allFiles && item.quality != null)
+        ? allFiles.filter(
+            (f) => f.kind === "media" && f.familyKey === item.familyKey && f.quality != null
+          )
+        : [];
+
+    if (vars.length <= 1) return [];
+
+    const seen = new Set<number>();
+    const opts: VideoQualityOption[] = [];
+    const sorted = [...vars].sort((a, b) => (b.quality ?? 0) - (a.quality ?? 0) || b.size - a.size);
+
+    for (const v of sorted) {
+      const q = v.quality;
+      const pid = v.firstPartId;
+      if (q && pid && !seen.has(q)) {
+        seen.add(q);
+        opts.push({
+          quality: q,
+          label: v.qualityLabel || `${q}p`,
+          partId: pid,
+          src: `/api/stream/${pid}`,
+          size: v.size,
+        });
+      }
+    }
+    return opts;
+  }, [item, allFiles]);
 
   // Reset form when the opened item changes (or when leaving edit mode).
   useEffect(() => {
@@ -710,7 +753,12 @@ export function PreviewDrawer({
 
   const save = () => {
     if (!title.trim()) return;
-    onSave(item, { title, kind, tags: tagsText });
+    onSave(item, {
+      title,
+      kind,
+      tags: tagsText,
+      applyToAllVariants: hasVariants && applyToAllVariants,
+    });
   };
 
   return (
@@ -728,6 +776,7 @@ export function PreviewDrawer({
                   src={`/api/stream/${activePart!.partId}`}
                   poster={activePart!.thumb || undefined}
                   partId={activePart!.partId}
+                  qualities={qualityOptions}
                   onToggleFullscreen={toggleFullscreen}
                 />
               ) : isDocStage ? (
@@ -962,6 +1011,27 @@ export function PreviewDrawer({
                       }}
                     />
                   </label>
+                  {hasVariants && (
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        marginTop: -2,
+                        marginBottom: 6,
+                        fontSize: 12.5,
+                        cursor: "pointer",
+                        color: "var(--muted)",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={applyToAllVariants}
+                        onChange={(e) => setApplyToAllVariants(e.target.checked)}
+                      />
+                      <span>Apply to all resolutions ({item.variants!.length} videos)</span>
+                    </label>
+                  )}
                   <label className="dv-field">
                     <span>Type</span>
                     <select value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
@@ -1031,6 +1101,58 @@ export function PreviewDrawer({
                       </dd>
                       <dt>Size</dt>
                       <dd>{fmtSize(item.size)}</dd>
+                      {hasVariants ? (
+                        <>
+                          <dt>Qualities</dt>
+                          <dd>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 2 }}>
+                              {item.variants!.map((v) => (
+                                <div
+                                  key={v.id}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    gap: 8,
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  <span>
+                                    <strong>{v.qualityLabel || `${v.quality}p`}</strong> &bull; {fmtSize(v.size)}
+                                    {v.id === item.id && <span style={{ opacity: 0.6, marginLeft: 4 }}>(active)</span>}
+                                  </span>
+                                  {onUngroupVariant && (
+                                    <button
+                                      type="button"
+                                      className="btn subtle xs"
+                                      style={{ padding: "1px 6px", fontSize: 11, height: "auto" }}
+                                      title="Pisahkan resolusi ini dari grup menjadi kartu sendiri"
+                                      onClick={() => {
+                                        const promptTitle = window.prompt(
+                                          "Pisahkan dari grup (masukkan judul baru):",
+                                          `${v.family} (${v.qualityLabel || `${v.quality}p`})`
+                                        );
+                                        if (promptTitle && promptTitle.trim()) {
+                                          onUngroupVariant(v, promptTitle.trim());
+                                        }
+                                      }}
+                                    >
+                                      Ungroup
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </dd>
+                        </>
+                      ) : qualityOptions.length > 1 ? (
+                        <>
+                          <dt>Qualities</dt>
+                          <dd>
+                            {qualityOptions.map((q) => q.label).join(", ")}
+                          </dd>
+                        </>
+                      ) : null}
                       {item.parts > 1 && (
                         <>
                           <dt>{item.kind === "media" ? "Contents" : "Parts"}</dt>

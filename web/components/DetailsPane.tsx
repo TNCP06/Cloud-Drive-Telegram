@@ -142,6 +142,11 @@ export function DetailsPane({
               )}
             </Field>
             <Field label="Size">{fmtSize(item.size)}</Field>
+            {item.variants && item.variants.length > 1 && (
+              <Field label="Qualities">
+                {item.variants.map((v) => v.qualityLabel || `${v.quality}p`).join(", ")}
+              </Field>
+            )}
             {item.parts > 1 && <Field label="Parts">{item.parts}</Field>}
             <Field label="Modified">
               <AbsDate ts={item.modified} />

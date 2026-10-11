@@ -18,8 +18,11 @@ export function ConfirmDelete({
   item: DriveFile;
   mode: "trash" | "purge";
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (targetIds?: number[]) => void;
 }) {
+  const hasVariants = Boolean(item.variants && item.variants.length > 1);
+  const [allVariants, setAllVariants] = useState(true);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
@@ -57,12 +60,43 @@ export function ConfirmDelete({
               </>
             )}
           </p>
+          {hasVariants && (
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginTop: 12,
+                fontSize: 13,
+                cursor: "pointer",
+                color: "var(--fg)",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={allVariants}
+                onChange={(e) => setAllVariants(e.target.checked)}
+              />
+              <span>
+                {purge ? "Delete all resolutions" : "Move all resolutions to trash"} ({item.variants!.length} files)
+              </span>
+            </label>
+          )}
         </div>
         <div className="dfoot">
           <button className="btn subtle" onClick={onCancel}>
             Cancel
           </button>
-          <button className="btn danger" onClick={onConfirm}>
+          <button
+            className="btn danger"
+            onClick={() => {
+              if (hasVariants && allVariants) {
+                onConfirm(item.variants!.map((v) => v.id));
+              } else {
+                onConfirm([item.id]);
+              }
+            }}
+          >
             <Icon name="trash" size={16} />
             {purge ? "Delete forever" : "Delete"}
           </button>

@@ -3,7 +3,7 @@ import { unstable_cache } from "next/cache";
 import { db } from "./db";
 import { sqliteToMs } from "./format";
 import { tagColorKey } from "./kinds";
-import { parseTitle } from "./version";
+import { parseMediaQuality, parseTitle } from "./version";
 import type { DriveFile, Folder, Kind, Tag } from "./types";
 
 // Fetch and shape all drive data from Turso (used by the main page and /trash).
@@ -107,11 +107,26 @@ async function fetchDriveData(
     const name = String(r.title);
     const kind = String(r.kind) as Kind;
     const deletedAt = r.deleted_at ? sqliteToMs(String(r.deleted_at)) : null;
-    // Version grouping is only relevant for archives (media has no version).
-    const tp =
-      kind === "archive"
-        ? parseTitle(name)
-        : { family: name, familyKey: String(r.slug), version: null };
+    const folderId = r.folder_id ? Number(r.folder_id) : null;
+    let family = name;
+    let familyKey = String(r.slug);
+    let version: string | null = null;
+    let quality: number | null = null;
+    let qualityLabel: string | null = null;
+
+    if (kind === "archive") {
+      const tp = parseTitle(name);
+      family = tp.family;
+      familyKey = tp.familyKey;
+      version = tp.version;
+    } else if (kind === "media") {
+      const qp = parseMediaQuality(name, folderId, String(r.slug));
+      family = qp.family;
+      familyKey = qp.familyKey;
+      version = qp.version;
+      quality = qp.quality;
+      qualityLabel = qp.qualityLabel;
+    }
     const stream = streamByItem.get(id);
     return {
       id,
@@ -129,10 +144,12 @@ async function fetchDriveData(
       thumb: haveCover.has(id) ? `/api/thumb/${id}` : null,
       firstPartId: stream?.partId ?? null,
       fileName: stream?.fileName ?? null,
-      family: tp.family,
-      familyKey: tp.familyKey,
-      version: tp.version,
-      folderId: r.folder_id ? Number(r.folder_id) : null,
+      family,
+      familyKey,
+      version,
+      quality,
+      qualityLabel,
+      folderId,
     };
   });
 

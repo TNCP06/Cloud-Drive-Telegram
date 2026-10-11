@@ -15,6 +15,7 @@ import {
   fileReducer,
   folderReducer,
 } from "@/lib/driveView";
+import { parseMediaQuality, QUALITY_TOKEN } from "@/lib/version";
 import { Sidebar, type Counts, type Storage } from "./Sidebar";
 import {
   FileCard,
@@ -137,6 +138,7 @@ export function DriveApp({
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [sortMenu, setSortMenu] = useState<HTMLElement | null>(null);
+  const [groupMenu, setGroupMenu] = useState<HTMLElement | null>(null);
 
   /* ---- layout & view preferences (persisted to localStorage) ----
      Start from defaults (server + first client paint match), then hydrate the saved
@@ -335,6 +337,10 @@ export function DriveApp({
     markMenuClosed();
     setTimeout(() => setSortMenu(null), 0);
   };
+  const closeGroupMenu = () => {
+    markMenuClosed();
+    setTimeout(() => setGroupMenu(null), 0);
+  };
   const closeViewMenu = () => {
     markMenuClosed();
     setTimeout(() => setViewMenu(null), 0);
@@ -461,20 +467,59 @@ export function DriveApp({
     });
   // Run a confirmed destructive action, then dismiss the dialog (and the preview
   // drawer if it was showing the same item, since it may now be gone).
-  const runConfirm = () => {
+  const runConfirm = (targetIds?: number[]) => {
     if (!confirm) return;
-    if (confirm.mode === "purge") doPurge(confirm.item);
-    else doTrash(confirm.item);
-    if (previewId === confirm.item.id) closePreview();
+    const ids = targetIds && targetIds.length > 0 ? targetIds : [confirm.item.id];
+    if (confirm.mode === "purge") {
+      startTransition(async () => {
+        optimizeFiles({ type: "remove", ids });
+        const r = ids.length === 1 ? await purgeNow(ids[0]) : await bulkPurgeNow(ids);
+        if (!r.ok) setToast(r.error ?? "Failed to delete permanently.");
+      });
+    } else {
+      startTransition(async () => {
+        optimizeFiles({ type: "trash", ids });
+        if (ids.length === 1) await softDelete(ids[0]);
+        else await bulkSoftDelete(ids);
+      });
+    }
+    if (previewId != null && ids.includes(previewId)) closePreview();
     setConfirm(null);
   };
   const doSave = (
     item: DriveFile,
-    input: { title: string; kind: DriveFile["kind"]; tags: string }
+    input: { title: string; kind: DriveFile["kind"]; tags: string; applyToAllVariants?: boolean }
   ) =>
     startTransition(async () => {
-      optimizeFiles({ type: "meta", id: item.id, title: input.title, kind: input.kind });
-      await updateMetadata(item.id, input);
+      if (input.applyToAllVariants && item.variants && item.variants.length > 1) {
+        const newBase = parseMediaQuality(input.title, item.folderId).family;
+        for (const v of item.variants) {
+          let vTitle = input.title;
+          if (v.id !== item.id) {
+            const m = v.name.match(QUALITY_TOKEN);
+            vTitle = m ? `${newBase}${m[0]}` : `${newBase} (${v.qualityLabel || v.quality || "alt"})`;
+          }
+          optimizeFiles({ type: "meta", id: v.id, title: vTitle, kind: input.kind });
+          await updateMetadata(v.id, { title: vTitle, kind: input.kind, tags: input.tags });
+        }
+      } else {
+        optimizeFiles({ type: "meta", id: item.id, title: input.title, kind: input.kind });
+        await updateMetadata(item.id, input);
+      }
+    });
+  const doUngroupVariant = (variant: DriveFile, newTitle: string) =>
+    startTransition(async () => {
+      const currentTags = variant.tags
+        .map((tid) => tags.find((t) => t.id === tid)?.name)
+        .filter(Boolean)
+        .join(", ");
+      optimizeFiles({ type: "meta", id: variant.id, title: newTitle, kind: variant.kind });
+      await updateMetadata(variant.id, {
+        title: newTitle,
+        kind: variant.kind,
+        tags: currentTags,
+      });
+      setToast(`Separated "${newTitle}" as standalone card.`);
     });
   const doUnpack = (item: DriveFile, password: string) =>
     startTransition(async () => {
@@ -789,30 +834,96 @@ export function DriveApp({
       window.history.pushState({ type: "preview", previewId: item.id }, "", url.toString());
     }
   };
-  const previewItem = previewId != null ? files.find((f) => f.id === previewId) ?? null : null;
 
-  // Group archives by family → representative = version with the most recent upload (date_added).
+  // Group archives and media by family:
+  // - archives: representative = version with the most recent upload (date_added).
+  // - media: representative = variant with the highest quality/resolution (quality desc).
+  //   Guards applied to media:
+  //     (1) Duplicate resolution guard: no two files with the same quality.
+  //     (2) Size hierarchy guard: lower resolution cannot be significantly larger (>1.25x) than higher resolution.
   type Collapsed = { list: DriveFile[]; counts: Map<string, number> };
   const collapseVersions = useCallback(
     (list: DriveFile[]): Collapsed => {
       const counts = new Map<string, number>();
       if (!groupVersions || query || view === "trash") return { list, counts };
-      const repIdx = new Map<string, number>();
-      const out: DriveFile[] = [];
+
+      const archiveGroups = new Map<string, DriveFile[]>();
+      const mediaGroups = new Map<string, DriveFile[]>();
+      const nonGrouped: DriveFile[] = [];
+
       for (const f of list) {
-        if (f.kind !== "archive") {
-          out.push(f);
-          continue;
-        }
-        counts.set(f.familyKey, (counts.get(f.familyKey) || 0) + 1);
-        const idx = repIdx.get(f.familyKey);
-        if (idx == null) {
-          repIdx.set(f.familyKey, out.length);
-          out.push(f);
-        } else if (f.added > out[idx].added) {
-          out[idx] = f;
+        if (f.kind === "archive") {
+          const arr = archiveGroups.get(f.familyKey) || [];
+          arr.push(f);
+          archiveGroups.set(f.familyKey, arr);
+        } else if (f.kind === "media" && f.quality != null) {
+          const arr = mediaGroups.get(f.familyKey) || [];
+          arr.push(f);
+          mediaGroups.set(f.familyKey, arr);
+        } else {
+          nonGrouped.push(f);
         }
       }
+
+      const out: DriveFile[] = [...nonGrouped];
+
+      // Process archive groups
+      for (const [fKey, filesInGroup] of archiveGroups.entries()) {
+        counts.set(fKey, filesInGroup.length);
+        let rep = filesInGroup[0];
+        for (let i = 1; i < filesInGroup.length; i++) {
+          if (filesInGroup[i].added > rep.added) rep = filesInGroup[i];
+        }
+        out.push(rep);
+      }
+
+      // Process media groups with sanity guards
+      for (const [fKey, filesInGroup] of mediaGroups.entries()) {
+        if (filesInGroup.length === 1) {
+          out.push(filesInGroup[0]);
+          continue;
+        }
+
+        // Guard 1: Duplicate resolution check
+        const seenQualities = new Set<number>();
+        let hasDuplicateQuality = false;
+        for (const f of filesInGroup) {
+          if (f.quality == null || seenQualities.has(f.quality)) {
+            hasDuplicateQuality = true;
+            break;
+          }
+          seenQualities.add(f.quality);
+        }
+
+        // Guard 2: Size hierarchy sanity check
+        const sortedByQ = [...filesInGroup].sort(
+          (a, b) => (b.quality ?? 0) - (a.quality ?? 0) || b.size - a.size
+        );
+        let sizeInverted = false;
+        for (let i = 0; i < sortedByQ.length - 1; i++) {
+          const higher = sortedByQ[i];
+          const lower = sortedByQ[i + 1];
+          // If lower quality is >25% larger than higher quality, likely different video
+          if (lower.size > higher.size * 1.25) {
+            sizeInverted = true;
+            break;
+          }
+        }
+
+        // If either guard fails, abort collapsing: display each file individually
+        if (hasDuplicateQuality || sizeInverted) {
+          for (const f of filesInGroup) {
+            out.push(f);
+          }
+          continue;
+        }
+
+        // All guards passed: collapse into representative (highest quality)
+        counts.set(fKey, filesInGroup.length);
+        const rep = { ...sortedByQ[0], variants: sortedByQ };
+        out.push(rep);
+      }
+
       out.sort((a, b) => SORTS[sort].fn(a, b, sortOrder));
       return { list: out, counts };
     },
@@ -824,6 +935,13 @@ export function DriveApp({
      every selection click / arrow keypress (which only changes `selected`) would re-sort
      the entire list and rebuild the key index, the main source of interaction lag. */
   const collapsedItems = useMemo(() => collapseVersions(items), [collapseVersions, items]);
+  const previewItem = useMemo(() => {
+    if (previewId == null) return null;
+    const collapsedMatch = collapsedItems.list.find((f) => f.id === previewId);
+    if (collapsedMatch) return collapsedMatch;
+    return files.find((f) => f.id === previewId) ?? null;
+  }, [previewId, collapsedItems.list, files]);
+
   const groupedCollapsed = useMemo(
     () => {
       if (!grouped) return null;
@@ -1653,6 +1771,19 @@ export function DriveApp({
             <Icon name="chevdown" size={14} />
           </button>
 
+          <button
+            className={"sortbtn" + (groupBy !== "none" ? " on" : "")}
+            onClick={(e) => {
+              e.stopPropagation();
+              setGroupMenu(e.currentTarget);
+            }}
+            title="Group by"
+          >
+            <Icon name="rows" size={15} />
+            {groupBy === "none" ? "Group" : `Group: ${GROUP_OPTIONS.find((g) => g.key === groupBy)?.label}`}
+            <Icon name="chevdown" size={14} />
+          </button>
+
           {/* Upload Button (files / folder) — starts uploading immediately, no form. */}
           {view === "all" && !query && (
             <button
@@ -1886,20 +2017,26 @@ export function DriveApp({
                 closeSortMenu();
               }}
             />
-            <div className="menu-sep" />
-            <SubMenuItem icon="rows" label="Group by">
-              {GROUP_OPTIONS.map((g) => (
-                <MenuItem
-                  key={g.key}
-                  label={g.label}
-                  check={groupBy === g.key}
-                  onClick={() => {
-                    setGroupBy(g.key);
-                    closeSortMenu();
-                  }}
-                />
-              ))}
-            </SubMenuItem>
+          </Menu>
+        </>
+      )}
+
+      {groupMenu && (
+        <>
+          <div className="menu-scrim" onClick={closeGroupMenu} />
+          <Menu anchor={groupMenu} onClose={closeGroupMenu} width={180}>
+            <div className="menu-label">Group by</div>
+            {GROUP_OPTIONS.map((g) => (
+              <MenuItem
+                key={g.key}
+                label={g.label}
+                check={groupBy === g.key}
+                onClick={() => {
+                  setGroupBy(g.key);
+                  closeGroupMenu();
+                }}
+              />
+            ))}
           </Menu>
         </>
       )}
@@ -1914,8 +2051,11 @@ export function DriveApp({
                   icon="restore"
                   label="Restore"
                   onClick={() => {
+                    const ids = menu.item.variants && menu.item.variants.length > 1
+                      ? menu.item.variants.map((v) => v.id)
+                      : [menu.item.id];
                     setConfirmRestore({
-                      itemIds: [menu.item.id],
+                      itemIds: ids,
                       folderIds: [],
                       itemName: menu.item.version ? menu.item.family : menu.item.name,
                     });
@@ -1961,7 +2101,10 @@ export function DriveApp({
                   icon="folder"
                   label="Move to..."
                   onClick={() => {
-                    setMoveTarget({ itemIds: [menu.item.id], folderIds: [] });
+                    const ids = menu.item.variants && menu.item.variants.length > 1
+                      ? menu.item.variants.map((v) => v.id)
+                      : [menu.item.id];
+                    setMoveTarget({ itemIds: ids, folderIds: [] });
                     closeMenu();
                   }}
                 />
@@ -2085,6 +2228,7 @@ export function DriveApp({
           item={previewItem}
           tags={tags}
           folders={folders}
+          allFiles={files}
           hasPrevFile={hasPrevFile}
           hasNextFile={hasNextFile}
           onNavigateFile={navigatePreview}
@@ -2096,6 +2240,7 @@ export function DriveApp({
             doSave(it, input);
             closePreview();
           }}
+          onUngroupVariant={doUngroupVariant}
           onDownload={() => {
             const url = deepLink(previewItem.slug);
             if (url) window.open(url, "_blank");

@@ -92,6 +92,9 @@ const translations: Record<string, string> = {
   "Aktivitas VPS terbaru": "Aktivitas VPS terbaru",
   "All versions": "Semua versi",
   "Show all versions": "Tampilkan semua versi",
+  "Show all qualities": "Tampilkan semua kualitas",
+  Qualities: "Kualitas",
+  Quality: "Kualitas",
   Close: "Tutup",
   Reload: "Muat ulang",
   Open: "Buka",
@@ -229,6 +232,11 @@ const translations: Record<string, string> = {
   "Ascending": "Menaik",
   "Descending": "Menurun",
   "Group by": "Kelompokkan berdasarkan",
+  Group: "Kelompokkan",
+  Ungroup: "Pisahkan",
+  "Apply to all resolutions": "Terapkan ke semua resolusi",
+  "Delete all resolutions": "Hapus semua resolusi",
+  "Move all resolutions to trash": "Pindahkan semua resolusi ke sampah",
   "Move to...": "Pindahkan ke…",
   "Add to favorites": "Tambah ke favorit",
   "Toggle favorite": "Ganti status favorit",
@@ -455,6 +463,11 @@ const indonesianToEnglish: Record<string, string> = {
   Menaik: "Ascending",
   Menurun: "Descending",
   "Kelompokkan berdasarkan": "Group by",
+  Kelompokkan: "Group",
+  Pisahkan: "Ungroup",
+  "Terapkan ke semua resolusi": "Apply to all resolutions",
+  "Hapus semua resolusi": "Delete all resolutions",
+  "Pindahkan semua resolusi ke sampah": "Move all resolutions to trash",
   "Pindahkan ke…": "Move to...",
   "Tambah ke favorit": "Add to favorites",
   "Ganti status favorit": "Toggle favorite",
@@ -496,6 +509,7 @@ function translate(value: string, locale: Locale) {
         .replace(/^(\d+) folder(s?), (\d+) item(s?)$/, "$1 folder, $3 item")
         .replace(/^(\d+) part(s?)$/, "$1 bagian")
         .replace(/^(\d+) version(s?)$/, "$1 versi")
+        .replace(/^(\d+) qualit(?:y|ies)$/, "$1 kualitas")
         .replace(/^(\d+) day(s?) left$/, "tersisa $1 hari")
         .replace(/^Permanently deleted in (\d+) days$/, "Dihapus permanen dalam $1 hari")
         .replace(/^No files match "(.+)"\.$/, "Tidak ada file yang cocok dengan \"$1\".")
@@ -525,6 +539,7 @@ function translate(value: string, locale: Locale) {
       .replace(/^dari (.+) \((\d+)% terpakai\)$/, "of $1 ($2% used)")
       .replace(/^(.+) terpakai di (.+)$/, "$1 used on $2")
       .replace(/^(\d+) versi$/, "$1 versions")
+      .replace(/^(\d+) kualitas$/, "$1 qualities")
       .replace(/^tersisa (\d+) hari$/, "$1 days left")
       .replace(/^Dihapus permanen dalam (\d+) hari$/, "Permanently deleted in $1 days")
       .replace(/^Tidak ada file yang cocok dengan "(.+)"\.$/, "No files match \"$1\".")

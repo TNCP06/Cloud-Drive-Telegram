@@ -45,8 +45,11 @@ export interface DriveFile {
   fileName: string | null;     // parts.file_name (for video vs image detection)
   family: string;          // base name (title without version) for grouping
   familyKey: string;       // grouping key (lowercase)
-  version: string | null;  // version label, e.g. "v0.6.0" (archives only)
+  version: string | null;  // version label, e.g. "v0.6.0" (archives) or "1080p" (media)
   folderId: number | null; // items.folder_id
+  quality?: number | null; // vertical resolution, e.g. 1080, 720 (media only)
+  qualityLabel?: string | null; // e.g. "1080p", "720p"
+  variants?: DriveFile[];  // sibling quality variants when collapsed
 }
 
 export type UploadStatus = "queued" | "pending" | "running" | "done" | "error" | "canceled";
