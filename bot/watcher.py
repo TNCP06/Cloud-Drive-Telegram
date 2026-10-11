@@ -447,7 +447,7 @@ async def _send_part(client, channel, db, path, caption, as_document, thumb, cb,
         ticker = asyncio.create_task(_tick())
         try:
             msg_id, file_id, _ = await botapi.send_part(
-                path, caption, as_document, STORAGE_CHANNEL_ID)
+                path, caption, as_document, STORAGE_CHANNEL_ID, thumb=thumb)
             elapsed = max(time.monotonic() - start, 0.001)
             _botapi_bps["v"] = 0.5 * _botapi_bps["v"] + 0.5 * (size / elapsed)
             _, part_id = await botapi.index_uploaded(

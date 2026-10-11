@@ -165,6 +165,7 @@ async def ensure_schema(db):
 
     # ?comment= links: the discussion-group message to import instead of the channel post.
     await db.execute("ALTER TABLE tg_import_jobs ADD COLUMN IF NOT EXISTS comment_id BIGINT")
+    await db.execute("ALTER TABLE tg_import_jobs ADD COLUMN IF NOT EXISTS reply_to_msg_id BIGINT")
     await db.execute("ALTER TABLE upload_jobs ADD COLUMN IF NOT EXISTS channel_msg_ids TEXT")
 
     await db.execute("CREATE INDEX IF NOT EXISTS idx_tg_import_jobs_status ON tg_import_jobs(status)")
@@ -214,7 +215,13 @@ async def _safe_edit(chat_id: Optional[int], message_id: Optional[int], text: st
         log.debug("Failed to edit tg_import progress msg (%s, %s): %s", chat_id, message_id, e)
 
 
-async def _copy_message_to_user(chat_id: Optional[int], from_chat_id: int, message_id: int, caption: Optional[str] = None) -> bool:
+async def _copy_message_to_user(
+    chat_id: Optional[int],
+    from_chat_id: int,
+    message_id: int,
+    caption: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None,
+) -> bool:
     """Copy message from storage channel to user DM via Bot API HTTP."""
     if not chat_id or not message_id or not BOT_TOKEN:
         return False
@@ -227,6 +234,11 @@ async def _copy_message_to_user(chat_id: Optional[int], from_chat_id: int, messa
     }
     if caption is not None:
         payload["caption"] = caption[:1024]
+    if reply_to_message_id:
+        payload["reply_parameters"] = {
+            "message_id": reply_to_message_id,
+            "allow_sending_without_reply": True,
+        }
     try:
         async with httpx.AsyncClient(timeout=30.0) as cli:
             r = await cli.post(url, json=payload)
@@ -271,7 +283,7 @@ async def _claim_next(db):
             LIMIT 1
             FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, link, target_chat, target_msg_id, comment_id, chat_id, message_id, title, tags
+        RETURNING id, link, target_chat, target_msg_id, comment_id, chat_id, message_id, reply_to_msg_id, title, tags
     """)
     if not rs.rows:
         return None
@@ -284,8 +296,9 @@ async def _claim_next(db):
         "comment_id": r[4],
         "chat_id": r[5],
         "message_id": r[6],
-        "title": r[7],
-        "tags": r[8],
+        "reply_to_msg_id": r[7],
+        "title": r[8],
+        "tags": r[9],
     }
 
 
@@ -433,7 +446,12 @@ def _extract_batch_meta(messages: list, custom_title: Optional[str] = None, cust
     return best_title or "", ", ".join(all_tags)
 
 
-async def _track_upload_jobs(db, jid: int, upload_ids: List[int], chat_id: Optional[int], msg_id: Optional[int], title: str, size: int, tags: str, dst_dir: str, source_captions: Optional[List[str]] = None):
+async def _track_upload_jobs(
+    db, jid: int, upload_ids: List[int], chat_id: Optional[int], msg_id: Optional[int],
+    title: str, size: int, tags: str, dst_dir: str,
+    source_captions: Optional[List[str]] = None,
+    reply_to_msg_id: Optional[int] = None,
+):
     """Poll upload_jobs until all parts complete, then mark tg_import_job done and clean staging."""
     if not upload_ids:
         shutil.rmtree(dst_dir, ignore_errors=True)
@@ -520,7 +538,8 @@ async def _track_upload_jobs(db, jid: int, upload_ids: List[int], chat_id: Optio
                             # Pass original caption (or "" if none, so caption contract is not leaked)
                             ok = await _copy_message_to_user(
                                 chat_id, STORAGE_CHANNEL_ID, chan_mid,
-                                caption=(caption_for_msg if caption_for_msg is not None else "")
+                                caption=(caption_for_msg if caption_for_msg is not None else ""),
+                                reply_to_message_id=reply_to_msg_id,
                             )
                             if ok:
                                 copied_any = True
@@ -766,6 +785,7 @@ async def _process(client, db, job):
         asyncio.create_task(_track_upload_jobs(
             db, jid, upload_ids, chat_id, msg_id, title, total_batch_size, tags, dst_dir,
             source_captions=source_captions,
+            reply_to_msg_id=job.get("reply_to_msg_id"),
         ))
 
     except (asyncio.CancelledError, TgImportError) as e:

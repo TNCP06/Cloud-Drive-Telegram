@@ -194,6 +194,33 @@ def test_derive_title_tags():
     assert t == "Naimei0727 (2)"
     assert g == "奶妹"
 
+    # Multiline caption with emoji + hashtag header, body, metadata footer
+    caption_sample = (
+        "👤 #雙飛\n\n"
+        "推特15W粉【小Q小K】全集71\n\n"
+        "《第一次雙飛給我們》01\n"
+        "◉ 原创：#小Q小K\n"
+        "◉ 类型：  公开  ｜编号：6502"
+    )
+    t, g = tg_import._derive_title_tags(caption_sample, None, None)
+    assert t == "推特15W粉【小Q小K】全集71"
+    assert g == "雙飛, 小Q小K"
+
+    # Strips leading decorative emojis and bullets
+    t, g = tg_import._derive_title_tags("🎬 每日精选电影第一部 #movie", None, None)
+    assert t == "每日精选电影第一部"
+    assert g == "movie"
+
+    # Skips promotional call-to-action lines
+    promo_sample = (
+        "点击加入频道获取最新更新\n"
+        "商务合作请联系客服\n"
+        "真实影片名称2026 #hd"
+    )
+    t, g = tg_import._derive_title_tags(promo_sample, None, None)
+    assert t == "真实影片名称2026"
+    assert g == "hd"
+
     # No caption at all → empty defaults (caller falls back to filename/date)
     t, g = tg_import._derive_title_tags("", None, None)
     assert t == "" and g == ""
@@ -244,6 +271,15 @@ def test_filename_tags_and_batch_meta():
     t, g = tg_import._extract_batch_meta(batch)
     assert t == "Great Album Title"
     assert g == "anime, japan, ost"
+
+    # 4. Caption title takes priority over preceding nameless/generic files in album
+    batch_unordered = [
+        DummyMsg("", "part_generic_123.mp4"),
+        DummyMsg("Album Real Title #vip", "part2.mp4"),
+    ]
+    t, g = tg_import._extract_batch_meta(batch_unordered)
+    assert t == "Album Real Title"
+    assert g == "vip"
 
 
 def test_inspect_message_meta():
@@ -350,8 +386,8 @@ def test_track_upload_jobs_copy_and_delete():
     deleted = []
     edits = []
 
-    async def fake_copy(chat_id, from_chat, mid, caption=None):
-        copied.append({"chat_id": chat_id, "from_chat": from_chat, "mid": mid, "caption": caption})
+    async def fake_copy(chat_id, from_chat, mid, caption=None, reply_to_message_id=None):
+        copied.append({"chat_id": chat_id, "from_chat": from_chat, "mid": mid, "caption": caption, "reply_to": reply_to_message_id})
         return True
 
     async def fake_delete(chat_id, mid):
@@ -385,7 +421,7 @@ def test_track_upload_jobs_copy_and_delete():
         tg_import._delete_message = fake_delete
         tg_import._safe_edit = fake_edit
 
-        # Case 1: Single file with original caption
+        # Case 1: Single file with original caption and reply_to_msg_id
         db = FakeDb(
             upload_rows=[(1, "done", "uploaded")],
             msg_rows=[("5001",)],
@@ -393,10 +429,11 @@ def test_track_upload_jobs_copy_and_delete():
         asyncio.run(tg_import._track_upload_jobs(
             db, jid=10, upload_ids=[1], chat_id=123, msg_id=999,
             title="Cool Video", size=1024, tags="test", dst_dir="/tmp/test_dir",
-            source_captions=["Trailer Film #action"]
+            source_captions=["Trailer Film #action"],
+            reply_to_msg_id=888,
         ))
         assert len(copied) == 1
-        assert copied[0] == {"chat_id": 123, "from_chat": tg_import.STORAGE_CHANNEL_ID, "mid": 5001, "caption": "Trailer Film #action"}
+        assert copied[0] == {"chat_id": 123, "from_chat": tg_import.STORAGE_CHANNEL_ID, "mid": 5001, "caption": "Trailer Film #action", "reply_to": 888}
         assert len(deleted) == 1
         assert deleted[0] == {"chat_id": 123, "mid": 999}
         assert len(edits) == 0
@@ -411,11 +448,12 @@ def test_track_upload_jobs_copy_and_delete():
         asyncio.run(tg_import._track_upload_jobs(
             db, jid=11, upload_ids=[1, 2], chat_id=123, msg_id=998,
             title="Big Movie", size=2048, tags="hd", dst_dir="/tmp/test_dir",
-            source_captions=["Full Movie 1080p"]
+            source_captions=["Full Movie 1080p"],
+            reply_to_msg_id=777,
         ))
         assert len(copied) == 2
-        assert copied[0]["mid"] == 6001 and copied[0]["caption"] == "Full Movie 1080p"
-        assert copied[1]["mid"] == 6002 and copied[1]["caption"] == ""
+        assert copied[0]["mid"] == 6001 and copied[0]["caption"] == "Full Movie 1080p" and copied[0]["reply_to"] == 777
+        assert copied[1]["mid"] == 6002 and copied[1]["caption"] == "" and copied[1]["reply_to"] == 777
         assert len(deleted) == 1
         assert deleted[0]["mid"] == 998
 
@@ -424,7 +462,7 @@ def test_track_upload_jobs_copy_and_delete():
         deleted.clear()
         edits.clear()
 
-        async def fail_copy(chat_id, from_chat, mid, caption=None):
+        async def fail_copy(chat_id, from_chat, mid, caption=None, reply_to_message_id=None):
             return False
 
         tg_import._copy_message_to_user = fail_copy

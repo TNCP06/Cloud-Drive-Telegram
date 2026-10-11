@@ -66,13 +66,28 @@ async def run_backup(context: ContextTypes.DEFAULT_TYPE) -> None:
         size = os.path.getsize(gz_path)
 
         caption = f"{title} | 1/1 | {', '.join(BACKUP_TAGS)}"
-        with open(gz_path, "rb") as fh:
-            sent = await context.bot.send_document(
-                chat_id=STORAGE_CHANNEL_ID,
-                document=fh,
-                filename=f"{stem}.sql.gz",
-                caption=caption,
-            )
+        sent = None
+        for attempt in range(1, 4):
+            try:
+                with open(gz_path, "rb") as fh:
+                    sent = await context.bot.send_document(
+                        chat_id=STORAGE_CHANNEL_ID,
+                        document=fh,
+                        filename=f"{stem}.sql.gz",
+                        caption=caption,
+                        read_timeout=180.0,
+                        write_timeout=180.0,
+                        connect_timeout=30.0,
+                    )
+                break
+            except Exception as upload_err:
+                if attempt == 3:
+                    raise
+                log.warning(
+                    "DB backup upload attempt %d/3 failed (%s); retrying in %ds...",
+                    attempt, upload_err, attempt * 5,
+                )
+                await asyncio.sleep(attempt * 5)
 
         await index_bot_copy(
             context, db, sent.message_id,

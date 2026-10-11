@@ -23,7 +23,10 @@ Telegram-side thumbnail harvest for photos (the watcher's ffmpeg thumbnail fallb
 covers videos; the web's reharvest action repairs stragglers).
 """
 
+import asyncio
+import json
 import os
+import shutil
 
 import httpx
 
@@ -39,6 +42,50 @@ _PHOTO_EXTS = {".jpg", ".jpeg", ".png"}
 _VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".3gp", ".mpg", ".mpeg", ".m2ts", ".mts", ".vob", ".ogv"}
 
 
+async def probe_video_meta(path: str) -> dict:
+    """Probe width, height, and duration for Telegram sendVideo via ffprobe."""
+    meta: dict[str, int] = {}
+    if not shutil.which("ffprobe"):
+        return meta
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_entries", "stream=width,height,duration:format=duration",
+            path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        if proc.returncode == 0 and stdout:
+            data = json.loads(stdout.decode("utf-8", errors="replace"))
+            dur_str = data.get("format", {}).get("duration")
+            streams = data.get("streams", [])
+            width = None
+            height = None
+            if streams:
+                for s in streams:
+                    if s.get("width") and s.get("height"):
+                        width = int(s["width"])
+                        height = int(s["height"])
+                        if not dur_str and s.get("duration"):
+                            dur_str = s["duration"]
+                        break
+            if dur_str:
+                try:
+                    dur = int(round(float(dur_str)))
+                    if dur > 0:
+                        meta["duration"] = dur
+                except (ValueError, TypeError):
+                    pass
+            if width and width > 0:
+                meta["width"] = width
+            if height and height > 0:
+                meta["height"] = height
+    except Exception:
+        pass
+    return meta
+
+
 def available(path: str) -> bool:
     """True when this part can take the fast path (config present + file visible to the server)."""
     return bool(
@@ -47,12 +94,16 @@ def available(path: str) -> bool:
     )
 
 
-async def send_part(path: str, caption: str, as_document: bool, chat_id: int):
+async def send_part(path: str, caption: str, as_document: bool, chat_id: int, thumb: str | None = None):
     """Send one part via the local Bot API → (message_id, file_id, sent_as_document).
     Raises RuntimeError on an API refusal (caller falls back to Telethon)."""
     ext = os.path.splitext(path)[1].lower()
     if not as_document and ext in _VIDEO_EXTS:
-        method, field, extra = "sendVideo", "video", {"supports_streaming": True}
+        meta = await probe_video_meta(path)
+        extra = {"supports_streaming": True, **meta}
+        if thumb and os.path.isfile(thumb) and os.path.abspath(thumb).startswith(BOT_API_VISIBLE_PREFIXES):
+            extra["thumbnail"] = f"file://{os.path.abspath(thumb)}"
+        method, field = "sendVideo", "video"
     elif not as_document and ext in _PHOTO_EXTS:
         method, field, extra = "sendPhoto", "photo", {}
     else:

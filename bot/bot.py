@@ -1097,6 +1097,40 @@ async def process_next_in_queue(update: Update, context: ContextTypes.DEFAULT_TY
         await process_next_in_queue(update, context)
 
 
+async def _inspect_forward_origin(db, origin_chat: str, origin_msg_id: int, timeout_s: float = 3.0) -> Optional[dict]:
+    """Inspect source channel post/album via Telethon MTProto to recover caption, title, and tags."""
+    try:
+        rs = await db.execute(
+            "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, status) "
+            "VALUES (?, ?, ?, 'inspecting') RETURNING id",
+            [f"fwd:{origin_chat}/{origin_msg_id}", origin_chat, origin_msg_id],
+        )
+        if not rs.rows:
+            return None
+        jid = rs.rows[0][0]
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.15)
+            check = await db.execute(
+                "SELECT status, title, tags, error FROM tg_import_jobs WHERE id=?",
+                [jid],
+            )
+            if not check.rows:
+                break
+            st, t, tg, _ = check.rows[0]
+            if st == "inspected":
+                await db.execute("DELETE FROM tg_import_jobs WHERE id=?", [jid])
+                parsed_tags = [x.strip() for x in (tg or "").split(",") if x.strip()]
+                return {"title": t or None, "tags": parsed_tags}
+            elif st == "inspect_failed":
+                await db.execute("DELETE FROM tg_import_jobs WHERE id=?", [jid])
+                return None
+        await db.execute("DELETE FROM tg_import_jobs WHERE id=?", [jid])
+    except Exception as e:
+        log.warning("Forward origin inspection error: %s", e)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Private chat handler (Bot Drop & File Upload Flow)
 # ---------------------------------------------------------------------------
@@ -1135,6 +1169,29 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     file_name, file_size = get_file_meta(message)
     auto_meta, auto_has_caption = derive_media_meta(message)
+
+    # If the file lacks an explicit caption, check if it was forwarded from a channel
+    # (e.g. a video member of an album where only post 1 held the caption)
+    if not auto_has_caption:
+        origin = getattr(message, "forward_origin", None)
+        origin_chat = None
+        origin_msg_id = None
+        if origin and getattr(origin, "type", None) == "channel" and getattr(origin, "chat", None):
+            origin_chat = str(origin.chat.id)
+            origin_msg_id = getattr(origin, "message_id", None)
+        elif getattr(message, "forward_from_chat", None) and getattr(message, "forward_from_message_id", None):
+            origin_chat = str(message.forward_from_chat.id)
+            origin_msg_id = message.forward_from_message_id
+
+        if origin_chat and origin_msg_id:
+            inspected = await _inspect_forward_origin(db, origin_chat, origin_msg_id)
+            if inspected and inspected.get("title"):
+                auto_meta["title"] = inspected["title"]
+                if inspected.get("tags"):
+                    for t in inspected["tags"]:
+                        if t not in auto_meta["tags"]:
+                            auto_meta["tags"].append(t)
+                auto_has_caption = True
 
     # Check if the file already has a valid caption contract matching Title | part/total | tags
     caption_meta = parse_caption(message.caption)
@@ -1454,14 +1511,14 @@ async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if import_job_id:
                 await db.execute(
-                    "UPDATE tg_import_jobs SET status='queued', message_id=?, title=?, tags=?, updated_at=now_text() WHERE id=?",
-                    [status_msg.message_id, title, tags_str, import_job_id],
+                    "UPDATE tg_import_jobs SET status='queued', message_id=?, reply_to_msg_id=?, title=?, tags=?, updated_at=now_text() WHERE id=?",
+                    [status_msg.message_id, orig_msg_id, title, tags_str, import_job_id],
                 )
             else:
                 await db.execute(
-                    "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, title, tags, status) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
-                    [raw_link, target_chat, target_msg_id, comment_id, chat_id, status_msg.message_id, title, tags_str],
+                    "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, reply_to_msg_id, title, tags, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
+                    [raw_link, target_chat, target_msg_id, comment_id, chat_id, status_msg.message_id, orig_msg_id, title, tags_str],
                 )
             log.info("Queued tg_import job via questionnaire: %s / %s (Title: %s)", target_chat, target_msg_id, title)
         except Exception as e:
@@ -1593,9 +1650,9 @@ async def start_link_import_flow(message: Message, context: ContextTypes.DEFAULT
 
     try:
         rs = await db.execute(
-            "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'inspecting') RETURNING id",
-            [raw_link, target_chat, target_msg_id, comment_id, chat_id, prompt.message_id],
+            "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, reply_to_msg_id, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'inspecting') RETURNING id",
+            [raw_link, target_chat, target_msg_id, comment_id, chat_id, prompt.message_id, msg_id],
         )
         if rs.rows:
             import_job_id = rs.rows[0][0]
@@ -1723,9 +1780,9 @@ async def on_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             await db.execute(
-                "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, title, tags, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
-                [raw_link, target_chat, target_msg_id, comment_id, message.chat_id, status_msg.message_id, title, tags],
+                "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, reply_to_msg_id, title, tags, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
+                [raw_link, target_chat, target_msg_id, comment_id, message.chat_id, status_msg.message_id, message.message_id, title, tags],
             )
             log.info("Queued tg_import job: %s / %s (comment: %s) for user %s", target_chat, target_msg_id, comment_id, user.id)
         except Exception as e:
@@ -1809,9 +1866,9 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 try:
                     await db.execute(
-                        "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, title, tags, status) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
-                        [raw_link, target_chat, target_msg_id, comment_id, message.chat_id, status_msg.message_id, title, tags],
+                        "INSERT INTO tg_import_jobs (link, target_chat, target_msg_id, comment_id, chat_id, message_id, reply_to_msg_id, title, tags, status) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
+                        [raw_link, target_chat, target_msg_id, comment_id, message.chat_id, status_msg.message_id, message.message_id, title, tags],
                     )
                     log.info("Queued tg_import job via direct link: %s / %s (comment: %s)", target_chat, target_msg_id, comment_id)
                 except Exception as e:
@@ -2171,6 +2228,9 @@ def main():
         .token(BOT_TOKEN)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .connect_timeout(15.0)
     )
 
     if TELEGRAM_API_URL:

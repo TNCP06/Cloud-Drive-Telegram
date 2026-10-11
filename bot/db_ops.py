@@ -80,10 +80,17 @@ async def upsert_item(db, slug, title, kind, total, set_title=True, is_private=N
     """
     original_title = title
     if "/" in original_title:
-        title_parts = [p.strip() for p in original_title.split("/")]
-        folder_path = "/".join(title_parts[:-1])
-        title = title_parts[-1]
-        folder_id = await resolve_folders(db, folder_path, is_private=is_private)
+        title_parts = [p.strip() for p in original_title.split("/") if p.strip()]
+        if len(title_parts) > 1:
+            folder_path = "/".join(title_parts[:-1])
+            title = title_parts[-1]
+            folder_id = await resolve_folders(db, folder_path, is_private=is_private)
+        elif len(title_parts) == 1:
+            title = title_parts[0]
+            folder_id = None
+        else:
+            title = original_title.strip(" /") or "Untitled"
+            folder_id = None
     else:
         folder_id = None
 

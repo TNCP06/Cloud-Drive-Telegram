@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS tg_import_jobs (
     comment_id    BIGINT,
     chat_id       BIGINT,
     message_id    BIGINT,
+    reply_to_msg_id BIGINT,
     filename      TEXT,
     title         TEXT,
     tags          TEXT,

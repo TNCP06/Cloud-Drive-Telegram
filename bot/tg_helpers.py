@@ -110,6 +110,16 @@ def get_file_id(message) -> str | None:
     return None
 
 
+META_LABEL_RE = re.compile(
+    r"^(?:原创|原創|类型|類型|编号|編號|标签|標籤|解压密码|解压码|密码|提取码|频道|群组|作者|出处|来源|资源|格式|大小|时长|分辨率|更多|关注|备用|防走丢|商务|合作|source|author|channel|password|pass|code|size|type|id)\s*[:：]",
+    re.IGNORECASE,
+)
+PROMO_LINE_RE = re.compile(
+    r"(?:点击(?:加入|下载|关注|查看|获取)|更多(?:精彩|资源)|商务合作|防走丢|永久(?:地址|域名|回家)|官方(?:频道|群组|发布页)|交流群|发布频道)",
+    re.IGNORECASE,
+)
+
+
 def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
     """Extract clean title and tags from a free-form caption or filename.
 
@@ -117,7 +127,9 @@ def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
     - Handles hyphenated and decorated tags (#hp-backup, 【_#tag_】).
     - Promotional links (http://..., https://..., t.me/..., @channel) are stripped.
     - Pipe characters '|' are converted to '-' to prevent corrupting caption contracts.
-    - Scans across lines to find the first meaningful text line for title.
+    - Strips leading decorative bullets, emojis, and symbols.
+    - Scans across lines to find the first meaningful text line for title (skipping lines
+      that are purely emojis/symbols, metadata labels e.g. 原创：, or promotional links).
     - If no text remains outside hashtags, falls back to the first hashtag as title.
     - Limits title to 120 chars.
     """
@@ -136,6 +148,7 @@ def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
 
     # 2. Extract title: scan lines from top to bottom
     title = None
+    meta_fallback = None
     for line in text.splitlines():
         # Remove URLs and telegram username handles
         cleaned = re.sub(r"https?://\S+|t\.me/\S+", "", line)
@@ -146,15 +159,38 @@ def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
         cleaned = re.sub(r"【[_\s]*】|\[[_\s]*\]|\([_\s]*\)|<[_\s]*>", "", cleaned)
         # Replace pipe '|' with '-' to avoid collision with Title | part/total | tags
         cleaned = cleaned.replace("|", "-")
-        # Normalize whitespace and strip common decorative bullet/border characters
-        cleaned = re.sub(r"\s+", " ", cleaned).strip(" \t\r\n-|•~*")
-        if cleaned:
-            title = cleaned[:120].strip(" -|")
-            break
+        # Strip leading decorative bullets, symbols, dashes, and emojis
+        cleaned = re.sub(r"^[•▪▫▶►▸◆◇★☆✓✔◉~—\-_|/:\s]+", "", cleaned)
+        cleaned = re.sub(r"^[\U00010000-\U0010ffff\u2600-\u27bf\s]+", "", cleaned)
+        # Strip trailing bullets, symbols, emojis, whitespace
+        cleaned = re.sub(r"[•▪▫▶►▸◆◇★☆✓✔◉~—\-_|/:\s\U00010000-\U0010ffff\u2600-\u27bf]+$", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" \t\r\n-|•~*/")
+
+        # Must have at least one alphanumeric/word character (not just emoji or punctuation)
+        if not re.search(r"[^\W_]", cleaned):
+            continue
+
+        # Skip promotional lines
+        if PROMO_LINE_RE.search(cleaned):
+            continue
+
+        # Check if it is a metadata label line (e.g. 原创：... or 类型：...)
+        if META_LABEL_RE.search(cleaned):
+            if not meta_fallback:
+                meta_fallback = cleaned[:120].strip(" -|/")
+            continue
+
+        # Found a solid meaningful line
+        title = cleaned[:120].strip(" -|/")
+        break
+
+    # If no descriptive title found, try metadata line fallback if available
+    if not title and meta_fallback:
+        title = meta_fallback
 
     # 3. Fallback: if caption was purely hashtags / links, use the first tag as title
     if not title and tags:
-        title = tags[0][:120]
+        title = tags[0][:120].strip(" -|/")
 
     return title or None, tags
 
@@ -177,6 +213,9 @@ def derive_media_meta(message):
         fn_stem = os.path.splitext(os.path.basename(file_name))[0]
         fn_title, fn_tags = extract_caption_meta(fn_stem)
         if not title and fn_title:
+            title = fn_title
+        elif title and title in tags and fn_title and fn_title not in fn_tags:
+            # Upgrade title if caption was purely a tag fallback and filename has real name
             title = fn_title
         for t in fn_tags:
             if t not in tags:
