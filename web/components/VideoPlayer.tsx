@@ -506,7 +506,7 @@ export function VideoPlayer({
         player?.destroy();
       } catch {}
     };
-  }, [src, partId, qualities]);
+  }, [src, partId, qualities, onToggleFullscreen]);
 
   const handleClick = (e: React.MouseEvent) => {
     // The player sits inside .viewer-stage (whose click closes the viewer); stop

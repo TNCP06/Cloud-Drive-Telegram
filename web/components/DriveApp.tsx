@@ -28,7 +28,6 @@ import {
   FileFolderCard,
   Menu,
   MenuItem,
-  SubMenuItem,
 } from "./FileViews";
 import { fileTypeFor } from "@/lib/fileType";
 import { PreviewDrawer } from "./PreviewDrawer";
@@ -453,17 +452,6 @@ export function DriveApp({
     startTransition(async () => {
       optimizeFiles({ type: "star", ids: [item.id], starred: !item.starred });
       await toggleFavorite(item.id, !item.starred);
-    });
-  const doTrash = (item: DriveFile) =>
-    startTransition(async () => {
-      optimizeFiles({ type: "trash", ids: [item.id] });
-      await softDelete(item.id);
-    });
-  const doPurge = (item: DriveFile) =>
-    startTransition(async () => {
-      optimizeFiles({ type: "remove", ids: [item.id] });
-      const r = await purgeNow(item.id);
-      if (!r.ok) setToast(r.error ?? "Failed to delete permanently.");
     });
   // Run a confirmed destructive action, then dismiss the dialog (and the preview
   // drawer if it was showing the same item, since it may now be gone).

@@ -661,6 +661,7 @@ export function PreviewDrawer({
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onClose, showDetails, editing, go, item.kind, activePart, detailsOnly, isDocStage, isImageStage, subsOpen]);
 
   // Swipe left/right gesture handlers for mobile preview — plus pinch/double-tap zoom on a still
@@ -788,6 +789,7 @@ export function PreviewDrawer({
                   onDownload={onDownload}
                 />
               ) : isImageStage ? (
+                // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={loadedStreamSrc || activePart?.thumb || (activePart?.partId ? `/api/stream/${activePart.partId}` : "")}
                   alt={viewerTitle}
