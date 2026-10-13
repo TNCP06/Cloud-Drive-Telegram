@@ -868,9 +868,10 @@ button { font-family: inherit; }
    state is visible instead of hiding in the "L" shortcut. */
 .viewer-video .plyr__control.tcd-loop svg { width: 18px; height: 18px; }
 .viewer-video .plyr__control.tcd-loop.plyr__control--pressed { color: var(--accent); }
-.viewer-video .plyr:hover .plyr__controls {
-  pointer-events: auto !important;
-}
+.viewer-video .plyr:hover:not(.plyr--hide-controls) .plyr__controls,
+.viewer-video .plyr.plyr--paused .plyr__controls,
+.viewer-video .plyr.plyr--stopped .plyr__controls,
+.viewer-video .plyr:not(.plyr--playing) .plyr__controls,
 .viewer-video .plyr__controls:hover,
 .viewer-video .plyr__controls:focus-within,
 /* The collapsed floatpill sits ON the button row and covers its centre, so a cursor resting there
@@ -880,17 +881,16 @@ button { font-family: inherit; }
   opacity: 1 !important;
   pointer-events: auto !important;
 }
+
+.viewer-video .plyr--hide-controls .plyr__controls {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 @media (hover: none) {
   .viewer-video .plyr__controls {
     opacity: 1 !important;
     pointer-events: auto !important;
-  }
-  /* Except when Plyr itself has hidden them. On touch Plyr already behaves like a gallery app — a
-     tap reveals the controls, 3s of stillness clears them — so follow that signal rather than
-     pinning the controls on, and take the rest of the floating chrome along with it. */
-  .viewer-video .plyr--hide-controls .plyr__controls {
-    opacity: 0 !important;
-    pointer-events: none !important;
   }
   .viewer.has-video-stage:has(.plyr--hide-controls) .viewer-top {
     transform: translateY(-100%);
@@ -925,9 +925,53 @@ button { font-family: inherit; }
 /* Lift ONLY while the seek bar is actually visible — the SAME `:hover` signal that reveals it.
    Deliberately NOT `:focus-within`: after clicking play, the strip keeps focus, which would stick
    the subtitles up long after the cursor left — read by the user as "moving on its own". */
+.viewer-video .plyr:not(.plyr--playing):has(.plyr__controls:not(:empty)) .plyr__captions,
+.viewer-video .plyr:hover:not(.plyr--hide-controls):has(.plyr__controls:not(:empty)) .plyr__captions,
 .viewer-video .plyr:has(.plyr__controls:hover) .plyr__captions,
 .viewer:has(.viewer-floatpill:hover) .viewer-video .plyr__captions {
   bottom: 74px;
+}
+
+/* Error banner when video stream fails to load */
+.viewer-video-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+  pointer-events: auto;
+}
+.viewer-video-error-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  background: rgba(22, 14, 14, 0.94);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: var(--r-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(12px);
+  color: #fff;
+  font-size: 13.5px;
+  text-align: center;
+}
+.viewer-video-error-card button {
+  padding: 6px 16px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 500;
+  font-size: 13px;
+  border: none;
+  cursor: pointer;
+  transition: opacity .15s ease;
+}
+.viewer-video-error-card button:hover {
+  opacity: 0.9;
+}
+.viewer-video:has(.viewer-video-error) .plyr__control--overlaid {
+  display: none !important;
 }
 
 /* Seek-preview thumbnail popup (Plyr's previewThumbnails) — polished look */

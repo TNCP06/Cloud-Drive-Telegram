@@ -641,6 +641,7 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
     Downloads/reads a chunk, saves it to disk, and yields bytes within [slice_start, slice_end].
     If slice_start >= slice_end, it just ensures the chunk is on disk without yielding.
     """
+    global _cache_bytes
     if request and await request.is_disconnected():
         raise asyncio.CancelledError()
 
@@ -1732,6 +1733,8 @@ async def stream(part_id: int, request: Request):
         log.warning("Chunk size changed (was %s, now %d), evicting cache for part %d", 
                     meta.get("chunk_size"), CHUNK_SIZE, part_id)
         shutil.rmtree(CACHE_DIR / f"part_{part_id}", ignore_errors=True)
+        global _cache_bytes
+        _cache_bytes = None
         meta = None
 
     if meta is None:

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 // plyr 3.8.4 resolves to its untyped source here, and `tsc` and `next build` disagree over whether
 // that is an error — so suppress with `@ts-ignore` (never "unused") rather than `@ts-expect-error`.
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -138,6 +138,7 @@ export function VideoPlayer({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const posterDims = useRef<{ w: number; h: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // Resolve poster dimensions (a data-URL thumbnail → loads instantly) so the
   // letterbox hit-test works even before the video reports its own size.
@@ -168,6 +169,18 @@ export function VideoPlayer({
     let destroyed = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     const controller = new AbortController();
+
+    const handleVideoError = () => {
+      const err = video.error;
+      let msg = "Failed to load video stream.";
+      if (err) {
+        if (err.code === 2) msg = "Network error loading video stream.";
+        else if (err.code === 3) msg = "Video decoding error.";
+        else if (err.code === 4) msg = "Video format or source not supported.";
+      }
+      setError(msg);
+    };
+    video.addEventListener("error", handleVideoError);
 
     // Subtitles live at the part-keyed streamer routes (list at `${base}`, one track at
     // `${base}/${lang}`).
@@ -254,13 +267,11 @@ export function VideoPlayer({
         fullscreen: { enabled: true, fallback: false },
         captions: { active: chosenLang != null, language: chosenLang ?? "auto", update: true },
         settings: hasQualities ? ["quality", "captions", "speed"] : ["captions", "speed"],
-        quality: hasQualities
-          ? {
-              default: defaultQuality ?? qualityOptions[0] ?? 1080,
-              options: qualityOptions,
-              forced: false,
-            }
-          : undefined,
+        quality: {
+          default: defaultQuality ?? qualityOptions[0] ?? 1080,
+          options: qualityOptions,
+          forced: false,
+        },
         controls: [
           "play-large",
           "play",
@@ -354,6 +365,11 @@ export function VideoPlayer({
         addLoopButton();
         videoRef.current?.focus();
       });
+
+      const clearVideoError = () => setError(null);
+      player.on("error", handleVideoError);
+      player.on("playing", clearVideoError);
+      player.on("canplay", clearVideoError);
 
       // Persist any user volume/mute change for the next video and next session.
       player.on("volumechange", () => {
@@ -473,6 +489,7 @@ export function VideoPlayer({
     return () => {
       destroyed = true;
       controller.abort();
+      video.removeEventListener("error", handleVideoError);
       if (pollTimer) clearInterval(pollTimer);
       // Save the position on close/source-switch so reopening resumes from the exact spot.
       try {
@@ -535,8 +552,21 @@ export function VideoPlayer({
     if (insideFrame) {
       // Only the frame toggles play/pause; a letterbox click is intentionally inert so the
       // viewer can only be dismissed via the ✕ button or Esc.
-      if (video.paused) video.play().catch(() => {});
-      else video.pause();
+      if (video.paused) {
+        setError(null);
+        video.play().catch(() => {
+          const err = video.error;
+          if (err) {
+            let msg = "Failed to load video stream.";
+            if (err.code === 2) msg = "Network error loading video stream.";
+            else if (err.code === 3) msg = "Video decoding error.";
+            else if (err.code === 4) msg = "Video format or source not supported.";
+            setError(msg);
+          }
+        });
+      } else {
+        video.pause();
+      }
     }
   };
 
@@ -561,6 +591,25 @@ export function VideoPlayer({
             />
           ))}
       </video>
+      {error && (
+        <div className="viewer-video-error" onClick={(e) => e.stopPropagation()}>
+          <div className="viewer-video-error-card">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                if (videoRef.current) {
+                  videoRef.current.load();
+                  videoRef.current.play().catch(() => {});
+                }
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
