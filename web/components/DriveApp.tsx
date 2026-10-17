@@ -110,6 +110,35 @@ const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME;
 const deepLink = (slug: string): string | null =>
   BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=${slug}` : null;
 
+/**
+ * If targetFolderId is an ancestor of fromFolderId, returns the immediate child
+ * folder ID under targetFolderId along the path down to fromFolderId.
+ * e.g., if path is Root (null) -> A (1) -> B (2) -> C (3):
+ * findChildUnderAncestor(null, 3, folders) => 1
+ * findChildUnderAncestor(1, 3, folders) => 2
+ * findChildUnderAncestor(2, 3, folders) => 3
+ */
+function findChildUnderAncestor(
+  targetFolderId: number | null,
+  fromFolderId: number | null,
+  folderList: Folder[]
+): number | null {
+  if (fromFolderId == null) return null;
+  let cur: number | null = fromFolderId;
+  const visited = new Set<number>();
+  while (cur != null) {
+    if (visited.has(cur)) break;
+    visited.add(cur);
+    const f = folderList.find((x) => x.id === cur);
+    if (!f) break;
+    if (f.parentId === targetFolderId) {
+      return f.id;
+    }
+    cur = f.parentId;
+  }
+  return null;
+}
+
 export function DriveApp({
   files: baseFiles,
   tags,
@@ -239,6 +268,18 @@ export function DriveApp({
       router.push("/");
     });
 
+  // Keyboard navigation & roving tabindex cursor tracking
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  const lastActiveElementRef = useRef<HTMLElement | null>(null);
+  const lastFocusedKeyRef = useRef<string | null>(null);
+
+  // Folder navigation focus memory: remembers the last focused entry per folder,
+  // and tracks pending focus restoration when popping back up the folder tree.
+  const foldersRef = useRef(folders);
+  foldersRef.current = folders;
+  const lastFolderFocusRef = useRef<Map<number | null, SelKey>>(new Map());
+  const pendingRestoreKeyRef = useRef<SelKey | null>(null);
+
   // Multi-select states. `selected` holds tagged keys (`i:<id>` / `f:<id>`) so files and
   // folders share one selection; the id arrays below are derived for the actions.
   const [selected, setSelected] = useState<SelKey[]>([]);
@@ -253,7 +294,34 @@ export function DriveApp({
   const clearSelection = () => {
     setSelected([]);
     setSelectAnchor(null);
+    setFocusedKey(null);
+    lastFocusedKeyRef.current = null;
   };
+
+  const applyFolderTransition = (targetId: number | null, fromId: number | null) => {
+    // 1. If transitioning up to an ancestor, restore focus to the exited child folder
+    const childUnderAncestor = findChildUnderAncestor(targetId, fromId, foldersRef.current);
+    let restoreKey: SelKey | null = null;
+    if (childUnderAncestor != null) {
+      restoreKey = fk(childUnderAncestor);
+    } else if (targetId !== fromId) {
+      // 2. Otherwise check if we previously focused an item in targetId
+      const lastKey = lastFolderFocusRef.current.get(targetId);
+      if (lastKey) restoreKey = lastKey;
+    }
+
+    if (restoreKey) {
+      pendingRestoreKeyRef.current = restoreKey;
+      setFocusedKey(restoreKey);
+      lastFocusedKeyRef.current = restoreKey;
+      setSelected([restoreKey]);
+      setSelectAnchor(restoreKey);
+    } else {
+      clearSelection();
+    }
+  };
+  const applyFolderTransitionRef = useRef(applyFolderTransition);
+  applyFolderTransitionRef.current = applyFolderTransition;
   const [confirmBulk, setConfirmBulk] = useState<{
     itemIds: number[];
     folderIds: number[];
@@ -439,8 +507,9 @@ export function DriveApp({
       // Folder state sync
       const targetFolderId = folderParam ? Number(folderParam) : null;
       if (targetFolderId !== currentFolderIdRef.current) {
+        const fromId = currentFolderIdRef.current;
         setCurrentFolderId(targetFolderId);
-        clearSelection();
+        applyFolderTransitionRef.current(targetFolderId, fromId);
       }
     };
 
@@ -1016,6 +1085,7 @@ export function DriveApp({
     if (clickThroughNow()) return;
     setFocusedKey(key);
     lastFocusedKeyRef.current = key;
+    lastFolderFocusRef.current.set(currentFolderId, key);
     if (e.ctrlKey || e.metaKey) {
       toggleKey(key);
       setSelectAnchor(key);
@@ -1057,6 +1127,7 @@ export function DriveApp({
     setSelectAnchor(ik(it.id));
     setFocusedKey(ik(it.id));
     lastFocusedKeyRef.current = ik(it.id);
+    lastFolderFocusRef.current.set(currentFolderId, ik(it.id));
   };
 
   /* ---- folder navigation (records a back-stack) ----
@@ -1064,9 +1135,10 @@ export function DriveApp({
      visited path; Alt+Up jumps to the parent of the current folder. */
   const goToFolder = (id: number | null, pushHistory = true) => {
     if (id === currentFolderId) return;
+    const fromId = currentFolderId;
     setFolderHistory((h) => [...h, currentFolderId]);
     setCurrentFolderId(id);
-    clearSelection();
+    applyFolderTransition(id, fromId);
     if (pushHistory && typeof window !== "undefined") {
       const url = new URL(window.location.href);
       if (id != null) url.searchParams.set("folder", String(id));
@@ -1082,9 +1154,16 @@ export function DriveApp({
   const goBackFolder = () => {
     if (folderHistory.length > 0) {
       const prev = folderHistory[folderHistory.length - 1];
+      const fromId = currentFolderId;
       setFolderHistory((h) => h.slice(0, -1));
       setCurrentFolderId(prev);
-      clearSelection();
+      applyFolderTransition(prev, fromId);
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        if (prev != null) url.searchParams.set("folder", String(prev));
+        else url.searchParams.delete("folder");
+        window.history.pushState({ type: "folder", folderId: prev }, "", url.toString());
+      }
       return;
     }
     // If no history exists (e.g. user refreshed or landed directly on this folder),
@@ -1095,14 +1174,9 @@ export function DriveApp({
   };
   const goToParentFolder = () => {
     if (currentFolderId == null) return;
-    const f = folders.find((x) => x.id === currentFolderId);
+    const f = foldersRef.current.find((x) => x.id === currentFolderId);
     goToFolder(f ? f.parentId : null);
   };
-
-  // Keyboard navigation & roving tabindex cursor tracking
-  const [focusedKey, setFocusedKey] = useState<string | null>(null);
-  const lastActiveElementRef = useRef<HTMLElement | null>(null);
-  const lastFocusedKeyRef = useRef<string | null>(null);
 
   // Active roving tab stop: focused item, or first selected item, or first visible item
   const activeRovingKey = useMemo(() => {
@@ -1110,6 +1184,32 @@ export function DriveApp({
     if (selected.length > 0 && visibleKeys.includes(selected[0])) return selected[0];
     return visibleKeys[0] ?? null;
   }, [focusedKey, selected, visibleKeys]);
+
+  // Auto-scroll and DOM-focus restoration when returning to a folder or ancestor
+  useEffect(() => {
+    const restoreKey = pendingRestoreKeyRef.current;
+    if (!restoreKey) return;
+
+    const tryFocus = () => {
+      const el = contentRef.current?.querySelector<HTMLElement>(`[data-key="${restoreKey}"]`);
+      if (el) {
+        pendingRestoreKeyRef.current = null;
+        el.focus({ preventScroll: true });
+        el.scrollIntoView({ block: "nearest", inline: "nearest" });
+        return true;
+      }
+      return false;
+    };
+
+    if (tryFocus()) return;
+
+    // Retry once in the next paint tick if DOM nodes haven't committed yet
+    const timer = setTimeout(() => {
+      tryFocus();
+      pendingRestoreKeyRef.current = null;
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [currentFolderId, visibleKeys]);
 
   // Folder-cell wiring — folders share the file selection model.
   const onFolderOpen = (id: number) => {
@@ -1132,6 +1232,7 @@ export function DriveApp({
         setSelectAnchor(fk(f.id));
         setFocusedKey(fk(f.id));
         lastFocusedKeyRef.current = fk(f.id);
+        lastFolderFocusRef.current.set(currentFolderId, fk(f.id));
       },
       selected: selectedSet.has(fk(folder.id)),
       focused: activeRovingKey === fk(folder.id),
@@ -1255,6 +1356,7 @@ export function DriveApp({
           setSelectAnchor(targetKey);
           setFocusedKey(targetKey);
           lastFocusedKeyRef.current = targetKey;
+          lastFolderFocusRef.current.set(currentFolderId, targetKey);
         }
       } else if (selected.length === 1) {
         const selKey = selected[0];
@@ -1440,6 +1542,7 @@ export function DriveApp({
       const skey = keyOf(start);
       setFocusedKey(skey);
       lastFocusedKeyRef.current = skey;
+      lastFolderFocusRef.current.set(currentFolderId, skey);
       setSelected([skey]);
       setSelectAnchor(skey);
       return;
@@ -1509,6 +1612,7 @@ export function DriveApp({
     const tkey = keyOf(target);
     setFocusedKey(tkey);
     lastFocusedKeyRef.current = tkey;
+    lastFolderFocusRef.current.set(currentFolderId, tkey);
 
     if (e.shiftKey) {
       // Extend the range from the anchor (seed it from the current entry if unset).
