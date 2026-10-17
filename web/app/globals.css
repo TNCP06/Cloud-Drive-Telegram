@@ -974,23 +974,43 @@ button { font-family: inherit; }
   display: none !important;
 }
 
-/* Seek-preview thumbnail popup (Plyr's previewThumbnails) — polished look */
+/* Seek-preview thumbnail popup (Plyr's previewThumbnails) — polished look & instant responsiveness */
 .viewer-video .plyr__preview-thumb {
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
   border-radius: 0 !important;
+  transition: opacity 0.08s ease, transform 0.08s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  transition-delay: 0s !important;
+  will-change: transform, left;
+  transform: translate3d(0, 10px, 0) scale(0.85);
+}
+.viewer-video .plyr__preview-thumb--is-shown {
+  transform: translate3d(0, 0, 0) scale(1) !important;
 }
 .viewer-video .plyr__preview-thumb__image-container {
   border-radius: 4px;
   overflow: hidden;
   border: 1px solid rgba(255,255,255,.15);
+  contain: paint;
+}
+.viewer-video .plyr__preview-thumb__image-container img {
+  will-change: left, top;
+  transform: translateZ(0);
 }
 .viewer-video .plyr__preview-thumb__time-container {
   background: transparent !important;
   padding-top: 6px !important;
   font-weight: 500;
   text-shadow: 0 1px 3px rgba(0,0,0, 0.9);
+}
+.viewer-video .plyr__preview-scrubbing {
+  transition: opacity 0.1s ease !important;
+  will-change: opacity;
+}
+.viewer-video .plyr__preview-scrubbing img {
+  will-change: left, top;
+  transform: translateZ(0);
 }
 
 /* Fallback: show the default time tooltip while preview thumbnail is not ready / loading */

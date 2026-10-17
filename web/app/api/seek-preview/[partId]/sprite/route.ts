@@ -44,7 +44,7 @@ export async function GET(
 
     const relay = new Headers();
     relay.set("Content-Type", "image/jpeg");
-    relay.set("Cache-Control", "private, max-age=86400");
+    relay.set("Cache-Control", "private, max-age=604800, immutable");
     const cl = resp.headers.get("content-length");
     if (cl) relay.set("Content-Length", cl);
 

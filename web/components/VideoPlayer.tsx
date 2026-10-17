@@ -244,6 +244,10 @@ export function VideoPlayer({
           if (!destroyed && res.ok) {
             const vtt = await res.text();
             previewReady = vtt.includes("-->") && vtt.includes("#xywh=");
+            if (previewReady) {
+              const preload = new window.Image();
+              preload.src = `/api/seek-preview/${partId}/sprite`;
+            }
           }
         } catch {
           // No preview is fine — the player just won't show hover thumbnails.
