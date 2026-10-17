@@ -186,12 +186,12 @@ export function PreviewDrawer({
   const preFullscreenCollapsed = useRef<boolean | null>(null);
   // Fullscreen the WHOLE viewer (not just the media) so the title, controls and filmstrip stay
   // visible in fullscreen — otherwise an expanded strip would vanish on entering fullscreen.
-  const toggleFullscreen = () => {
+  const toggleFullscreen = useCallback(() => {
     const el = viewerRef.current;
     if (!el) return;
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     else el.requestFullscreen?.().then(lockToMediaOrientation).catch(() => {});
-  };
+  }, []);
   // On a phone, a landscape photo/video in fullscreen is otherwise letterboxed into a sliver of a
   // portrait screen. Turn the screen to match the media instead. Best-effort by design: the API
   // needs fullscreen, is Android-only in practice (iOS Safari has no lock), and rejects outright

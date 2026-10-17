@@ -140,6 +140,14 @@ export function VideoPlayer({
   const posterDims = useRef<{ w: number; h: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Stable ref for the fullscreen callback so the main Plyr effect never re-fires
+  // when the parent re-renders with a new function identity (which would destroy the
+  // player mid-playback).
+  const onToggleFsRef = useRef(onToggleFullscreen);
+  onToggleFsRef.current = onToggleFullscreen;
+  const qualitiesRef = useRef(qualities);
+  qualitiesRef.current = qualities;
+
   // Resolve poster dimensions (a data-URL thumbnail → loads instantly) so the
   // letterbox hit-test works even before the video reports its own size.
   useEffect(() => {
@@ -259,8 +267,9 @@ export function VideoPlayer({
       const chosenLang = pickCaptionLang(captionLangs, readSubPref());
 
       // Quality configuration (HTML5 multi-source quality selection)
-      const hasQualities = !!(qualities && qualities.length > 1);
-      const qualityOptions = hasQualities ? qualities.map((q) => q.quality) : [];
+      const currentQualities = qualitiesRef.current;
+      const hasQualities = !!(currentQualities && currentQualities.length > 1);
+      const qualityOptions = hasQualities ? currentQualities.map((q) => q.quality) : [];
       const defaultQuality = hasQualities ? qualityOptions[0] : undefined;
 
       player = new PlyrCtor(videoRef.current, {
@@ -313,7 +322,7 @@ export function VideoPlayer({
 
       // Delegate Plyr's fullscreen toggle to the viewer's toggleFullscreen so topbar, filmstrip and controls stay consistent
       player.fullscreen.toggle = () => {
-        onToggleFullscreen?.();
+        onToggleFsRef.current?.();
       };
 
       // Plyr has no loop control of its own (its `loop` settings entry is unimplemented upstream),
@@ -398,7 +407,7 @@ export function VideoPlayer({
       // Resume from the last watched position and keep it up to date while playing. Seek once the
       // duration is known (loadedmetadata); autoplay then continues from there instead of the start.
       if (partId != null) {
-        const qualityPartIds = qualities?.map((q) => q.partId);
+        const qualityPartIds = qualitiesRef.current?.map((q) => q.partId);
         let hasResumed = false;
         const resume = () => {
           if (hasResumed) return;
@@ -501,8 +510,9 @@ export function VideoPlayer({
           const cur = player.currentTime;
           const dur = video?.duration ?? 0;
           writeProgress(partId, cur, dur);
-          if (qualities) {
-            for (const q of qualities) writeProgress(q.partId, cur, dur);
+          const qList = qualitiesRef.current;
+          if (qList) {
+            for (const q of qList) writeProgress(q.partId, cur, dur);
           }
         }
       } catch {}
@@ -510,7 +520,8 @@ export function VideoPlayer({
         player?.destroy();
       } catch {}
     };
-  }, [src, partId, qualities, onToggleFullscreen]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src, partId]);
 
   const handleClick = (e: React.MouseEvent) => {
     // The player sits inside .viewer-stage (whose click closes the viewer); stop
