@@ -88,6 +88,7 @@ interface ItemProps {
   /** Clicking the "N versions" badge → show all versions in this family. */
   onPickFamily?: (family: string) => void;
   selected?: boolean;
+  focused?: boolean;
   onSelectToggle?: (item: DriveFile, e: React.MouseEvent) => void;
   /** Append the file extension to the displayed name ("File name extensions" toggle). */
   showExtensions?: boolean;
@@ -98,7 +99,8 @@ interface ItemProps {
 /* ---- Selection-on-click / activation-on-double-click wiring ----
    Single click (or Space) selects; double-click (or Enter) activates/opens. Native
    onClick + onDoubleClick keep the two cleanly separated — no manual timer that could
-   fire a premature single-click — and tabIndex keeps each item keyboard-focusable.
+   fire a premature single-click — and roving tabIndex keeps each item keyboard-focusable
+   without trapping the user in a Tab loop.
    `data-key` (`i:<id>` for items, `f:<id>` for folders) lets DriveApp's arrow-key
    handler map focused DOM nodes back to the right entry — files and folders share one
    selection model. Inner buttons (kebab/star/checkbox) stopPropagation so they never
@@ -107,10 +109,11 @@ function activation(
   item: DriveFile,
   onSelect: ItemProps["onSelect"],
   onOpen: ItemProps["onOpen"],
-  onDetail: ItemProps["onDetail"]
+  onDetail: ItemProps["onDetail"],
+  focused?: boolean
 ) {
   return {
-    tabIndex: 0,
+    tabIndex: focused ? 0 : -1,
     role: "button" as const,
     "data-key": `i:${item.id}`,
     // stopPropagation so the click doesn't bubble to the content background (which
@@ -141,10 +144,11 @@ function folderActivation(
   folder: Folder,
   onSelect: FolderProps["onSelect"],
   onOpen: (id: number) => void,
-  onDetail: FolderProps["onDetail"]
+  onDetail: FolderProps["onDetail"],
+  focused?: boolean
 ) {
   return {
-    tabIndex: 0,
+    tabIndex: focused ? 0 : -1,
     role: "button" as const,
     "data-key": `f:${folder.id}`,
     onClick: (e: React.MouseEvent) => {
@@ -176,6 +180,7 @@ interface FolderProps {
   onDetail?: (folder: Folder) => void;
   onSelectToggle?: (folder: Folder, e: React.MouseEvent) => void;
   selected?: boolean;
+  focused?: boolean;
   /** Total items inside (recursive, excludes trashed). */
   itemCount?: number;
   /** Total sub-folders inside (recursive). */
@@ -230,11 +235,12 @@ export function FolderCard({
   onSelect,
   onDetail,
   selected = false,
+  focused = false,
   itemCount,
   subfolderCount,
 }: FolderProps) {
   return (
-    <div className={`card folder ${selected ? "sel" : ""}`} {...folderActivation(folder, onSelect, onOpen, onDetail)}>
+    <div className={`card folder ${selected ? "sel" : ""}`} {...folderActivation(folder, onSelect, onOpen, onDetail, focused)}>
       <div className="folder-ico">
         <Icon name="folder" size={20} stroke={1.6} />
       </div>
@@ -266,13 +272,14 @@ export function FileFolderCard({
   onSelect,
   onDetail,
   selected = false,
+  focused = false,
   showExtensions = false,
 }: ItemProps) {
   const ft = fileTypeFor(item);
   return (
     <div
       className={`card folder ${selected ? "sel" : ""}`}
-      {...activation(item, onSelect, onOpen, onDetail)}
+      {...activation(item, onSelect, onOpen, onDetail, focused)}
     >
       <div
         className="folder-ico"
@@ -314,12 +321,13 @@ export function FolderRow({
   onSelect,
   onDetail,
   selected = false,
+  focused = false,
   onSelectToggle,
   itemCount,
   subfolderCount,
 }: FolderProps) {
   return (
-    <div className={`row ${selected ? "sel" : ""}`} {...folderActivation(folder, onSelect, onOpen, onDetail)}>
+    <div className={`row ${selected ? "sel" : ""}`} {...folderActivation(folder, onSelect, onOpen, onDetail, focused)}>
       <div className="rname">
         {onSelectToggle && (
           <button
@@ -375,13 +383,14 @@ export function FileCard({
   versionCount,
   onPickFamily,
   selected = false,
+  focused = false,
   onSelectToggle,
   showExtensions = false,
   showDetails = true,
 }: ItemProps) {
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
-    <div className={`card ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
+    <div className={`card ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail, focused)}>
       <div style={{ position: "relative" }}>
         {/* Thumb fit comes from CSS (`contain` — nothing cropped), not from an inline `objectFit`,
             which would override it in every layout. */}
@@ -475,6 +484,7 @@ export function FileRow({
   versionCount,
   onPickFamily,
   selected = false,
+  focused = false,
   onSelectToggle,
   showExtensions = false,
   showDetails = true,
@@ -482,7 +492,7 @@ export function FileRow({
   const ft = fileTypeFor(item);
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
-    <div className={`row ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
+    <div className={`row ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail, focused)}>
       <div className="rname">
         {onSelectToggle && (
           <button
@@ -621,6 +631,7 @@ export function FileTile({
   onSelect,
   onDetail,
   selected = false,
+  focused = false,
   onSelectToggle,
   showExtensions = false,
   showDetails = true,
@@ -628,7 +639,7 @@ export function FileTile({
   const ft = fileTypeFor(item);
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
-    <div className={`tile ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
+    <div className={`tile ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail, focused)}>
       <div style={{ position: "relative", flex: "none" }}>
         <div className="tile-thumb" style={{ background: `color-mix(in oklab, ${ft.tint} 10%, var(--card-2))` }}>
           {item.thumb ? (
@@ -680,6 +691,7 @@ export function FileContent({
   versionCount,
   onPickFamily,
   selected = false,
+  focused = false,
   onSelectToggle,
   showExtensions = false,
   showDetails = true,
@@ -687,7 +699,7 @@ export function FileContent({
   const ft = fileTypeFor(item);
   const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
   return (
-    <div className={`crow ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
+    <div className={`crow ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail, focused)}>
       <SelectCheck item={item} selected={selected} onSelectToggle={onSelectToggle} cls="crow-check" />
       <div style={{ position: "relative", flex: "none" }}>
         <div className="crow-thumb">
@@ -750,12 +762,13 @@ export function FileListItem({
   onSelect,
   onDetail,
   selected = false,
+  focused = false,
   onSelectToggle,
   showExtensions = false,
 }: ItemProps) {
   const ft = fileTypeFor(item);
   return (
-    <div className={`litem ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail)}>
+    <div className={`litem ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail, focused)}>
       <SelectCheck item={item} selected={selected} onSelectToggle={onSelectToggle} cls="litem-check" />
       {item.thumb ? (
         <span className="litem-ico" style={{ position: "relative", width: 20, height: 20, borderRadius: 4, overflow: "hidden", display: "inline-block", flex: "none" }}>

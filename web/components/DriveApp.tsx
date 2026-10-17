@@ -1013,6 +1013,8 @@ export function DriveApp({
     setSelected((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   const selectKey = (key: SelKey, e: React.MouseEvent | React.KeyboardEvent) => {
     if (clickThroughNow()) return;
+    setFocusedKey(key);
+    lastFocusedKeyRef.current = key;
     if (e.ctrlKey || e.metaKey) {
       toggleKey(key);
       setSelectAnchor(key);
@@ -1052,6 +1054,8 @@ export function DriveApp({
   const onItemToggle = (it: DriveFile) => {
     toggleKey(ik(it.id));
     setSelectAnchor(ik(it.id));
+    setFocusedKey(ik(it.id));
+    lastFocusedKeyRef.current = ik(it.id);
   };
 
   /* ---- folder navigation (records a back-stack) ----
@@ -1087,6 +1091,18 @@ export function DriveApp({
     goToFolder(f ? f.parentId : null);
   };
 
+  // Keyboard navigation & roving tabindex cursor tracking
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  const lastActiveElementRef = useRef<HTMLElement | null>(null);
+  const lastFocusedKeyRef = useRef<string | null>(null);
+
+  // Active roving tab stop: focused item, or first selected item, or first visible item
+  const activeRovingKey = useMemo(() => {
+    if (focusedKey && visibleKeys.includes(focusedKey)) return focusedKey;
+    if (selected.length > 0 && visibleKeys.includes(selected[0])) return selected[0];
+    return visibleKeys[0] ?? null;
+  }, [focusedKey, selected, visibleKeys]);
+
   // Folder-cell wiring — folders share the file selection model.
   const onFolderOpen = (id: number) => {
     if (clickThroughNow()) return;
@@ -1106,8 +1122,11 @@ export function DriveApp({
       onSelectToggle: (f: Folder) => {
         toggleKey(fk(f.id));
         setSelectAnchor(fk(f.id));
+        setFocusedKey(fk(f.id));
+        lastFocusedKeyRef.current = fk(f.id);
       },
       selected: selectedSet.has(fk(folder.id)),
+      focused: activeRovingKey === fk(folder.id),
       itemCount: s.items,
       subfolderCount: s.subfolders,
     };
@@ -1131,6 +1150,7 @@ export function DriveApp({
             onSelect={onItemSelect}
             onDetail={onDetailItem}
             selected={selectedSet.has(ik(item.id))}
+            focused={activeRovingKey === ik(item.id)}
             onSelectToggle={onItemToggle}
             showExtensions={prefs.showExtensions}
             showDetails={prefs.showDetailItems}
@@ -1140,6 +1160,42 @@ export function DriveApp({
     );
   };
   const foldersGrid = renderFoldersGrid(nonMediaFiles);
+
+  const isOverlayOpen =
+    previewId != null ||
+    !!menu ||
+    !!sortMenu ||
+    !!viewMenu ||
+    !!folderMenu ||
+    showShortcutsModal ||
+    confirmBulk != null ||
+    confirm != null ||
+    confirmRestore != null ||
+    moveTarget != null ||
+    confirmEmptyTrash ||
+    showRenameFolder != null ||
+    folderDetail != null;
+
+  // Focus restoration: remember active element before overlay opens, restore when it closes
+  useEffect(() => {
+    if (isOverlayOpen) {
+      lastActiveElementRef.current = document.activeElement as HTMLElement | null;
+    } else if (lastFocusedKeyRef.current || lastActiveElementRef.current) {
+      const timer = setTimeout(() => {
+        if (lastFocusedKeyRef.current) {
+          const el = contentRef.current?.querySelector<HTMLElement>(`[data-key="${lastFocusedKeyRef.current}"]`);
+          if (el) {
+            el.focus();
+            return;
+          }
+        }
+        if (lastActiveElementRef.current && document.contains(lastActiveElementRef.current)) {
+          lastActiveElementRef.current.focus();
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [isOverlayOpen]);
 
   // Arrow-key navigation between focused entries (files AND folders). Uses live DOM
   // geometry so it works for every layout (grid columns, list rows, column-flow):
@@ -1151,18 +1207,7 @@ export function DriveApp({
   keyNavRef.current = (e: KeyboardEvent) => {
     const ae = document.activeElement as HTMLElement | null;
     const typing = !!ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
-    const overlayOpen =
-      previewId != null ||
-      !!menu ||
-      !!sortMenu ||
-      !!viewMenu ||
-      !!folderMenu ||
-      showShortcutsModal ||
-      confirmBulk != null ||
-      confirm != null ||
-      confirmRestore != null ||
-      moveTarget != null ||
-      confirmEmptyTrash;
+    const overlayOpen = isOverlayOpen;
 
     // Quick Search (Ctrl+K or /)
     if (!typing && !overlayOpen && (e.key === "/" || ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")))) {
@@ -1192,17 +1237,122 @@ export function DriveApp({
       return;
     }
 
+    // Space -> Quick Look preview or Ctrl+Space toggle selection
+    if (!typing && !overlayOpen && e.key === " ") {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        const targetKey = focusedKey ?? (selected.length === 1 ? selected[0] : visibleKeys[0]);
+        if (targetKey) {
+          toggleKey(targetKey);
+          setSelectAnchor(targetKey);
+          setFocusedKey(targetKey);
+          lastFocusedKeyRef.current = targetKey;
+        }
+      } else if (selected.length === 1) {
+        const selKey = selected[0];
+        if (!isItemKey(selKey)) {
+          const fId = keyId(selKey);
+          goToFolder(fId);
+        } else {
+          const fileId = keyId(selKey);
+          const f = files.find((x) => x.id === fileId);
+          if (f) {
+            setInitialShowDetails(false);
+            setInitialEditing(false);
+            setDetailsOnly(false);
+            openPreview(f);
+          }
+        }
+      }
+      return;
+    }
+
     // Enter -> open folder or preview file
     if (!typing && !overlayOpen && e.key === "Enter" && selected.length === 1) {
       e.preventDefault();
       const selKey = selected[0];
-      if (selKey.startsWith("folder:")) {
-        const fId = Number(selKey.replace("folder:", ""));
+      if (!isItemKey(selKey)) {
+        const fId = keyId(selKey);
         goToFolder(fId);
       } else {
-        const fileId = Number(selKey);
+        const fileId = keyId(selKey);
         const f = files.find((x) => x.id === fileId);
         if (f) setPreviewId(f.id);
+      }
+      return;
+    }
+
+    // F2 -> Rename selected file or folder
+    if (!typing && !overlayOpen && e.key === "F2" && selected.length === 1) {
+      e.preventDefault();
+      const selKey = selected[0];
+      if (!isItemKey(selKey)) {
+        const fId = keyId(selKey);
+        const fol = currentFolders.find((f) => f.id === fId);
+        if (fol) setShowRenameFolder(fol);
+      } else {
+        const fileId = keyId(selKey);
+        const f = files.find((x) => x.id === fileId);
+        if (f) {
+          setInitialEditing(true);
+          setInitialShowDetails(true);
+          setDetailsOnly(true);
+          openPreview(f);
+        }
+      }
+      return;
+    }
+
+    // I or Alt+Enter -> Open details/info panel
+    if (!typing && !overlayOpen && (e.key === "i" || e.key === "I" || (e.altKey && e.key === "Enter")) && selected.length === 1) {
+      e.preventDefault();
+      const selKey = selected[0];
+      if (!isItemKey(selKey)) {
+        const fId = keyId(selKey);
+        const fol = currentFolders.find((f) => f.id === fId);
+        if (fol) setFolderDetail(fol);
+      } else {
+        const fileId = keyId(selKey);
+        const f = files.find((x) => x.id === fileId);
+        if (f) {
+          setInitialEditing(false);
+          setInitialShowDetails(true);
+          setDetailsOnly(true);
+          openPreview(f);
+        }
+      }
+      return;
+    }
+
+    // M -> Move selected items to folder
+    if (!typing && !overlayOpen && (e.key === "m" || e.key === "M") && (selectedItemIds.length > 0 || selectedFolderIds.length > 0)) {
+      e.preventDefault();
+      setMoveTarget({ itemIds: selectedItemIds, folderIds: selectedFolderIds });
+      return;
+    }
+
+    // Shift+D -> Download selected items
+    if (!typing && !overlayOpen && e.shiftKey && (e.key === "d" || e.key === "D") && selectedItemIds.length > 0) {
+      e.preventDefault();
+      downloadSelected();
+      return;
+    }
+
+    // 1-4 -> Switch layout view
+    if (!typing && !overlayOpen && !e.ctrlKey && !e.metaKey && !e.altKey && ["1", "2", "3", "4"].includes(e.key)) {
+      e.preventDefault();
+      const layoutMap: Record<string, typeof layout> = {
+        "1": "large",
+        "2": "details",
+        "3": "tiles",
+        "4": "content",
+      };
+      const nextLayout = layoutMap[e.key];
+      if (nextLayout) {
+        updatePrefs({
+          layout: nextLayout,
+          folderLayouts: { ...(prefs.folderLayouts || {}), [currentLayoutKey]: nextLayout },
+        });
       }
       return;
     }
@@ -1279,8 +1429,11 @@ export function DriveApp({
     if (idx === -1) {
       const start = nodes.find((n) => selectedSet.has(keyOf(n))) ?? nodes[0];
       start.focus();
-      setSelected([keyOf(start)]);
-      setSelectAnchor(keyOf(start));
+      const skey = keyOf(start);
+      setFocusedKey(skey);
+      lastFocusedKeyRef.current = skey;
+      setSelected([skey]);
+      setSelectAnchor(skey);
       return;
     }
 
@@ -1314,6 +1467,8 @@ export function DriveApp({
     if (!target) return;
     target.focus();
     const tkey = keyOf(target);
+    setFocusedKey(tkey);
+    lastFocusedKeyRef.current = tkey;
 
     if (e.shiftKey) {
       // Extend the range from the anchor (seed it from the current entry if unset).
@@ -1387,6 +1542,7 @@ export function DriveApp({
       versionCount: counts.get(item.familyKey),
       onPickFamily: pickFamily,
       selected: selectedSet.has(ik(item.id)),
+      focused: activeRovingKey === ik(item.id),
       onSelectToggle: onItemToggle,
       showExtensions: prefs.showExtensions,
       showDetails: prefs.showDetailItems,

@@ -9,6 +9,45 @@ import type { FolderStat } from "./DriveApp";
 // Presentational modals + empty state extracted from DriveApp.tsx. Each is driven
 // entirely by props (no DriveApp internals), so they live here to keep the shell lean.
 
+function useDialogFocusTrap(ref: React.RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const focusables = () =>
+      Array.from(
+        el.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      );
+
+    if (!el.contains(document.activeElement)) {
+      const auto = el.querySelector<HTMLElement>("[autofocus]") ?? focusables()[0];
+      auto?.focus();
+    }
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const items = focusables();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    el.addEventListener("keydown", onKeyDown);
+    return () => el.removeEventListener("keydown", onKeyDown);
+  }, [ref]);
+}
+
 export function ConfirmDelete({
   item,
   mode,
@@ -20,6 +59,8 @@ export function ConfirmDelete({
   onCancel: () => void;
   onConfirm: (targetIds?: number[]) => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef);
   const hasVariants = Boolean(item.variants && item.variants.length > 1);
   const [allVariants, setAllVariants] = useState(true);
 
@@ -42,7 +83,7 @@ export function ConfirmDelete({
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="dialog" style={{ maxWidth: 420 }}>
+      <div ref={dialogRef} className="dialog" style={{ maxWidth: 420 }}>
         <div className="dhead">
           <h2>{purge ? "Delete permanently" : "Move to trash"}</h2>
         </div>
@@ -84,7 +125,7 @@ export function ConfirmDelete({
           )}
         </div>
         <div className="dfoot">
-          <button className="btn subtle" onClick={onCancel}>
+          <button className="btn subtle" onClick={onCancel} autoFocus>
             Cancel
           </button>
           <button
@@ -119,6 +160,9 @@ export function ConfirmBulkDelete({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
@@ -142,7 +186,7 @@ export function ConfirmBulkDelete({
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="dialog" style={{ maxWidth: 420 }}>
+      <div ref={dialogRef} className="dialog" style={{ maxWidth: 420 }}>
         <div className="dhead">
           <h2>{purge ? "Delete permanently" : "Move to trash"}</h2>
         </div>
@@ -163,7 +207,7 @@ export function ConfirmBulkDelete({
           </p>
         </div>
         <div className="dfoot">
-          <button className="btn subtle" onClick={onCancel}>
+          <button className="btn subtle" onClick={onCancel} autoFocus>
             Cancel
           </button>
           <button className="btn danger" onClick={onConfirm}>
@@ -189,6 +233,9 @@ export function ConfirmRestore({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
@@ -215,7 +262,7 @@ export function ConfirmRestore({
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="dialog" style={{ maxWidth: 420 }}>
+      <div ref={dialogRef} className="dialog" style={{ maxWidth: 420 }}>
         <div className="dhead">
           <h2>Restore from trash</h2>
         </div>
@@ -226,7 +273,7 @@ export function ConfirmRestore({
           </p>
         </div>
         <div className="dfoot">
-          <button className="btn subtle" onClick={onCancel}>
+          <button className="btn subtle" onClick={onCancel} autoFocus>
             Cancel
           </button>
           <button className="btn primary" onClick={onConfirm}>
@@ -246,6 +293,9 @@ export function ConfirmEmptyTrash({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
@@ -262,7 +312,7 @@ export function ConfirmEmptyTrash({
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="dialog" style={{ maxWidth: 420 }}>
+      <div ref={dialogRef} className="dialog" style={{ maxWidth: 420 }}>
         <div className="dhead">
           <h2>Empty trash</h2>
         </div>
@@ -273,7 +323,7 @@ export function ConfirmEmptyTrash({
           </p>
         </div>
         <div className="dfoot">
-          <button className="btn subtle" onClick={onCancel}>
+          <button className="btn subtle" onClick={onCancel} autoFocus>
             Cancel
           </button>
           <button className="btn danger" onClick={onConfirm}>
@@ -293,17 +343,19 @@ export function CreateFolderModal({
   onClose: () => void;
   onCreate: (name: string) => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef);
   const [name, setName] = useState("");
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog" style={{ maxWidth: 360 }}>
+      <div ref={dialogRef} className="dialog" style={{ maxWidth: 360 }}>
         <div className="dhead">
           <h2>New folder</h2>
         </div>
         <div className="dbody">
           <input
             className="input"
-            style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--line-2)", borderRadius: "8px", background: "var(--card-2)", color: "var(--ink)" }}
+            style={{ width: "100%", padding: "9px 12px", borderRadius: "8px" }}
             autoFocus
             placeholder="Folder name"
             value={name}
@@ -333,17 +385,19 @@ export function RenameFolderModal({
   onClose: () => void;
   onRename: (name: string) => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef);
   const [name, setName] = useState(folder.name);
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog" style={{ maxWidth: 360 }}>
+      <div ref={dialogRef} className="dialog" style={{ maxWidth: 360 }}>
         <div className="dhead">
           <h2>Rename folder</h2>
         </div>
         <div className="dbody">
           <input
             className="input"
-            style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--line-2)", borderRadius: "8px", background: "var(--card-2)", color: "var(--ink)" }}
+            style={{ width: "100%", padding: "9px 12px", borderRadius: "8px" }}
             autoFocus
             placeholder="Folder name"
             value={name}
@@ -373,10 +427,12 @@ export function UnpackModal({
   onClose: () => void;
   onUnpack: (password: string) => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef);
   const [password, setPassword] = useState("");
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog" style={{ maxWidth: 380 }}>
+      <div ref={dialogRef} className="dialog" style={{ maxWidth: 380 }}>
         <div className="dhead">
           <h2>Unpack archive</h2>
         </div>
@@ -392,7 +448,7 @@ export function UnpackModal({
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--line-2)", borderRadius: "8px", background: "var(--card-2)", color: "var(--ink)" }}
+            style={{ width: "100%", padding: "9px 12px", borderRadius: "8px" }}
             autoFocus
             placeholder="Password (leave blank if none)"
             value={password}
@@ -466,9 +522,12 @@ export function MoveToFolderModal({
   if (moveItemIds.length) parts.push(`${moveItemIds.length} item${moveItemIds.length > 1 ? "s" : ""}`);
   const what = parts.join(" + ") || "items";
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef);
+
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="dialog" style={{ maxWidth: 400 }}>
+      <div ref={dialogRef} className="dialog" style={{ maxWidth: 400 }}>
         <div className="dhead">
           <h2>Move {what} to folder</h2>
         </div>
@@ -755,6 +814,9 @@ export function EmptyState({ view, query }: { view: string; query: string }) {
 }
 
 export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(dialogRef);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -768,8 +830,11 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
       category: "Navigation & selection",
       list: [
         { key: "Arrow Keys", desc: "Move focus & selection between items" },
+        { key: "Ctrl + Arrows", desc: "Move focus cursor only (leave selection)" },
         { key: "Shift + Arrows", desc: "Select range of items" },
-        { key: "Enter", desc: "Open selected folder or preview selected file" },
+        { key: "Space", desc: "Quick Look preview or toggle item" },
+        { key: "Ctrl + Space", desc: "Toggle selection of focused item" },
+        { key: "Enter", desc: "Open folder or preview selected file" },
         { key: "Backspace", desc: "Step back through visited folders" },
         { key: "Alt + ArrowUp", desc: "Go up one level to parent folder" },
         { key: "Ctrl / Cmd + A", desc: "Select all visible files and folders" },
@@ -777,11 +842,16 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
       ],
     },
     {
-      category: "Search & actions",
+      category: "File actions & layout",
       list: [
-        { key: "Ctrl + K  or  /", desc: "Focus search bar" },
-        { key: "Delete", desc: "Move selected items to trash (or purge in trash view)" },
+        { key: "F2", desc: "Rename selected file or folder" },
+        { key: "I  or  Alt + Enter", desc: "Open details & metadata panel" },
+        { key: "M", desc: "Move selected items to folder" },
+        { key: "Shift + D", desc: "Download selected items" },
+        { key: "Delete", desc: "Move to trash (or purge in trash view)" },
         { key: "S", desc: "Toggle favorite / star on selected items" },
+        { key: "1 / 2 / 3 / 4", desc: "Switch view: Grid, Details, Tiles, Compact" },
+        { key: "Ctrl + K  or  /", desc: "Focus search bar" },
         { key: "?", desc: "Show this keyboard shortcuts help" },
       ],
     },
@@ -798,7 +868,7 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="dialog scroll" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} className="dialog scroll" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
         <div className="dhead">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Icon name="command" size={18} style={{ color: "var(--accent)" }} />
