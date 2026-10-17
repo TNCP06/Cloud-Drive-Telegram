@@ -187,6 +187,20 @@ export const SHORTCUTS = {
     desc: "Show keyboard shortcuts help",
     category: "actions",
   },
+  togglePrivate: {
+    id: "togglePrivate",
+    key: "Alt+P",
+    label: "Alt+P",
+    desc: "Open or exit Private space",
+    category: "actions",
+  },
+  toggleTheme: {
+    id: "toggleTheme",
+    key: "Alt+T",
+    label: "Alt+T",
+    desc: "Switch between dark and light mode",
+    category: "actions",
+  },
 
   // Media & preview viewer
   viewerPrevNext: {
@@ -267,6 +281,8 @@ export function getShortcutsGrouped() {
         { key: displayKey(SHORTCUTS.star), desc: SHORTCUTS.star.desc },
         { key: `${SHORTCUTS.layoutGrid.label} / ${SHORTCUTS.layoutDetails.label} / ${SHORTCUTS.layoutTiles.label} / ${SHORTCUTS.layoutContent.label}`, desc: "Switch view: Grid, Details, Tiles, Content" },
         { key: displayKey(SHORTCUTS.search), desc: SHORTCUTS.search.desc },
+        { key: displayKey(SHORTCUTS.togglePrivate), desc: SHORTCUTS.togglePrivate.desc },
+        { key: displayKey(SHORTCUTS.toggleTheme), desc: SHORTCUTS.toggleTheme.desc },
         { key: displayKey(SHORTCUTS.shortcutsHelp), desc: SHORTCUTS.shortcutsHelp.desc },
       ],
     },

@@ -1515,6 +1515,14 @@ export function DriveApp({
       }
     }
 
+    // Alt+P -> Toggle Private / Main space
+    if (!typing && !overlayOpen && e.altKey && (e.key === "p" || e.key === "P")) {
+      e.preventDefault();
+      if (isPrivate) exitPrivate();
+      else enterPrivate();
+      return;
+    }
+
     // Ctrl/Cmd+A → select every visible folder + item.
     if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
       if (typing || overlayOpen || !visibleKeys.length) return;
@@ -2015,7 +2023,7 @@ export function DriveApp({
             <button
               className="iconbtn ghost"
               onClick={isPrivate ? exitPrivate : enterPrivate}
-              title={isPrivate ? "Exit Private space" : "Open Private space"}
+              title={withShortcut(isPrivate ? "Exit Private space" : "Open Private space", SHORTCUTS.togglePrivate)}
               aria-label={isPrivate ? "Exit Private space" : "Open Private space"}
             >
               <Icon name={isPrivate ? "unlock" : "lock"} size={19} />
