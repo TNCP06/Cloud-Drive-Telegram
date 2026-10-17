@@ -856,17 +856,19 @@ export function MenuItem({
   onClick,
   danger,
   check,
+  shortcut,
 }: {
   icon?: string;
   label: string;
   onClick: (e: React.MouseEvent) => void;
   danger?: boolean;
   check?: boolean;
+  shortcut?: string;
 }) {
   return (
     <button
       className={"menu-item" + (danger ? " danger" : "")}
-      title={label}
+      title={shortcut ? `${label} (${shortcut})` : label}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -875,6 +877,7 @@ export function MenuItem({
     >
       {icon && <Icon name={icon} size={17} className="ico" />}
       <span>{label}</span>
+      {shortcut && <kbd className="menu-kbd">{shortcut}</kbd>}
       {check && <Icon name="check" size={16} className="check" stroke={2} />}
     </button>
   );

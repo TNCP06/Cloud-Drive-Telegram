@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Icon } from "@/lib/icons";
 import { unlockPrivate } from "@/app/actions";
+import { getShortcutsGrouped } from "@/lib/shortcuts";
 import type { DriveFile, Folder } from "@/lib/types";
 import type { FolderStat } from "./DriveApp";
 
@@ -815,56 +816,44 @@ export function EmptyState({ view, query }: { view: string; query: string }) {
 
 export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   useDialogFocusTrap(dialogRef);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      const body = scrollRef.current;
+      if (!body) return;
+
+      // Enable keyboard scrolling through shortcuts list
+      if (e.key === "PageDown") {
+        e.preventDefault();
+        body.scrollBy({ top: body.clientHeight * 0.8, behavior: "smooth" });
+      } else if (e.key === "PageUp") {
+        e.preventDefault();
+        body.scrollBy({ top: -body.clientHeight * 0.8, behavior: "smooth" });
+      } else if (e.key === "Home" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        body.scrollTo({ top: 0, behavior: "smooth" });
+      } else if (e.key === "End" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        body.scrollBy({ top: 40, behavior: "smooth" });
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        body.scrollBy({ top: -40, behavior: "smooth" });
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const shortcuts = [
-    {
-      category: "Navigation & selection",
-      list: [
-        { key: "Arrow Keys", desc: "Move focus & selection between items" },
-        { key: "Ctrl + Arrows", desc: "Move focus cursor only (leave selection)" },
-        { key: "Shift + Arrows", desc: "Select range of items" },
-        { key: "Space", desc: "Quick Look preview or toggle item" },
-        { key: "Ctrl + Space", desc: "Toggle selection of focused item" },
-        { key: "Enter", desc: "Open folder or preview selected file" },
-        { key: "Backspace", desc: "Step back through visited folders" },
-        { key: "Alt + ArrowUp", desc: "Go up one level to parent folder" },
-        { key: "Ctrl / Cmd + A", desc: "Select all visible files and folders" },
-        { key: "Escape", desc: "Clear selection, close modals, or reset search" },
-      ],
-    },
-    {
-      category: "File actions & layout",
-      list: [
-        { key: "F2", desc: "Rename selected file or folder" },
-        { key: "I  or  Alt + Enter", desc: "Open details & metadata panel" },
-        { key: "M", desc: "Move selected items to folder" },
-        { key: "Shift + D", desc: "Download selected items" },
-        { key: "Delete", desc: "Move to trash (or purge in trash view)" },
-        { key: "S", desc: "Toggle favorite / star on selected items" },
-        { key: "1 / 2 / 3 / 4", desc: "Switch view: Grid, Details, Tiles, Compact" },
-        { key: "Ctrl + K  or  /", desc: "Focus search bar" },
-        { key: "?", desc: "Show this keyboard shortcuts help" },
-      ],
-    },
-    {
-      category: "Media & preview viewer",
-      list: [
-        { key: "Left / Right Arrow", desc: "Previous / next photo or video part" },
-        { key: "F", desc: "Toggle full screen viewer" },
-        { key: "E", desc: "Expand / collapse filmstrip panel" },
-        { key: "P", desc: "Toggle video looping mode" },
-      ],
-    },
-  ];
+  const shortcuts = useMemo(() => getShortcutsGrouped(), []);
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -874,11 +863,19 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
             <Icon name="command" size={18} style={{ color: "var(--accent)" }} />
             <h3 style={{ margin: 0 }}>Keyboard shortcuts</h3>
           </div>
-          <button className="iconbtn ghost" style={{ cursor: "pointer" }} onClick={onClose} title="Close">
+          <button className="iconbtn ghost" style={{ cursor: "pointer" }} onClick={onClose} title="Close (Esc)">
             <Icon name="close" size={16} />
           </button>
         </div>
-        <div className="dbody scroll" style={{ padding: "14px 20px 20px" }}>
+        <div
+          ref={scrollRef}
+          tabIndex={0}
+          role="region"
+          aria-label="Keyboard shortcuts list"
+          autoFocus
+          className="dbody scroll"
+          style={{ padding: "14px 20px 20px", outline: "none" }}
+        >
           {shortcuts.map((sec) => (
             <div key={sec.category} style={{ marginBottom: 18 }}>
               <h4 style={{ margin: "0 0 10px", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--faint)" }}>

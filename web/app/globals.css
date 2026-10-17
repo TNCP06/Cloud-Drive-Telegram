@@ -33,9 +33,9 @@
   /* star / favorite */
   --gold:         #B07F24;
 
-  /* focus ring — 2-layer high-contrast ring */
-  --focus-ring:        0 0 0 2px var(--card), 0 0 0 4px var(--accent);
-  --focus-ring-subtle: 0 0 0 2px var(--card), 0 0 0 3px color-mix(in oklab, var(--accent) 70%, transparent);
+  /* focus ring — clean single high-contrast ring */
+  --focus-ring:        0 0 0 2px var(--accent);
+  --focus-ring-subtle: 0 0 0 2px color-mix(in oklab, var(--accent) 70%, transparent);
 
   /* radii */
   --r-xs: 5px;
@@ -96,9 +96,9 @@
   /* star / favorite */
   --gold:         #D7A748;
 
-  /* focus ring — 2-layer high-contrast ring for dark mode */
-  --focus-ring:        0 0 0 2px var(--card), 0 0 0 4px var(--accent);
-  --focus-ring-subtle: 0 0 0 2px var(--card), 0 0 0 3px color-mix(in oklab, var(--accent) 75%, transparent);
+  /* focus ring — clean single high-contrast ring for dark mode */
+  --focus-ring:        0 0 0 2px var(--accent);
+  --focus-ring-subtle: 0 0 0 2px color-mix(in oklab, var(--accent) 75%, transparent);
 
   /* shadows — deeper for separation on dark */
   --sh-1: 0 1px 2px rgba(0,0,0,.35), 0 1px 1px rgba(0,0,0,.30);
@@ -636,6 +636,19 @@ a:focus-visible,
 .menu-item.danger .ico { color: #A8362B; }
 .menu-item.danger:hover { background: color-mix(in oklab, #B23A2E 9%, var(--card)); }
 .menu-item .check { margin-left: auto; color: var(--accent); }
+.menu-item .menu-kbd {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--ui);
+  color: var(--faint);
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--card-2);
+  border: 1px solid var(--line-2);
+  line-height: 1.3;
+  flex: none;
+}
 .menu-sep { height: 1px; background: var(--line); margin: 6px 4px; }
 .menu-label { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); padding: 8px 10px 5px; font-weight: 600; }
 /* side-expanding submenu (Group by ›) */
@@ -2397,14 +2410,15 @@ body:has(.viewer) .fup { display: none; }
 .card:focus-visible,
 .tile:focus-visible,
 .crow:focus-visible {
-  box-shadow: var(--focus-ring);
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .card.sel:focus-visible,
 .tile.sel:focus-visible,
 .crow.sel:focus-visible {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), var(--focus-ring);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .row:focus-visible,
 .litem:focus-visible {

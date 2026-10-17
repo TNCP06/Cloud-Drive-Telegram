@@ -42,6 +42,7 @@ import {
   savePrefs,
   LAYOUT_ICON,
 } from "@/lib/layoutPrefs";
+import { SHORTCUTS, withShortcut } from "@/lib/shortcuts";
 import {
   ConfirmDelete,
   ConfirmBulkDelete,
@@ -1079,11 +1080,18 @@ export function DriveApp({
     goToFolder(folderId);
   };
   const goBackFolder = () => {
-    if (!folderHistory.length) return;
-    const prev = folderHistory[folderHistory.length - 1];
-    setFolderHistory((h) => h.slice(0, -1));
-    setCurrentFolderId(prev);
-    clearSelection();
+    if (folderHistory.length > 0) {
+      const prev = folderHistory[folderHistory.length - 1];
+      setFolderHistory((h) => h.slice(0, -1));
+      setCurrentFolderId(prev);
+      clearSelection();
+      return;
+    }
+    // If no history exists (e.g. user refreshed or landed directly on this folder),
+    // go up one level to parent folder or root
+    if (currentFolderId != null) {
+      goToParentFolder();
+    }
   };
   const goToParentFolder = () => {
     if (currentFolderId == null) return;
@@ -1390,10 +1398,10 @@ export function DriveApp({
     }
 
     // Folder navigation (Main & Trash view, when not typing/no overlay):
-    //   Backspace → step back through the visited folders
-    //   Alt+Up    → go up one level to the parent folder
+    //   Backspace / Alt+Left → step back through visited folders (or up to parent if history is empty)
+    //   Alt+Up               → go up one level to the parent folder
     if (!typing && !overlayOpen && (view === "all" || view === "trash") && !query) {
-      if (e.key === "Backspace") {
+      if (e.key === "Backspace" || (e.altKey && e.key === "ArrowLeft")) {
         e.preventDefault();
         goBackFolder();
         return;
@@ -1437,31 +1445,63 @@ export function DriveApp({
       return;
     }
 
-    // Resolve the target node for this arrow.
+    // Resolve target node: O(1) for lists/horizontal, O(cols) for grid rows (no layout thrashing)
     let target: HTMLElement | undefined;
-    if (e.key === "ArrowRight") target = nodes[idx + 1] ?? nodes[idx];
-    else if (e.key === "ArrowLeft") target = nodes[idx - 1] ?? nodes[idx];
-    else {
-      const down = e.key === "ArrowDown";
-      const cr = nodes[idx].getBoundingClientRect();
-      const cand = nodes.filter((n) => {
-        const t = n.getBoundingClientRect().top;
-        return down ? t > cr.top + 1 : t < cr.top - 1;
-      });
-      if (!cand.length) return; // already on the edge row
-      let rowTop: number | null = null;
-      for (const n of cand) {
-        const t = n.getBoundingClientRect().top;
-        rowTop = rowTop == null ? t : down ? Math.min(rowTop, t) : Math.max(rowTop, t);
-      }
-      const rowNodes = cand.filter((n) => Math.abs(n.getBoundingClientRect().top - (rowTop as number)) < 2);
-      target = rowNodes[0];
-      for (const n of rowNodes) {
-        if (
-          Math.abs(n.getBoundingClientRect().left - cr.left) <
-          Math.abs(target.getBoundingClientRect().left - cr.left)
-        )
-          target = n;
+    if (layout === "details") {
+      // 1-column list view: strictly linear
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") target = nodes[idx + 1] ?? nodes[idx];
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") target = nodes[idx - 1] ?? nodes[idx];
+    } else {
+      // Grid view: Left/Right linear O(1)
+      if (e.key === "ArrowRight") target = nodes[idx + 1] ?? nodes[idx];
+      else if (e.key === "ArrowLeft") target = nodes[idx - 1] ?? nodes[idx];
+      else {
+        // Fast row-stepping: scan only adjacent row items via offsetTop/offsetLeft
+        const curr = nodes[idx];
+        const currTop = curr.offsetTop;
+        const currLeft = curr.offsetLeft;
+
+        if (e.key === "ArrowDown") {
+          let nextRowStart = -1;
+          for (let i = idx + 1; i < nodes.length; i++) {
+            if (nodes[i].offsetTop > currTop + 4) {
+              nextRowStart = i;
+              break;
+            }
+          }
+          if (nextRowStart !== -1) {
+            const nextRowTop = nodes[nextRowStart].offsetTop;
+            target = nodes[nextRowStart];
+            let bestDiff = Math.abs(target.offsetLeft - currLeft);
+            for (let i = nextRowStart + 1; i < nodes.length && Math.abs(nodes[i].offsetTop - nextRowTop) <= 4; i++) {
+              const diff = Math.abs(nodes[i].offsetLeft - currLeft);
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                target = nodes[i];
+              }
+            }
+          }
+        } else if (e.key === "ArrowUp") {
+          let prevRowEnd = -1;
+          for (let i = idx - 1; i >= 0; i--) {
+            if (nodes[i].offsetTop < currTop - 4) {
+              prevRowEnd = i;
+              break;
+            }
+          }
+          if (prevRowEnd !== -1) {
+            const prevRowTop = nodes[prevRowEnd].offsetTop;
+            target = nodes[prevRowEnd];
+            let bestDiff = Math.abs(target.offsetLeft - currLeft);
+            for (let i = prevRowEnd - 1; i >= 0 && Math.abs(nodes[i].offsetTop - prevRowTop) <= 4; i--) {
+              const diff = Math.abs(nodes[i].offsetLeft - currLeft);
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                target = nodes[i];
+              }
+            }
+          }
+        }
       }
     }
     if (!target) return;
@@ -1732,7 +1772,7 @@ export function DriveApp({
                       className="crumb dim"
                       style={{ cursor: "pointer" }}
                       onClick={() => goToFolder(breadcrumbs[0].id)}
-                      title={view === "all" ? "All files (Home)" : breadcrumbs[0].name}
+                      title={view === "all" ? withShortcut("All files (Home)", SHORTCUTS.back) : breadcrumbs[0].name}
                       aria-label={view === "all" ? "All files" : breadcrumbs[0].name}
                     >
                       {view === "all" ? (
@@ -1767,7 +1807,7 @@ export function DriveApp({
                       className="crumb dim crumb-parent"
                       style={{ cursor: "pointer" }}
                       onClick={() => goToFolder(breadcrumbs[breadcrumbs.length - 2].id)}
-                      title={breadcrumbs[breadcrumbs.length - 2].name}
+                      title={withShortcut(breadcrumbs[breadcrumbs.length - 2].name, SHORTCUTS.parentFolder)}
                     >
                       {breadcrumbs[breadcrumbs.length - 2].name}
                     </button>
@@ -1815,7 +1855,7 @@ export function DriveApp({
                   setQuery("");
                   searchRef.current?.focus();
                 }}
-                title="Clear query"
+                title={withShortcut("Clear query", SHORTCUTS.escape)}
               >
                 <Icon name="close" size={15} />
               </span>
@@ -1837,7 +1877,7 @@ export function DriveApp({
                   setTimeout(() => searchRef.current?.focus(), 50);
                 }
               }}
-              title={mobileSearchOpen || query ? "Close search" : "Search files"}
+              title={mobileSearchOpen || query ? withShortcut("Close search", SHORTCUTS.escape) : withShortcut("Search files", SHORTCUTS.search)}
               aria-label={mobileSearchOpen || query ? "Close search" : "Search files"}
             >
               <Icon name={mobileSearchOpen || query ? "close" : "search"} size={18} />
@@ -1880,7 +1920,7 @@ export function DriveApp({
             <button
               className="iconbtn ghost hide-mob"
               onClick={() => setShowShortcutsModal(true)}
-              title="Keyboard shortcuts (?)"
+              title={withShortcut("Keyboard shortcuts", SHORTCUTS.shortcutsHelp)}
               aria-label="Keyboard shortcuts"
             >
               <Icon name="command" size={18} />
@@ -2210,6 +2250,7 @@ export function DriveApp({
                 <MenuItem
                   icon="trash"
                   label="Delete permanently"
+                  shortcut={SHORTCUTS.purge.label}
                   danger
                   onClick={() => {
                     setConfirm({ item: menu.item, mode: "purge" });
@@ -2222,6 +2263,7 @@ export function DriveApp({
                 <MenuItem
                   icon="edit"
                   label="Edit"
+                  shortcut={SHORTCUTS.rename.label}
                   onClick={() => {
                     setInitialEditing(true);
                     setInitialShowDetails(true);
@@ -2233,6 +2275,7 @@ export function DriveApp({
                 <MenuItem
                   icon="kebab"
                   label="Detail"
+                  shortcut={SHORTCUTS.details.label}
                   onClick={() => {
                     setInitialEditing(false);
                     setInitialShowDetails(true);
@@ -2244,6 +2287,7 @@ export function DriveApp({
                 <MenuItem
                   icon="folder"
                   label="Move to..."
+                  shortcut={SHORTCUTS.move.label}
                   onClick={() => {
                     const ids = menu.item.variants && menu.item.variants.length > 1
                       ? menu.item.variants.map((v) => v.id)
@@ -2266,6 +2310,7 @@ export function DriveApp({
                 <MenuItem
                   icon="download"
                   label="Download"
+                  shortcut={SHORTCUTS.download.label}
                   onClick={() => {
                     const url = deepLink(menu.item.slug);
                     if (url) window.open(url, "_blank");
@@ -2275,6 +2320,7 @@ export function DriveApp({
                 <MenuItem
                   icon="star"
                   label={menu.item.starred ? "Remove from favorites" : "Add to favorites"}
+                  shortcut={SHORTCUTS.star.label}
                   onClick={() => {
                     doStar(menu.item);
                     closeMenu();
@@ -2284,6 +2330,7 @@ export function DriveApp({
                 <MenuItem
                   icon="trash"
                   label="Delete"
+                  shortcut={SHORTCUTS.delete.label}
                   danger
                   onClick={() => {
                     setConfirm({ item: menu.item, mode: "trash" });
@@ -2318,6 +2365,7 @@ export function DriveApp({
                 <MenuItem
                   icon="trash"
                   label="Delete permanently"
+                  shortcut={SHORTCUTS.purge.label}
                   danger
                   onClick={() => {
                     setConfirmBulk({ itemIds: [], folderIds: [folderMenu.folder.id], mode: "purge" });
@@ -2330,6 +2378,7 @@ export function DriveApp({
                 <MenuItem
                   icon="info"
                   label="Detail"
+                  shortcut={SHORTCUTS.details.label}
                   onClick={() => {
                     setFolderDetail(folderMenu.folder);
                     closeFolderMenu();
@@ -2338,6 +2387,7 @@ export function DriveApp({
                 <MenuItem
                   icon="edit"
                   label="Rename"
+                  shortcut={SHORTCUTS.rename.label}
                   onClick={() => {
                     setShowRenameFolder(folderMenu.folder);
                     closeFolderMenu();
@@ -2346,6 +2396,7 @@ export function DriveApp({
                 <MenuItem
                   icon="folder"
                   label="Move to..."
+                  shortcut={SHORTCUTS.move.label}
                   onClick={() => {
                     setMoveTarget({ itemIds: [], folderIds: [folderMenu.folder.id] });
                     closeFolderMenu();
@@ -2355,6 +2406,7 @@ export function DriveApp({
                 <MenuItem
                   icon="trash"
                   label="Delete"
+                  shortcut={SHORTCUTS.delete.label}
                   danger
                   onClick={() => {
                     setConfirmBulk({ itemIds: [], folderIds: [folderMenu.folder.id], mode: "trash" });
@@ -2492,12 +2544,22 @@ export function DriveApp({
         <div className="selection-toolbar">
           <div className="sel-actions">
             {selected.length === 1 && view !== "trash" && (
-              <button className="action-btn" onClick={detailSelected} title="Details" aria-label="Details">
+              <button
+                className="action-btn"
+                onClick={detailSelected}
+                title={withShortcut("Details", SHORTCUTS.details)}
+                aria-label="Details"
+              >
                 <Icon name="info" size={17} />
               </button>
             )}
             {view !== "trash" && selectedItemIds.length > 0 && (
-              <button className="action-btn" onClick={downloadSelected} title="Download" aria-label="Download">
+              <button
+                className="action-btn"
+                onClick={downloadSelected}
+                title={withShortcut("Download", SHORTCUTS.download)}
+                aria-label="Download"
+              >
                 <Icon name="download" size={17} />
                 {selectedItemIds.length > 1 && <span className="sel-badge">{selectedItemIds.length}</span>}
               </button>
@@ -2512,7 +2574,7 @@ export function DriveApp({
                     await bulkToggleFavorite(selectedItemIds, !allStarred);
                   });
                 }}
-                title="Toggle favorite"
+                title={withShortcut("Toggle favorite", SHORTCUTS.star)}
                 aria-label="Toggle favorite"
               >
                 <Icon name="star" size={16} fill={selectedItemIds.every((id) => files.find((f) => f.id === id)?.starred)} />
@@ -2522,7 +2584,7 @@ export function DriveApp({
               <button
                 className="action-btn"
                 onClick={() => setMoveTarget({ itemIds: selectedItemIds, folderIds: selectedFolderIds })}
-                title="Move to folder"
+                title={withShortcut("Move to folder", SHORTCUTS.move)}
                 aria-label="Move to folder"
               >
                 <Icon name="folder" size={16} />
@@ -2546,7 +2608,7 @@ export function DriveApp({
                 <button
                   className="action-btn danger-btn"
                   onClick={() => setConfirmBulk({ itemIds: selectedItemIds, folderIds: selectedFolderIds, mode: "purge" })}
-                  title="Delete permanently"
+                  title={withShortcut("Delete permanently", SHORTCUTS.purge)}
                   aria-label="Delete permanently"
                 >
                   <Icon name="trash" size={16} />
@@ -2556,7 +2618,7 @@ export function DriveApp({
               <button
                 className="action-btn danger-btn"
                 onClick={() => setConfirmBulk({ itemIds: selectedItemIds, folderIds: selectedFolderIds, mode: "trash" })}
-                title="Delete"
+                title={withShortcut("Delete", SHORTCUTS.delete)}
                 aria-label="Delete"
               >
                 <Icon name="trash" size={16} />
@@ -2569,7 +2631,7 @@ export function DriveApp({
                   setSelected(visibleKeys);
                   setSelectAnchor(visibleKeys[0] ?? null);
                 }}
-                title="Select all"
+                title={withShortcut("Select all", SHORTCUTS.selectAll)}
                 aria-label="Select all"
               >
                 <Icon name="check" size={16} />
@@ -2579,7 +2641,7 @@ export function DriveApp({
               className="action-btn"
               style={{ borderLeft: "1px solid var(--line)", paddingLeft: "14px" }}
               onClick={clearSelection}
-              title="Clear selection"
+              title={withShortcut("Clear selection", SHORTCUTS.escape)}
               aria-label="Clear selection"
             >
               <Icon name="close" size={16} />

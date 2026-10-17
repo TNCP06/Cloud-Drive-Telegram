@@ -7,6 +7,7 @@ import {
   LAYOUT_ICON,
   LAYOUT_LABEL,
 } from "@/lib/layoutPrefs";
+import { SHORTCUTS } from "@/lib/shortcuts";
 
 // Windows-Explorer-style "View" menu: a single radio list of layouts, the details-pane
 // toggle, and a "Show" group of on/off toggles. Mirrors the project's Sort menu idiom
@@ -16,6 +17,13 @@ import {
 const LAYOUT_ORDER: LayoutMode[] = [
   "xl", "large", "medium", "small", "list", "details", "tiles", "content",
 ];
+
+const LAYOUT_SHORTCUTS: Partial<Record<LayoutMode, string>> = {
+  large: SHORTCUTS.layoutGrid.label,
+  details: SHORTCUTS.layoutDetails.label,
+  tiles: SHORTCUTS.layoutTiles.label,
+  content: SHORTCUTS.layoutContent.label,
+};
 
 export function ViewMenu({
   anchor,
@@ -38,6 +46,7 @@ export function ViewMenu({
             key={mode}
             icon={LAYOUT_ICON[mode]}
             label={LAYOUT_LABEL[mode]}
+            shortcut={LAYOUT_SHORTCUTS[mode]}
             check={prefs.layout === mode}
             onClick={() => {
               onChange({ layout: mode });
@@ -50,6 +59,7 @@ export function ViewMenu({
         <MenuItem
           icon="panelRight"
           label="Details pane"
+          shortcut={SHORTCUTS.details.label}
           check={prefs.detailsPane}
           onClick={() => onChange({ detailsPane: !prefs.detailsPane })}
         />
