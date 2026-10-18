@@ -176,6 +176,64 @@ def test_active_procs_registry():
     assert 999 not in pikpak._ACTIVE_PROCS
 
 
+def test_download_concurrency_defaults():
+    assert pikpak.PIKPAK_MAX_CONCURRENT >= 3, "default pool size should be at least 3 workers"
+    assert pikpak.DOWNLOAD_PER_SOURCE_CONCURRENT == 1, "default per-source limit should be 1"
+
+
+def test_fair_share_claim_logic():
+    import asyncio
+
+    jobs = [
+        {"id": 1, "source": "baidu", "status": "queued", "filename": "b1.zip"},
+        {"id": 2, "source": "baidu", "status": "queued", "filename": "b2.zip"},
+        {"id": 3, "source": "pikpak", "status": "queued", "filename": "p1.mp4"},
+    ]
+
+    class MockDB:
+        def __init__(self, data):
+            self.data = data
+
+        async def execute(self, sql, params=None):
+            if "UPDATE download_jobs SET status='downloading'" in sql:
+                cap = params[0] if params else 999
+                for q in sorted(self.data, key=lambda x: x["id"]):
+                    if q["status"] == "queued":
+                        active = sum(1 for d in self.data if d["status"] == "downloading" and d["source"] == q["source"])
+                        if active < cap:
+                            q["status"] = "downloading"
+                            class Res:
+                                rows = [[q["id"], "path", q["filename"], 1000, 123, 456, q["source"], 0]]
+                            return Res()
+                class EmptyRes:
+                    rows = []
+                return EmptyRes()
+            class EmptyRes:
+                rows = []
+            return EmptyRes()
+
+    db = MockDB(jobs)
+
+    # 1. First claim grabs job #1 (baidu)
+    c1 = asyncio.run(pikpak._claim_next(db))
+    assert c1 is not None and c1["id"] == 1 and c1["source"] == "baidu"
+
+    # 2. Second claim: baidu has 1 downloading -> skips job #2 (baidu), grabs job #3 (pikpak)!
+    c2 = asyncio.run(pikpak._claim_next(db))
+    assert c2 is not None and c2["id"] == 3 and c2["source"] == "pikpak", "must pick pikpak to prevent baidu starvation"
+
+    # 3. Third claim: baidu at cap (1 active), pikpak at cap (1 active) -> None available
+    c3 = asyncio.run(pikpak._claim_next(db))
+    assert c3 is None, "all queued jobs exceed per-source cap"
+
+    # 4. Job #1 finishes downloading
+    jobs[0]["status"] = "downloaded"
+
+    # 5. Fourth claim: baidu cap freed -> now job #2 is claimed!
+    c4 = asyncio.run(pikpak._claim_next(db))
+    assert c4 is not None and c4["id"] == 2 and c4["source"] == "baidu", "baidu job #2 unblocked once job #1 finished"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

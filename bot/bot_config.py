@@ -25,7 +25,8 @@ PIKPAK_REMOTE = os.environ.get("PIKPAK_REMOTE", "pikpak")            # rclone re
 # decides reject/split/keep must sit at 2000 MiB (matches web SPLIT_THRESHOLD_BYTES).
 PIKPAK_MAX_BYTES = int(os.environ.get("PIKPAK_MAX_BYTES", 2000 * 1024 * 1024))
 PIKPAK_STAGING_DIR = os.environ.get("PIKPAK_STAGING_DIR", "/staging/_pikpak")  # on the shared staging volume
-PIKPAK_MAX_CONCURRENT = int(os.environ.get("PIKPAK_MAX_CONCURRENT", 1))  # active downloads
+PIKPAK_MAX_CONCURRENT = int(os.environ.get("DOWNLOAD_MAX_CONCURRENT", os.environ.get("PIKPAK_MAX_CONCURRENT", 3)))  # active download workers
+DOWNLOAD_PER_SOURCE_CONCURRENT = int(os.environ.get("DOWNLOAD_PER_SOURCE_CONCURRENT", 1))  # max active per source (prevents slow drive starvation)
 PIKPAK_RETRIES = int(os.environ.get("PIKPAK_RETRIES", 3))           # rclone retries before failing
 RCLONE_BIN = os.environ.get("RCLONE_BIN", "rclone")
 PIKPAK_DRIVE_FOLDER = os.environ.get("PIKPAK_DRIVE_FOLDER", "pikpak")  # drive folder downloads land in (mirrors remote subdirs)

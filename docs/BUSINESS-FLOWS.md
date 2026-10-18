@@ -126,8 +126,9 @@ handlers in `bot.py`; the pipeline below is unchanged. See [`infra/openlist/READ
    it first reclaims orphaned `_pikpak/<jid>` staging of done/failed jobs, then rejects if it still
    won't fit (so a big download can't fill the small shared VPS disk). Otherwise it inserts a
    `download_jobs` row (`status='queued'`, `source=<drive>`) and replies a progress message.
-3. **Worker** (in-bot, `PIKPAK_MAX_CONCURRENT` asyncio tasks polling every 3 s, `FOR UPDATE SKIP
-   LOCKED` claim) resolves the drive from `download_jobs.source` and runs a **resumable** download into
+3. **Worker** (in-bot, `PIKPAK_MAX_CONCURRENT` asyncio tasks polling every 3 s, default 3; fair-share
+   `DOWNLOAD_PER_SOURCE_CONCURRENT`, default 1 per source; `FOR UPDATE SKIP LOCKED` claim) resolves the
+   drive from `download_jobs.source` and runs a **resumable** download into
    `/staging/_pikpak/<jobid>/<name>`: the file is **pre-reserved** to its full size (`posix_fallocate`,
    truncate fallback) — disk reservation, so it can't run the volume out mid-transfer — and
    `rclone cat <remote:path> --offset <bytes_done>` streams from the last saved byte. Progress persists

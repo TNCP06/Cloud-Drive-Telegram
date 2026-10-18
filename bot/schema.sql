@@ -252,6 +252,8 @@ CREATE INDEX IF NOT EXISTS idx_upload_jobs_pending_id
     ON upload_jobs(id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_download_jobs_queued_id
     ON download_jobs(id) WHERE status IN ('queued','downloaded','uploading');
+CREATE INDEX IF NOT EXISTS idx_download_jobs_active_source
+    ON download_jobs(source) WHERE status = 'downloading';
 CREATE INDEX IF NOT EXISTS idx_unpack_jobs_queued_id
     ON unpack_jobs(id) WHERE status = 'queued';
 CREATE INDEX IF NOT EXISTS idx_tg_import_jobs_queued_id

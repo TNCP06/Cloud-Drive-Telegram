@@ -12,10 +12,12 @@ Command flow (per drive):
   /pikpak_jobs            → list the last 10 download jobs (all drives) with status.
   /<drive>_ls [folder]    → browse the remote (`rclone lsf`), truncated to ~50 entries.
 
-A pool of in-process worker tasks (PIKPAK_MAX_CONCURRENT, default 1) polls `download_jobs`,
+A pool of in-process worker tasks (PIKPAK_MAX_CONCURRENT, default 3) polls `download_jobs`,
 `rclone copy`s the file into the shared staging volume while editing the progress message,
 then hands it to the existing `upload_jobs` → watcher pipeline (origin='upload',
 cleanup_source=1, status='pending') so the file is pushed to Telegram automatically.
+Fair-share per-source concurrency (DOWNLOAD_PER_SOURCE_CONCURRENT, default 1) ensures slow
+throttled providers (Baidu, etc.) cannot starve downloads from other sources.
 
 Size is not a policy question any more: everything goes to Telegram. The watcher cuts a video
 over the 2 GB cap into playable segments and raw-splits anything else with
@@ -41,6 +43,7 @@ from bot_config import (
     PIKPAK_MAX_BYTES,
     PIKPAK_STAGING_DIR,
     PIKPAK_MAX_CONCURRENT,
+    DOWNLOAD_PER_SOURCE_CONCURRENT,
     PIKPAK_RETRIES,
     DRIVE_SPLIT_PART_MB,
     RCLONE_BIN,
@@ -257,19 +260,45 @@ async def _set(db, jid, *, status=None, progress=None, error=None, speed=None, b
     await db.execute(f"UPDATE download_jobs SET {', '.join(cols)} WHERE id=?", vals)
 
 
+_CLAIM_LOCK = asyncio.Lock()
+
+
 async def _claim_next(db):
-    """Atomically grab the oldest queued job (SKIP LOCKED → safe for >1 concurrent worker)."""
-    rs = await db.execute(
-        "UPDATE download_jobs SET status='downloading', updated_at=now_text() "
-        "WHERE id = (SELECT id FROM download_jobs WHERE status='queued' "
-        "            ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
-        "RETURNING id, remote_path, filename, size, chat_id, message_id, source, bytes_done"
-    )
-    if not rs.rows:
-        return None
-    r = rs.rows[0]
-    return {"id": r[0], "remote_path": r[1], "filename": r[2],
-            "size": r[3], "chat_id": r[4], "message_id": r[5], "source": r[6], "bytes_done": r[7]}
+    """Atomically grab the oldest queued job whose source hasn't reached DOWNLOAD_PER_SOURCE_CONCURRENT.
+
+    Guarded by asyncio.Lock to avoid concurrent in-process workers racing on the subquery count check,
+    plus SKIP LOCKED for multi-statement safety.
+    """
+    async with _CLAIM_LOCK:
+        if DOWNLOAD_PER_SOURCE_CONCURRENT > 0:
+            query = (
+                "UPDATE download_jobs SET status='downloading', updated_at=now_text() "
+                "WHERE id = ("
+                "    SELECT id FROM download_jobs q "
+                "    WHERE q.status='queued' "
+                "      AND ("
+                "          SELECT COUNT(*) FROM download_jobs d "
+                "          WHERE d.status='downloading' AND d.source = q.source"
+                "      ) < ? "
+                "    ORDER BY q.id LIMIT 1 FOR UPDATE SKIP LOCKED"
+                ") "
+                "RETURNING id, remote_path, filename, size, chat_id, message_id, source, bytes_done"
+            )
+            params = [DOWNLOAD_PER_SOURCE_CONCURRENT]
+        else:
+            query = (
+                "UPDATE download_jobs SET status='downloading', updated_at=now_text() "
+                "WHERE id = (SELECT id FROM download_jobs WHERE status='queued' "
+                "            ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) "
+                "RETURNING id, remote_path, filename, size, chat_id, message_id, source, bytes_done"
+            )
+            params = []
+        rs = await db.execute(query, params)
+        if not rs.rows:
+            return None
+        r = rs.rows[0]
+        return {"id": r[0], "remote_path": r[1], "filename": r[2],
+                "size": r[3], "chat_id": r[4], "message_id": r[5], "source": r[6], "bytes_done": r[7]}
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +648,7 @@ async def ensure_schema(db):
         )
     """)
     await db.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_active_source ON download_jobs(source) WHERE status = 'downloading'")
     await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS speed TEXT")            # existing DBs
     await db.execute("ALTER TABLE download_jobs ADD COLUMN IF NOT EXISTS bytes_done BIGINT NOT NULL DEFAULT 0")
     # Existing DBs: widen the status CHECK to allow 'paused' (drop + re-add is idempotent).

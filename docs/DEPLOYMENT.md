@@ -223,7 +223,7 @@ See [`.env.example`](../.env.example). Key ones for server mode:
 | `TELEGRAM_API_URL` | bot, web, streamer | local Bot API endpoint (compose sets `http://telegram-bot-api:8081`) |
 | `UPLOAD_STAGING_DIR` / `WORKER_OUT_DIR` | web, watcher | compose sets `/staging` + `/staging/_parts` |
 | `VIDEO_COMPRESS`, `VIDEO_CRF`, `VIDEO_PRESET`, `COMPRESSED_MAX_SIZE_GB` | streamer | background compression tuning |
-| `RCLONE_CONFIG_DIR`, `PIKPAK_*` | bot | PikPak remote-download (optional): host rclone-config dir bind-mounted into the bot; `PIKPAK_REMOTE`/`PIKPAK_MAX_BYTES`/`PIKPAK_MAX_CONCURRENT`/`PIKPAK_RETRIES`/`PIKPAK_DRIVE_FOLDER` |
+| `RCLONE_CONFIG_DIR`, `PIKPAK_*`, `DOWNLOAD_*` | bot | Remote-download (optional): host rclone-config dir bind-mounted into the bot; `PIKPAK_REMOTE`/`PIKPAK_MAX_BYTES`/`PIKPAK_MAX_CONCURRENT`/`DOWNLOAD_PER_SOURCE_CONCURRENT`/`PIKPAK_RETRIES`/`PIKPAK_DRIVE_FOLDER` |
 
 ---
 
