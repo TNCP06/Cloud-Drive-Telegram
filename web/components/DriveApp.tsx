@@ -280,6 +280,10 @@ export function DriveApp({
   const lastFolderFocusRef = useRef<Map<number | null, SelKey>>(new Map());
   const pendingRestoreKeyRef = useRef<SelKey | null>(null);
 
+  // Type-ahead jump navigation buffer and timer
+  const typeAheadBufferRef = useRef<string>("");
+  const typeAheadTimeRef = useRef<number>(0);
+
   // Multi-select states. `selected` holds tagged keys (`i:<id>` / `f:<id>`) so files and
   // folders share one selection; the id arrays below are derived for the actions.
   const [selected, setSelected] = useState<SelKey[]>([]);
@@ -1413,8 +1417,8 @@ export function DriveApp({
       return;
     }
 
-    // I or Alt+Enter -> Open details/info panel
-    if (!typing && !overlayOpen && (e.key === "i" || e.key === "I" || (e.altKey && e.key === "Enter")) && selected.length === 1) {
+    // Alt+Enter or Shift+I -> Open details/info panel
+    if (!typing && !overlayOpen && ((e.altKey && e.key === "Enter") || (e.shiftKey && (e.key === "i" || e.key === "I"))) && selected.length === 1) {
       e.preventDefault();
       const selKey = selected[0];
       if (!isItemKey(selKey)) {
@@ -1434,8 +1438,8 @@ export function DriveApp({
       return;
     }
 
-    // M -> Move selected items to folder
-    if (!typing && !overlayOpen && (e.key === "m" || e.key === "M") && (selectedItemIds.length > 0 || selectedFolderIds.length > 0)) {
+    // Shift+M -> Move selected items to folder
+    if (!typing && !overlayOpen && e.shiftKey && (e.key === "m" || e.key === "M") && (selectedItemIds.length > 0 || selectedFolderIds.length > 0)) {
       e.preventDefault();
       setMoveTarget({ itemIds: selectedItemIds, folderIds: selectedFolderIds });
       return;
@@ -1448,14 +1452,18 @@ export function DriveApp({
       return;
     }
 
-    // 1-4 -> Switch layout view
-    if (!typing && !overlayOpen && !e.ctrlKey && !e.metaKey && !e.altKey && ["1", "2", "3", "4"].includes(e.key)) {
+    // Alt+1 .. Alt+8 -> Switch layout view (all 8 layouts)
+    if (!typing && !overlayOpen && e.altKey && !e.ctrlKey && !e.metaKey && ["1", "2", "3", "4", "5", "6", "7", "8"].includes(e.key)) {
       e.preventDefault();
       const layoutMap: Record<string, typeof layout> = {
-        "1": "large",
-        "2": "details",
-        "3": "tiles",
-        "4": "content",
+        "1": "xl",
+        "2": "large",
+        "3": "medium",
+        "4": "small",
+        "5": "list",
+        "6": "details",
+        "7": "tiles",
+        "8": "content",
       };
       const nextLayout = layoutMap[e.key];
       if (nextLayout) {
@@ -1483,10 +1491,11 @@ export function DriveApp({
       return;
     }
 
-    // S -> Toggle star/favorite
+    // Shift+S -> Toggle star/favorite
     if (
       !typing &&
       !overlayOpen &&
+      e.shiftKey &&
       (e.key === "s" || e.key === "S") &&
       selectedItemIds.length > 0
     ) {
@@ -1529,6 +1538,76 @@ export function DriveApp({
       e.preventDefault();
       setSelected(visibleKeys);
       setSelectAnchor(visibleKeys[0] ?? null);
+      return;
+    }
+
+    // Type-ahead jump navigation (Windows Explorer style)
+    // Bare alphanumeric keys (a-z, 0-9) when not typing in an input and no modifiers
+    if (
+      !typing &&
+      !overlayOpen &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !e.shiftKey &&
+      e.key.length === 1 &&
+      /^[a-z0-9]$/i.test(e.key)
+    ) {
+      const char = e.key.toLowerCase();
+      const now = Date.now();
+      const isConsecutive = now - typeAheadTimeRef.current < 600;
+      typeAheadTimeRef.current = now;
+
+      // Cycling: same single key pressed consecutively (e.g. 'p', 'p', 'p')
+      const isCycle =
+        isConsecutive &&
+        typeAheadBufferRef.current.length > 0 &&
+        typeAheadBufferRef.current.split("").every((c) => c === char);
+      const query = isCycle ? char : isConsecutive ? typeAheadBufferRef.current + char : char;
+      typeAheadBufferRef.current = query;
+
+      if (!visibleKeys.length) return;
+
+      const getName = (k: SelKey) => {
+        if (isItemKey(k)) {
+          const it = files.find((x) => x.id === keyId(k));
+          return (it?.name || it?.family || "").toLowerCase();
+        } else {
+          const fol = currentFolders.find((x) => x.id === keyId(k));
+          return (fol?.name || "").toLowerCase();
+        }
+      };
+
+      const curIdx = focusedKey ? visibleKeys.indexOf(focusedKey) : -1;
+      let targetKey: SelKey | null = null;
+
+      if (isCycle && curIdx >= 0) {
+        for (let i = 1; i <= visibleKeys.length; i++) {
+          const idx = (curIdx + i) % visibleKeys.length;
+          const k = visibleKeys[idx];
+          if (getName(k).startsWith(char)) {
+            targetKey = k;
+            break;
+          }
+        }
+      } else {
+        targetKey = visibleKeys.find((k) => getName(k).startsWith(query)) ?? null;
+      }
+
+      if (targetKey) {
+        e.preventDefault();
+        setFocusedKey(targetKey);
+        lastFocusedKeyRef.current = targetKey;
+        lastFolderFocusRef.current.set(currentFolderId, targetKey);
+        setSelected([targetKey]);
+        setSelectAnchor(targetKey);
+
+        const el = contentRef.current?.querySelector<HTMLElement>(`[data-key="${targetKey}"]`);
+        if (el) {
+          el.focus({ preventScroll: true });
+          el.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      }
       return;
     }
 

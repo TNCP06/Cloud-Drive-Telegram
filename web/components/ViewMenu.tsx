@@ -18,8 +18,12 @@ const LAYOUT_ORDER: LayoutMode[] = [
   "xl", "large", "medium", "small", "list", "details", "tiles", "content",
 ];
 
-const LAYOUT_SHORTCUTS: Partial<Record<LayoutMode, string>> = {
-  large: SHORTCUTS.layoutGrid.label,
+const LAYOUT_SHORTCUTS: Record<LayoutMode, string> = {
+  xl: SHORTCUTS.layoutXl.label,
+  large: SHORTCUTS.layoutLarge.label,
+  medium: SHORTCUTS.layoutMedium.label,
+  small: SHORTCUTS.layoutSmall.label,
+  list: SHORTCUTS.layoutList.label,
   details: SHORTCUTS.layoutDetails.label,
   tiles: SHORTCUTS.layoutTiles.label,
   content: SHORTCUTS.layoutContent.label,
