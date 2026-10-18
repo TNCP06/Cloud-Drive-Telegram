@@ -37,7 +37,9 @@ export function TagPicker({
   const selected = useMemo(() => parseNames(value), [value]);
   const [draft, setDraft] = useState("");
   const [open, setOpen] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState<number>(-1);
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const commit = (names: string[]) => onChange(names.join(", "));
 
@@ -48,6 +50,7 @@ export function TagPicker({
     const n = name.trim();
     if (n && !has(n)) commit([...selected, n]);
     setDraft("");
+    setHighlightIdx(-1);
   };
   const remove = (name: string) => commit(selected.filter((s) => s !== name));
 
@@ -60,6 +63,15 @@ export function TagPicker({
     !suggestions.some((t) => t.name.toLowerCase() === q) &&
     !has(draft);
 
+  const totalCount = matches.length + (canCreate ? 1 : 0);
+
+  const scrollItemIntoView = (idx: number) => {
+    requestAnimationFrame(() => {
+      const items = menuRef.current?.querySelectorAll<HTMLElement>(".tagpick-opt");
+      items?.[idx]?.scrollIntoView({ block: "nearest" });
+    });
+  };
+
   // Colour: reuse the stored tag's colour when it exists, else derive from name.
   const colorOf = (name: string) => {
     const t = suggestions.find((s) => s.name.toLowerCase() === name.toLowerCase());
@@ -67,9 +79,54 @@ export function TagPicker({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      if (!open) {
+        setOpen(true);
+        setHighlightIdx(0);
+        scrollItemIntoView(0);
+        return;
+      }
+      if (totalCount > 0) {
+        e.preventDefault();
+        const next = highlightIdx < 0 ? 0 : (highlightIdx + 1) % totalCount;
+        setHighlightIdx(next);
+        scrollItemIntoView(next);
+      }
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      if (open && totalCount > 0) {
+        e.preventDefault();
+        const prev = highlightIdx <= 0 ? totalCount - 1 : highlightIdx - 1;
+        setHighlightIdx(prev);
+        scrollItemIntoView(prev);
+      }
+      return;
+    }
+
+    if (e.key === "Escape") {
+      if (open) {
+        e.preventDefault();
+        setOpen(false);
+        setHighlightIdx(-1);
+      }
+      return;
+    }
+
     if (e.key === "Enter" || e.key === ",") {
       e.preventDefault();
-      if (draft.trim()) add(draft);
+      if (open && highlightIdx >= 0 && highlightIdx < totalCount) {
+        if (highlightIdx < matches.length) {
+          add(matches[highlightIdx].name);
+        } else if (canCreate) {
+          add(draft);
+        }
+        setOpen(false);
+      } else if (draft.trim()) {
+        add(draft);
+        setOpen(false);
+      }
     } else if (e.key === "Backspace" && !draft && selected.length) {
       remove(selected[selected.length - 1]);
     }
@@ -103,26 +160,38 @@ export function TagPicker({
           ref={inputRef}
           value={draft}
           placeholder={selected.length ? "" : placeholder}
+          aria-autocomplete="list"
+          aria-expanded={open}
           onChange={(e) => {
             setDraft(e.target.value);
+            setHighlightIdx(-1);
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
           // Delay so a click on an option registers before the menu unmounts.
-          onBlur={() => setTimeout(() => setOpen(false), 120)}
+          onBlur={() => setTimeout(() => {
+            setOpen(false);
+            setHighlightIdx(-1);
+          }, 140)}
           onKeyDown={onKeyDown}
         />
       </div>
 
-      {open && (matches.length > 0 || canCreate) && (
-        <div className="tagpick-menu scroll">
-          {matches.map((t) => (
+      {open && totalCount > 0 && (
+        <div ref={menuRef} className="tagpick-menu scroll" role="listbox" tabIndex={-1}>
+          {matches.map((t, idx) => (
             <button
               type="button"
               key={t.id}
-              className="tagpick-opt"
+              role="option"
+              aria-selected={highlightIdx === idx}
+              className={"tagpick-opt" + (highlightIdx === idx ? " active" : "")}
+              onMouseEnter={() => setHighlightIdx(idx)}
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => add(t.name)}
+              onClick={() => {
+                add(t.name);
+                setOpen(false);
+              }}
             >
               <span
                 className="tag-dot"
@@ -134,9 +203,15 @@ export function TagPicker({
           {canCreate && (
             <button
               type="button"
-              className="tagpick-opt create"
+              role="option"
+              aria-selected={highlightIdx === matches.length}
+              className={"tagpick-opt create" + (highlightIdx === matches.length ? " active" : "")}
+              onMouseEnter={() => setHighlightIdx(matches.length)}
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => add(draft)}
+              onClick={() => {
+                add(draft);
+                setOpen(false);
+              }}
             >
               <Icon name="plus" size={14} />
               <span>

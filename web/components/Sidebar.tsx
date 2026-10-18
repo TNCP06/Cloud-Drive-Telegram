@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import Image from "next/image";
 import { Icon } from "@/lib/icons";
@@ -71,6 +71,7 @@ export function Sidebar({
   const [localStorageOpen, setLocalStorageOpen] = useState(false);
   const isStorageOpen = storageOpenProp !== undefined ? storageOpenProp : localStorageOpen;
   const setStorageOpen = onStorageOpenChange || setLocalStorageOpen;
+  const storageBtnRef = useRef<HTMLButtonElement>(null);
 
   // Type tags get their own collapsible group (kept in a fixed, intuitive order).
   const SPECIAL_ORDER = ["image", "video", "archive"];
@@ -241,6 +242,7 @@ export function Sidebar({
       </div>
 
       <button
+        ref={storageBtnRef}
         className="storage"
         type="button"
         onClick={() => setStorageOpen(true)}
@@ -269,21 +271,78 @@ export function Sidebar({
         <TagLegend items={storage.legend} />
       </button>
 
-      {isStorageOpen && <StorageDetail storage={storage} onClose={() => setStorageOpen(false)} />}
+      {isStorageOpen && (
+        <StorageDetail
+          storage={storage}
+          triggerRef={storageBtnRef}
+          onClose={() => setStorageOpen(false)}
+        />
+      )}
     </aside>
   );
 }
 
-function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => void }) {
+function StorageDetail({
+  storage,
+  triggerRef,
+  onClose,
+}: {
+  storage: Storage;
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+}) {
   const [mounted, setMounted] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  // Restore focus to trigger button upon close
+  useEffect(() => {
+    return () => {
+      triggerRef?.current?.focus({ preventScroll: true });
+    };
+  }, [triggerRef]);
+
+  // Trap focus inside dialog and close on Escape
+  useEffect(() => {
+    if (!mounted) return;
+    const el = dialogRef.current;
+    if (!el) return;
+
+    const focusables = () =>
+      Array.from(
+        el.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      );
+    const items = focusables();
+    items[items.length - 1]?.focus();
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key === "Tab") {
+        const curr = focusables();
+        if (!curr.length) return;
+        const first = curr[0];
+        const last = curr[curr.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [mounted, onClose]);
 
   const segs = [...storage.segments].sort((a, b) => b.pct - a.pct);
   if (!mounted) return null;
@@ -295,7 +354,7 @@ function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => 
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="dialog" style={{ maxWidth: 420 }}>
+      <div ref={dialogRef} className="dialog" style={{ maxWidth: 420 }}>
         <div className="dhead">
           <div>
             <h2>Storage</h2>
@@ -303,7 +362,7 @@ function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => 
               {storage.usedLabel.num} {storage.usedLabel.unit} used on {storage.capLabel}
             </p>
           </div>
-          <button className="iconbtn ghost" onClick={onClose} title="Close">
+          <button className="iconbtn ghost" onClick={onClose} title="Close (Esc)">
             <Icon name="close" size={18} />
           </button>
         </div>
@@ -317,7 +376,12 @@ function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => 
             )}
             <span style={{ flex: 1, background: "var(--line)" }}></span>
           </div>
-          <div className="storage-detail scroll">
+          <div
+            className="storage-detail scroll"
+            tabIndex={0}
+            role="region"
+            aria-label="Storage breakdown"
+          >
             {segs.length === 0 && <div className="tagmgr-empty">No data yet.</div>}
             {segs.map((s, i) => (
               <div className="storage-detail-row" key={i}>
@@ -330,7 +394,7 @@ function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => 
           </div>
         </div>
         <div className="dfoot">
-          <button className="btn" onClick={onClose}>Done</button>
+          <button className="btn" onClick={onClose} autoFocus>Done</button>
         </div>
       </div>
     </div>,

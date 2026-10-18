@@ -524,7 +524,110 @@ export function MoveToFolderModal({
   const what = parts.join(" + ") || "items";
 
   const dialogRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const typeAheadBufferRef = useRef("");
+  const typeAheadTimeRef = useRef(0);
   useDialogFocusTrap(dialogRef);
+
+  // Escape to close
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Handle arrow keys, Home, End, Enter, and Type-Ahead within the folder list
+  const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const curIdx = list.findIndex((item) => item.id === selectedFolderId);
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const nextIdx = curIdx < 0 ? 0 : (curIdx + 1) % list.length;
+      setSelectedFolderId(list[nextIdx].id);
+      const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>("button.folder-opt");
+      buttons?.[nextIdx]?.focus({ preventScroll: true });
+      buttons?.[nextIdx]?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const prevIdx = curIdx <= 0 ? list.length - 1 : curIdx - 1;
+      setSelectedFolderId(list[prevIdx].id);
+      const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>("button.folder-opt");
+      buttons?.[prevIdx]?.focus({ preventScroll: true });
+      buttons?.[prevIdx]?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+
+    if (e.key === "Home") {
+      e.preventDefault();
+      setSelectedFolderId(list[0].id);
+      const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>("button.folder-opt");
+      buttons?.[0]?.focus({ preventScroll: true });
+      buttons?.[0]?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+
+    if (e.key === "End") {
+      e.preventDefault();
+      const lastIdx = list.length - 1;
+      setSelectedFolderId(list[lastIdx].id);
+      const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>("button.folder-opt");
+      buttons?.[lastIdx]?.focus({ preventScroll: true });
+      buttons?.[lastIdx]?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onMove(selectedFolderId);
+      return;
+    }
+
+    // Type-ahead jump navigation (a-z, 0-9)
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1 && /^[a-z0-9]$/i.test(e.key)) {
+      const char = e.key.toLowerCase();
+      const now = Date.now();
+      if (now - typeAheadTimeRef.current > 600) {
+        typeAheadBufferRef.current = char;
+      } else {
+        typeAheadBufferRef.current += char;
+      }
+      typeAheadTimeRef.current = now;
+
+      const q = typeAheadBufferRef.current;
+      const isSingleCharCycle = q.length > 1 && q.split("").every((c) => c === q[0]);
+      const effectiveChar = isSingleCharCycle ? q[0] : null;
+
+      let matchIdx = -1;
+      if (effectiveChar) {
+        const startIdx = curIdx >= 0 ? (curIdx + 1) % list.length : 0;
+        for (let i = 0; i < list.length; i++) {
+          const idx = (startIdx + i) % list.length;
+          if (list[idx].name.toLowerCase().startsWith(effectiveChar)) {
+            matchIdx = idx;
+            break;
+          }
+        }
+      } else {
+        matchIdx = list.findIndex((item) => item.name.toLowerCase().startsWith(q));
+      }
+
+      if (matchIdx !== -1) {
+        e.preventDefault();
+        setSelectedFolderId(list[matchIdx].id);
+        const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>("button.folder-opt");
+        buttons?.[matchIdx]?.focus({ preventScroll: true });
+        buttons?.[matchIdx]?.scrollIntoView({ block: "nearest" });
+      }
+    }
+  };
 
   return (
     <div className="overlay" style={{ zIndex: 330 }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -532,7 +635,15 @@ export function MoveToFolderModal({
         <div className="dhead">
           <h2>Move {what} to folder</h2>
         </div>
-        <div className="dbody" style={{ maxHeight: 320, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4, padding: "8px 0" }}>
+        <div
+          ref={listRef}
+          className="dbody scroll"
+          tabIndex={-1}
+          role="region"
+          aria-label="Folder destinations"
+          onKeyDown={onListKeyDown}
+          style={{ maxHeight: 320, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4, padding: "8px 0", outline: "none" }}
+        >
           {/* Cross-space destination (Main ⇄ Private) */}
           <button
             className="btn subtle"
@@ -549,7 +660,8 @@ export function MoveToFolderModal({
           {list.map((item) => (
             <button
               key={item.id === null ? "root" : item.id}
-              className="btn subtle"
+              className="btn subtle folder-opt"
+              tabIndex={selectedFolderId === item.id ? 0 : -1}
               style={{
                 textAlign: "left",
                 paddingLeft: `${item.depth * 16 + 12}px`,
