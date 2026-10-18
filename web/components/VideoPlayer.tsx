@@ -174,7 +174,13 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
       cachedContainerRect = player.elements.container.getBoundingClientRect();
     }
     const mediaWidth = player.media?.clientWidth || cachedContainerRect?.width || 0;
-    const aspect = pt.thumbAspectRatio || (pt.thumbnails?.[0]?.width / pt.thumbnails?.[0]?.height) || (16 / 9);
+    const frame0 = pt.thumbnails?.[0]?.frames?.[0];
+    const aspect =
+      frame0?.w && frame0?.h
+        ? Number(frame0.w) / Number(frame0.h)
+        : pt.thumbnails?.[0]?.width && pt.thumbnails?.[0]?.height
+        ? Number(pt.thumbnails[0].width) / Number(pt.thumbnails[0].height)
+        : 16 / 9;
     const height = Math.max(60, Math.min(180, Math.floor(mediaWidth / aspect / 4)));
     const width = Math.floor(height * aspect);
     cachedThumbHeight = height;
@@ -211,6 +217,26 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
   window.addEventListener("resize", clearRects, { passive: true });
   player.on?.("enterfullscreen", clearRects);
   player.on?.("exitfullscreen", clearRects);
+
+  // Guard against Plyr crashes when hovering before VTT cues finish parsing
+  Object.defineProperty(pt, "thumbAspectRatio", {
+    get() {
+      const f = this.thumbnails?.[0]?.frames?.[0];
+      if (f?.w && f?.h) return Number(f.w) / Number(f.h);
+      const t = this.thumbnails?.[0];
+      if (t?.width && t?.height) return Number(t.width) / Number(t.height);
+      return 16 / 9;
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(pt, "usingSprites", {
+    get() {
+      const f = this.thumbnails?.[0]?.frames?.[0];
+      return f ? Object.keys(f).includes("w") : false;
+    },
+    configurable: true,
+  });
 
   // Prevent Plyr from reading player.media.clientWidth repeatedly on mousemove
   Object.defineProperty(pt, "thumbContainerHeight", {
