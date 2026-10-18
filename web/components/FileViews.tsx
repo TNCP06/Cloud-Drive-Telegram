@@ -810,6 +810,17 @@ export function Menu({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const anchorRef = useRef(anchor);
+  anchorRef.current = anchor;
+
+  // Type-ahead buffer inside the menu (600ms timeout)
+  const typeAheadBufferRef = useRef("");
+  const typeAheadTimeRef = useRef(0);
+
+  const getItems = () =>
+    Array.from(ref.current?.querySelectorAll<HTMLElement>(".menu-item:not([disabled])") || []).filter(
+      (el) => el.offsetParent !== null
+    );
 
   useLayoutEffect(() => {
     const r = anchor.getBoundingClientRect();
@@ -824,13 +835,138 @@ export function Menu({
     setPos({ left, top });
   }, [anchor, align, width]);
 
+  // Auto-focus on open: prioritize the active checked item (e.g. current sort/group/layout), otherwise the first item
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const items = getItems();
+      if (!items.length) return;
+      const checked = items.find((el) => el.querySelector(".check") != null || el.getAttribute("aria-checked") === "true");
+      const target = checked || items[0];
+      target.focus({ preventScroll: true });
+    }, 20);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Restore focus to anchor on dismiss
+  useEffect(() => {
+    return () => {
+      if (anchorRef.current && document.contains(anchorRef.current)) {
+        anchorRef.current.focus({ preventScroll: true });
+      }
+    };
+  }, []);
+
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+
+      if (e.key === "Tab") {
+        onClose();
+        return;
+      }
+
+      const items = getItems();
+      if (!items.length) return;
+
+      const activeEl = document.activeElement as HTMLElement | null;
+      const curIdx = activeEl ? items.indexOf(activeEl) : -1;
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const nextIdx = curIdx < 0 ? 0 : (curIdx + 1) % items.length;
+        items[nextIdx]?.focus({ preventScroll: true });
+        items[nextIdx]?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const prevIdx = curIdx <= 0 ? items.length - 1 : curIdx - 1;
+        items[prevIdx]?.focus({ preventScroll: true });
+        items[prevIdx]?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+
+      if (e.key === "Home") {
+        e.preventDefault();
+        items[0]?.focus({ preventScroll: true });
+        items[0]?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+
+      if (e.key === "End") {
+        e.preventDefault();
+        items[items.length - 1]?.focus({ preventScroll: true });
+        items[items.length - 1]?.scrollIntoView({ block: "nearest" });
+        return;
+      }
+
+      // Submenu handling
+      if (e.key === "ArrowRight") {
+        if (activeEl?.classList.contains("has-sub")) {
+          const subItem = activeEl.querySelector<HTMLElement>(".submenu .menu-item");
+          if (subItem) {
+            e.preventDefault();
+            subItem.focus({ preventScroll: true });
+            return;
+          }
+        }
+      }
+
+      if (e.key === "ArrowLeft") {
+        const parentSub = activeEl?.closest(".submenu")?.closest<HTMLElement>(".has-sub");
+        if (parentSub) {
+          e.preventDefault();
+          parentSub.focus({ preventScroll: true });
+          return;
+        }
+      }
+
+      // Type-ahead jump navigation inside menu (a-z, 0-9)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1 && /^[a-z0-9]$/i.test(e.key)) {
+        const char = e.key.toLowerCase();
+        const now = Date.now();
+        const isConsecutive = now - typeAheadTimeRef.current < 600;
+        typeAheadTimeRef.current = now;
+
+        const isCycle =
+          isConsecutive &&
+          typeAheadBufferRef.current.length > 0 &&
+          typeAheadBufferRef.current.split("").every((c) => c === char);
+        const query = isCycle ? char : isConsecutive ? typeAheadBufferRef.current + char : char;
+        typeAheadBufferRef.current = query;
+
+        const getItemText = (el: HTMLElement) => el.innerText.trim().toLowerCase();
+
+        let target: HTMLElement | null = null;
+        if (isCycle && curIdx >= 0) {
+          for (let i = 1; i <= items.length; i++) {
+            const idx = (curIdx + i) % items.length;
+            if (getItemText(items[idx]).startsWith(char)) {
+              target = items[idx];
+              break;
+            }
+          }
+        } else {
+          target = items.find((el) => getItemText(el).startsWith(query)) ?? null;
+        }
+
+        if (target) {
+          e.preventDefault();
+          target.focus({ preventScroll: true });
+          target.scrollIntoView({ block: "nearest" });
+        }
+      }
     };
+
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -843,6 +979,8 @@ export function Menu({
     <div
       className="menu"
       ref={ref}
+      role="menu"
+      tabIndex={-1}
       style={{ ...(pos || { left: -9999, top: -9999 }), minWidth: width }}
     >
       {children}
@@ -868,6 +1006,9 @@ export function MenuItem({
   return (
     <button
       className={"menu-item" + (danger ? " danger" : "")}
+      role={check !== undefined ? "menuitemcheckbox" : "menuitem"}
+      aria-checked={check}
+      tabIndex={-1}
       title={shortcut ? `${label} (${shortcut})` : label}
       onClick={(e) => {
         e.preventDefault();
@@ -894,7 +1035,7 @@ export function SubMenuItem({
   children: ReactNode;
 }) {
   return (
-    <div className="menu-item has-sub" tabIndex={0}>
+    <div className="menu-item has-sub" tabIndex={-1} role="menuitem" aria-haspopup="menu">
       {icon && <Icon name={icon} size={17} className="ico" />}
       <span>{label}</span>
       <Icon name="chevright" size={15} className="sub-caret" />
