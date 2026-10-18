@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
+import fs from "fs";
+import path from "path";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { db } from "@/lib/db";
 import { authorizePart } from "@/lib/resourceAuth";
 
-// Proxy seek-preview sprite image requests to the Python streamer.
+// Proxy seek-preview sprite image requests to the Python streamer (or serve static demo sprites in DEMO_MODE).
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -30,6 +33,35 @@ export async function GET(
   if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
     return new NextResponse("Not found", { status: 404 });
   }
+
+  if (process.env.DEMO_MODE?.trim() === "1") {
+    const rs = await db.execute({
+      sql: "SELECT file_id FROM parts WHERE id = ?",
+      args: [id],
+    });
+    const asset = String(rs.rows[0]?.file_id ?? "");
+    const filename = path.basename(asset);
+    const stem = filename.substring(0, filename.lastIndexOf("."));
+    const previewsDir = fs.existsSync(path.join(process.cwd(), "public", "demo", "previews"))
+      ? path.join(process.cwd(), "public", "demo", "previews")
+      : path.join(process.cwd(), "web", "public", "demo", "previews");
+    const spriteFile = path.join(previewsDir, `${stem}.jpg`);
+
+    try {
+      const buffer = await fs.promises.readFile(spriteFile);
+      return new Response(buffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/jpeg",
+          "Content-Length": String(buffer.byteLength),
+          "Cache-Control": "public, max-age=604800, immutable",
+        },
+      });
+    } catch {
+      return new NextResponse("Not found", { status: 404 });
+    }
+  }
+
   const upstream = `${STREAMER_URL}/seek-preview/${partId}/sprite`;
 
   const headers: Record<string, string> = {};

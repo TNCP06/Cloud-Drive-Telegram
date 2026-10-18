@@ -18,7 +18,7 @@ types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
 // knows a demo exists is the stream route (it serves static files instead of Telegram).
 // Each serverless instance gets its own copy, so edits made in the demo are real until
 // that instance is recycled — and no visitor can wreck it for the next one.
-const DEMO = process.env.DEMO_MODE === "1";
+const DEMO = process.env.DEMO_MODE?.trim() === "1";
 
 type Queryable = { query: (sql: string, args: unknown[]) => Promise<QueryResult> };
 type QueryResult = { rows: Record<string, unknown>[]; rowCount?: number | null; affectedRows?: number };

@@ -38,7 +38,7 @@ export async function GET(
   // `file_id` holds the path of a static demo asset instead of a Telegram file id.
   // Redirecting hands the request to the CDN, which serves Range requests itself —
   // so seeking, PDF preview and inline images all behave exactly as in production.
-  if (process.env.DEMO_MODE === "1") {
+  if (process.env.DEMO_MODE?.trim() === "1") {
     const rs = await db.execute({
       sql: "SELECT file_id FROM parts WHERE id = ?",
       args: [id],

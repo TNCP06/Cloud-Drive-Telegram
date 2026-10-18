@@ -195,6 +195,47 @@ def video_thumb(src: Path, at: float) -> str:
     return data
 
 
+def make_seek_preview(src: Path, seconds: float) -> None:
+    previews = PUBLIC / "previews"
+    previews.mkdir(parents=True, exist_ok=True)
+    base = src.stem
+    out_sprite = previews / f"{base}.jpg"
+    out_vtt = previews / f"{base}.vtt"
+    interval = 1.0
+    cols = 10
+    thumb_w, thumb_h = 128, 72
+    n_frames = int(math.ceil(seconds / interval))
+    rows = int(math.ceil(n_frames / cols))
+    run(
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src),
+        "-vf", f"fps=1/{interval:.6f},scale={thumb_w}:{thumb_h}:force_original_aspect_ratio=decrease,pad={thumb_w}:{thumb_h}:(ow-iw)/2:(oh-ih)/2,tile={cols}x{rows}",
+        "-frames:v", "1",
+        "-q:v", "6",
+        str(out_sprite),
+    )
+    lines = ["WEBVTT", ""]
+    for i in range(n_frames):
+        t_start = i * interval
+        t_end = min((i + 1) * interval, seconds)
+        col = i % cols
+        row = i // cols
+        x = col * thumb_w
+        y = row * thumb_h
+        h = int(t_start // 3600)
+        m = int((t_start % 3600) // 60)
+        s = t_start % 60
+        ts_start = f"{h:02d}:{m:02d}:{s:06.3f}"
+        h_e = int(t_end // 3600)
+        m_e = int((t_end % 3600) // 60)
+        s_e = t_end % 60
+        ts_end = f"{h_e:02d}:{m_e:02d}:{s_e:06.3f}"
+        lines.append(f"{ts_start} --> {ts_end}")
+        lines.append(f"{{{{SPRITE_URL}}}}#xywh={x},{y},{thumb_w},{thumb_h}")
+        lines.append("")
+    out_vtt.write_text("\n".join(lines), encoding="utf-8")
+
+
 def make_audio(name: str, seconds: int, freq: int) -> None:
     args = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -668,11 +709,13 @@ def build_assets() -> dict[str, str]:
         print(f"  video {name}")
         path = make_video(name, title, c0, c1, secs)
         th[key] = video_thumb(path, secs * 0.35)
+        make_seek_preview(path, secs)
 
     print("  video clip-launch.webm")
     tmp = make_video("_launch.mp4", "Product Launch Teaser", "0x240e26", "0xf09e5a", 20)
     make_webm(tmp, "clip-launch.webm", 20)
     th["launch"] = video_thumb(tmp, 7)
+    make_seek_preview(PUBLIC / "clip-launch.webm", 20)
     tmp.unlink()
 
     photos = [

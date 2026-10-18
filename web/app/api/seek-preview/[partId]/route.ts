@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { cookies } from "next/headers";
+import fs from "fs";
+import path from "path";
 import { AUTH_COOKIE, sha256Hex } from "@/lib/auth";
+import { db } from "@/lib/db";
 import { authorizePart } from "@/lib/resourceAuth";
 
-// Proxy seek-preview VTT requests to the Python streamer.
+// Proxy seek-preview VTT requests to the Python streamer (or serve static demo previews in DEMO_MODE).
 // Auth mirrors the main /api/stream proxy.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,6 +34,41 @@ export async function GET(
   if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
     return new NextResponse("Not found", { status: 404 });
   }
+
+  if (process.env.DEMO_MODE?.trim() === "1") {
+    const rs = await db.execute({
+      sql: "SELECT file_id FROM parts WHERE id = ?",
+      args: [id],
+    });
+    const asset = String(rs.rows[0]?.file_id ?? "");
+    const filename = path.basename(asset);
+    const stem = filename.substring(0, filename.lastIndexOf("."));
+    const previewsDir = fs.existsSync(path.join(process.cwd(), "public", "demo", "previews"))
+      ? path.join(process.cwd(), "public", "demo", "previews")
+      : path.join(process.cwd(), "web", "public", "demo", "previews");
+    const vttFile = path.join(previewsDir, `${stem}.vtt`);
+
+    try {
+      let vtt = await fs.promises.readFile(vttFile, "utf-8");
+      vtt = vtt.replaceAll("{{SPRITE_URL}}", `/api/seek-preview/${partId}/sprite`);
+      return new Response(vtt, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/vtt",
+          "Cache-Control": "public, max-age=604800, immutable",
+        },
+      });
+    } catch {
+      return new Response("", {
+        status: 200,
+        headers: {
+          "Content-Type": "text/vtt",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+  }
+
   const reqUrl = new URL(req.url);
   const wait = reqUrl.searchParams.get("wait") === "true";
   const upstream = `${STREAMER_URL}/seek-preview/${partId}${wait ? "?wait=true" : ""}`;
