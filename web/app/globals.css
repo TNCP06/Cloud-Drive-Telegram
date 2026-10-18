@@ -1049,8 +1049,9 @@ a:focus-visible,
   contain: paint;
 }
 .viewer-video .plyr__preview-thumb__image-container img {
-  will-change: left, top;
-  transform: translateZ(0);
+  will-change: transform;
+  transform-origin: 0 0;
+  backface-visibility: hidden;
 }
 .viewer-video .plyr__preview-thumb__time-container {
   background: transparent !important;
@@ -1063,8 +1064,9 @@ a:focus-visible,
   will-change: opacity;
 }
 .viewer-video .plyr__preview-scrubbing img {
-  will-change: left, top;
-  transform: translateZ(0);
+  will-change: transform;
+  transform-origin: 0 0;
+  backface-visibility: hidden;
 }
 
 /* Fallback: show the default time tooltip while preview thumbnail is not ready / loading */

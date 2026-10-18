@@ -123,6 +123,228 @@ export interface VideoQualityOption {
   size?: number;   // file size in bytes
 }
 
+/**
+ * High-performance seek-preview optimization for Plyr:
+ * 1. Hardware-accelerated GPU frame translation (`transform: translate3d`) instead of layout reflows (`left`/`top`).
+ * 2. O(log N) binary search for cue frame lookup instead of O(N) linear array scan on every mouse move.
+ * 3. Geometry caching on progress bar hover to eliminate forced synchronous layout thrashing (getBoundingClientRect).
+ * 4. requestAnimationFrame (rAF) batching to synchronize high-polling mouse events with monitor refresh rate.
+ * 5. Pre-mounted sprite image element so the first hover is instant with zero blank delay.
+ * 6. Disables redundant multi-image sprite preloading (preloadNearby, getHigherQuality) for sprite-sheets.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function setupOptimizedPreviewThumbnails(player: any): () => void {
+  const pt = player?.previewThumbnails;
+  if (!pt) return () => {};
+
+  // Disable redundant sprite overheads
+  pt.preloadNearby = () => Promise.resolve();
+  pt.getHigherQuality = () => {};
+
+  let cachedProgressRect: DOMRect | null = null;
+  let cachedContainerRect: DOMRect | null = null;
+  let cachedWidth = 0;
+  let cachedHeight = 0;
+  let cachedMultiplier = 0;
+  let rafId: number | null = null;
+  let lastEvent: MouseEvent | TouchEvent | null = null;
+
+  const refreshRects = () => {
+    if (player.elements?.progress) {
+      cachedProgressRect = player.elements.progress.getBoundingClientRect();
+    }
+    if (player.elements?.container) {
+      cachedContainerRect = player.elements.container.getBoundingClientRect();
+    }
+    const containerEl = pt.elements?.thumb?.container;
+    cachedWidth = containerEl ? containerEl.clientWidth : 0;
+    const frames = pt.thumbnails?.[0]?.frames;
+    const frameH = frames?.[0]?.h || 72;
+    cachedHeight = pt.thumbContainerHeight || 144;
+    cachedMultiplier = cachedHeight / frameH;
+  };
+
+  const clearRects = () => {
+    cachedProgressRect = null;
+    cachedContainerRect = null;
+  };
+
+  const progressEl = player.elements?.progress;
+  if (progressEl) {
+    progressEl.addEventListener("mouseenter", refreshRects, { passive: true });
+    progressEl.addEventListener("mouseleave", clearRects, { passive: true });
+  }
+  window.addEventListener("resize", clearRects, { passive: true });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const findCueIndex = (frames: any[], time: number): number => {
+    let low = 0;
+    let high = frames.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const f = frames[mid];
+      if (time < f.startTime) {
+        high = mid - 1;
+      } else if (time > f.endTime) {
+        low = mid + 1;
+      } else {
+        return mid;
+      }
+    }
+    return Math.max(0, Math.min(frames.length - 1, low));
+  };
+
+  const ensureImageMounted = () => {
+    const thumbDef = pt.thumbnails?.[0];
+    if (!thumbDef || !thumbDef.frames?.length) return;
+    const imgContainer = pt.elements?.thumb?.imageContainer;
+    if (!imgContainer) return;
+
+    if (!pt.currentImageElement) {
+      const img = new window.Image();
+      const firstFrame = thumbDef.frames[0];
+      img.src = (thumbDef.urlPrefix || "") + firstFrame.text;
+      img.dataset.index = "0";
+      img.dataset.filename = firstFrame.text;
+      img.style.left = "0px";
+      img.style.top = "0px";
+      img.style.transformOrigin = "0 0";
+      img.style.willChange = "transform";
+      img.style.backfaceVisibility = "hidden";
+
+      const mult = cachedMultiplier || (cachedHeight / (firstFrame.h || 72)) || 2;
+      const onSized = () => {
+        if (!pt.usingSprites || !img.naturalHeight) return;
+        img.style.height = `${img.naturalHeight * mult}px`;
+        img.style.width = `${img.naturalWidth * mult}px`;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (img as any)._sized = true;
+      };
+      if (img.complete && img.naturalHeight) {
+        onSized();
+      } else {
+        img.onload = onSized;
+      }
+
+      imgContainer.appendChild(img);
+      pt.currentImageElement = img;
+    }
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pt.setImageSizeAndOffset = function (previewImage: HTMLImageElement, frame: any) {
+    if (!this.usingSprites || !frame) return;
+    if (!cachedMultiplier) refreshRects();
+    const isScrubbing = Boolean(this.mouseDown);
+    const mult = isScrubbing
+      ? this.thumbContainerHeight / (frame.h || 72)
+      : (cachedMultiplier || 2);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (!(previewImage as any)._sized && previewImage.naturalHeight) {
+      previewImage.style.height = `${previewImage.naturalHeight * mult}px`;
+      previewImage.style.width = `${previewImage.naturalWidth * mult}px`;
+      previewImage.style.left = "0px";
+      previewImage.style.top = "0px";
+      previewImage.style.transformOrigin = "0 0";
+      previewImage.style.willChange = "transform";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (previewImage as any)._sized = true;
+    }
+    previewImage.style.transform = `translate3d(-${frame.x * mult}px, -${frame.y * mult}px, 0)`;
+  };
+
+  pt.showImageAtCurrentTime = function () {
+    const thumbDef = this.thumbnails?.[0];
+    if (!thumbDef || !thumbDef.frames?.length) return;
+    const frames = thumbDef.frames;
+
+    if (!cachedProgressRect) refreshRects();
+    const containerEl = this.elements?.thumb?.container;
+
+    if (!this.mouseDown && containerEl && cachedContainerRect && cachedProgressRect) {
+      const min = cachedContainerRect.left - cachedProgressRect.left + 10;
+      const max = cachedContainerRect.right - cachedProgressRect.left - cachedWidth - 10;
+      const pos = this.mousePosX - cachedProgressRect.left - cachedWidth / 2;
+      const clamped = Math.max(min, Math.min(max, pos));
+      containerEl.style.left = `${clamped}px`;
+    }
+
+    const thumbNum = findCueIndex(frames, this.seekTime);
+    const hasThumb = thumbNum >= 0;
+
+    if (!this.mouseDown) {
+      this.toggleThumbContainer(hasThumb);
+    }
+    if (!hasThumb) return;
+
+    if (thumbNum !== this.showingThumb) {
+      this.showingThumb = thumbNum;
+      const frame = frames[thumbNum];
+      if (this.currentImageElement) {
+        this.setImageSizeAndOffset(this.currentImageElement, frame);
+        this.currentImageElement.dataset.index = String(thumbNum);
+      } else {
+        this.loadImage(0);
+      }
+    }
+  };
+
+  pt.startMove = function (event: MouseEvent | TouchEvent) {
+    if (!this.loaded || !this.player?.media?.duration) return;
+    ensureImageMounted();
+    lastEvent = event;
+    if (rafId !== null) return;
+
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      if (!lastEvent) return;
+      const ev = lastEvent;
+
+      if (!cachedProgressRect) refreshRects();
+      const duration = this.player.media.duration;
+
+      if (ev.type === "touchmove") {
+        this.seekTime = duration * (this.player.elements.inputs.seek.value / 100);
+      } else {
+        const clientX = (ev as MouseEvent).pageX ?? (ev as MouseEvent).clientX;
+        const left = cachedProgressRect ? cachedProgressRect.left : 0;
+        const width = cachedProgressRect ? cachedProgressRect.width : 1;
+        const pct = Math.max(0, Math.min(1, (clientX - left) / (width || 1)));
+        this.seekTime = Math.max(0, Math.min(duration - 1, duration * pct));
+        this.mousePosX = clientX;
+
+        const m = Math.floor(this.seekTime / 60);
+        const s = Math.floor(this.seekTime % 60);
+        const timeStr = `${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
+        if (this.elements?.thumb?.time) {
+          this.elements.thumb.time.textContent = timeStr;
+        }
+      }
+
+      this.showImageAtCurrentTime();
+    });
+  };
+
+  pt.endMove = function () {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    clearRects();
+    this.toggleThumbContainer(false, true);
+  };
+
+  return () => {
+    if (rafId !== null) cancelAnimationFrame(rafId);
+    if (progressEl) {
+      progressEl.removeEventListener("mouseenter", refreshRects);
+      progressEl.removeEventListener("mouseleave", clearRects);
+    }
+    window.removeEventListener("resize", clearRects);
+  };
+}
+
 export function VideoPlayer({
   src,
   poster,
@@ -176,6 +398,7 @@ export function VideoPlayer({
     let player: Plyr | null = null;
     let destroyed = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let cleanupSeekOpt: (() => void) | undefined;
     const controller = new AbortController();
 
     const handleVideoError = () => {
@@ -319,6 +542,10 @@ export function VideoPlayer({
         previewThumbnails:
           previewReady && partId ? { enabled: true, src: `/api/seek-preview/${partId}` } : { enabled: false },
       });
+
+      if (previewReady && partId) {
+        cleanupSeekOpt = setupOptimizedPreviewThumbnails(player);
+      }
 
       // Delegate Plyr's fullscreen toggle to the viewer's toggleFullscreen so topbar, filmstrip and controls stay consistent
       player.fullscreen.toggle = () => {
@@ -501,6 +728,7 @@ export function VideoPlayer({
 
     return () => {
       destroyed = true;
+      cleanupSeekOpt?.();
       controller.abort();
       video.removeEventListener("error", handleVideoError);
       if (pollTimer) clearInterval(pollTimer);
