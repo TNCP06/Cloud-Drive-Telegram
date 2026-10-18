@@ -276,12 +276,11 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
     }
   };
 
-  // Zero-reflow startMove using cached progress bar rect and debounced textContent
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pt.startMove = function (event: any) {
-    if (!this.loaded) return;
-    if (!event || !["touchmove", "mousemove"].includes(event.type)) return;
-    const duration = this.player.media?.duration;
+  let pendingEvent: any = null;
+  let rafId: number | null = null;
+
+  const processMove = (event: any) => {
+    const duration = pt.player?.media?.duration;
     if (!duration) return;
 
     if (!cachedProgressRect || !cachedContainerRect) {
@@ -294,18 +293,47 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
     const percentage = Math.max(0, Math.min(100, (100 / scrubberRect.width) * (pageX - scrubberRect.left)));
     const seekTime = Math.max(0, Math.min(duration - 1, duration * (percentage / 100)));
 
-    this.seekTime = seekTime;
-    this.mousePosX = pageX;
+    pt.seekTime = seekTime;
+    pt.mousePosX = pageX;
 
     const intSec = Math.floor(seekTime);
     if (intSec !== lastFormattedSecs) {
       lastFormattedSecs = intSec;
-      if (this.elements?.thumb?.time) {
-        this.elements.thumb.time.textContent = formatSeekTime(seekTime);
+      if (pt.elements?.thumb?.time) {
+        pt.elements.thumb.time.textContent = formatSeekTime(seekTime);
       }
     }
 
-    this.showImageAtCurrentTime();
+    pt.showImageAtCurrentTime();
+  };
+
+  // Coalesce high-frequency mousemove events (125-1000Hz) to display vsync (60/120Hz)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pt.startMove = function (event: any) {
+    if (!this.loaded) return;
+    if (!event || !["touchmove", "mousemove"].includes(event.type)) return;
+
+    pendingEvent = event;
+    if (rafId === null) {
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        if (pendingEvent) {
+          processMove(pendingEvent);
+          pendingEvent = null;
+        }
+      });
+    }
+  };
+
+  const origEndMove = pt.endMove;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pt.endMove = function (...args: any[]) {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    pendingEvent = null;
+    origEndMove?.apply(this, args);
   };
 
   // Fast-path O(1)/O(log N) showImageAtCurrentTime to eliminate linear frame scanning
