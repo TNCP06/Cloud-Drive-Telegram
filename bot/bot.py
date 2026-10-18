@@ -730,229 +730,9 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_main_menu(update, context, edit=False)
 
 
-# ---------------------------------------------------------------------------
-# Phone backup session (/backup … /backup_done) — one-button archive of an old
-# phone for files ≤ Telegram's ~2 GB per-file cap. Everything sent while the
-# session is on skips the Title/Tags questionnaire and is copied server-side
-# (copy_message: no VPS disk, no VPS egress) with auto metadata + hp-backup
-# tag. One living summary message tracks ok/fail so a dead phone simply
-# resumes by sending the rest — retry = forward the failed files again.
-# Bigger files go through the web backup page (/backup-hp), which splits them.
-#
-# Restart-safe: the session is cached in user_data but persisted in
-# bot_settings, so a bot redeploy mid-run only loses the in-flight file — the
-# next file reloads the counters from the DB instead of falling back to the
-# questionnaire.
-# ---------------------------------------------------------------------------
-def _backup_key(user_id: int) -> str:
-    return f"backup:{user_id}"
-
-
-def _backup_blank() -> dict:
-    return {"active": False, "ok": 0, "fail": 0, "failed": [],
-            "last_edit": 0.0, "prog_id": None}
-
-
-async def _backup_load(context: ContextTypes.DEFAULT_TYPE, user_id: int, db):
-    """Session dict, from the user_data cache or the DB backup after a restart."""
-    sess = context.user_data.get("backup_sess")
-    if isinstance(sess, dict):
-        return sess
-    sess = _backup_blank()
-    try:
-        rs = await db.execute(
-            "SELECT value FROM bot_settings WHERE key = ?", [_backup_key(user_id)])
-        if rs.rows and rs.rows[0][0]:
-            loaded = json.loads(rs.rows[0][0])
-            if isinstance(loaded, dict):
-                sess.update({k: loaded.get(k, v) for k, v in sess.items()})
-    except Exception:  # noqa: BLE001 — a corrupt row just starts a fresh session
-        log.debug("backup session load failed", exc_info=True)
-    context.user_data["backup_sess"] = sess
-    return sess
-
-
-async def _backup_save(context: ContextTypes.DEFAULT_TYPE, user_id: int, db):
-    sess = context.user_data.get("backup_sess") or _backup_blank()
-    try:
-        await db.execute(
-            "INSERT INTO bot_settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [_backup_key(user_id), json.dumps(sess)],
-        )
-    except Exception:  # noqa: BLE001 — persistence is best-effort; memory still works
-        log.debug("backup session save failed", exc_info=True)
-
-
-async def _backup_clear(context: ContextTypes.DEFAULT_TYPE, user_id: int, db):
-    context.user_data.pop("backup_sess", None)
-    try:
-        await db.execute("DELETE FROM bot_settings WHERE key = ?", [_backup_key(user_id)])
-    except Exception:  # noqa: BLE001
-        log.debug("backup session clear failed", exc_info=True)
-
-
-def _safe_backup_title(title) -> str:
+def _clean_title(title: str) -> str:
     """Caption-safe title: no contract-breaking '|' and bounded length."""
-    return (str(title or "").replace("|", "/").strip()[:200]) or "backup"
-
-
-def _safe_backup_caption(title: str, tags_str: str) -> str:
-    """Contract caption kept under Telegram's ~1024-char caption cap."""
-    caption = f"{title} | 1/1 | {tags_str}"
-    if len(caption) <= 950:
-        return caption
-    # Trim tags first (title carries the identity), then the title as a backstop.
-    room = 950 - len(title) - len(" | 1/1 | ")
-    tags_str = tags_str[:max(room, 0)].rsplit(",", 1)[0].rstrip(" ,")
-    caption = f"{title} | 1/1 | {tags_str}"
-    return caption if len(caption) <= 1000 else caption[:1000]
-
-
-async def _backup_progress_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, force: bool = False):
-    sess = context.user_data.get("backup_sess") or {}
-    now = time.monotonic()
-    if not force and now - float(sess.get("last_edit", 0)) < 5:
-        return  # ≤1 edit per ~5 s — stay far under Telegram's edit flood limits
-    sess["last_edit"] = now
-    ok = int(sess.get("ok", 0))
-    fail = int(sess.get("fail", 0))
-    failed = sess.get("failed") or []
-    text = (
-        f"📦 <b>Backup HP berjalan…</b>\n"
-        f"• Berhasil: <b>{ok}</b> · Gagal: <b>{fail}</b>\n"
-    )
-    if failed:
-        shown = "\n".join(f"– <code>{html.escape(str(n)[:60])}</code>" for n in failed[-8:])
-        text += f"\nTerakhir gagal (forward ulang pesannya untuk retry):\n{shown}"
-    else:
-        text += "\n<i>Kirim/forward file berikutnya — tanpa perlu jawab apa pun.</i>"
-    try:
-        prog_id = sess.get("prog_id")
-        if prog_id:
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=prog_id, text=text, parse_mode="HTML")
-        else:
-            m = await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-            sess["prog_id"] = m.message_id
-    except Exception:  # noqa: BLE001 — progress must never break the backup
-        log.debug("backup progress edit failed", exc_info=True)
-
-
-async def _backup_record(context, user_id: int, db, chat_id: int, ok_inc: int,
-                         fail_name: "str | None" = None):
-    """Advance the persisted counters and refresh the living summary."""
-    sess = context.user_data.get("backup_sess") or _backup_blank()
-    context.user_data["backup_sess"] = sess
-    sess["ok"] = int(sess.get("ok", 0)) + ok_inc
-    if fail_name is not None:
-        sess["fail"] = int(sess.get("fail", 0)) + 1
-        (sess.setdefault("failed", [])).append(fail_name[:120])
-    await _backup_save(context, user_id, db)
-    await _backup_progress_edit(context, chat_id)
-
-
-async def backup_copy_one(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                          message, kind: str, file_name, file_size, auto_meta):
-    chat_id = message.chat_id
-    user_id = update.effective_user.id if update.effective_user else 0
-    db = context.bot_data["db"]
-    title = _safe_backup_title(
-        (auto_meta.get("title") if auto_meta else None) or file_name
-        or f"backup-{message.message_id}")
-    tags = list((auto_meta.get("tags") if auto_meta else None) or [])
-    if not any(t.lower() == "hp-backup" for t in tags):
-        tags.append("hp-backup")
-    tags_str = ", ".join(tags)
-    try:
-        copied_msg = await context.bot.copy_message(
-            chat_id=STORAGE_CHANNEL_ID,
-            from_chat_id=chat_id,
-            message_id=message.message_id,
-            caption=_safe_backup_caption(title, tags_str),
-        )
-        try:
-            cid = copied_msg.message_id
-            slug = f"{slugify(title)}-{cid}" if kind == "media" else slugify(title)
-            await index_bot_copy(
-                context, db, cid, title=title, tags=tags,
-                part_number=1, total=1, kind=kind, slug=slug,
-                set_title=True, source_message=message,
-            )
-        except Exception:  # noqa: BLE001 — indexing failure shouldn't hide success
-            log.exception("Inline index failed for backup copy msg %s", copied_msg.message_id)
-        await _backup_record(context, user_id, db, chat_id, 1)
-    except Exception as e:  # noqa: BLE001 — record and continue with the next file
-        log.exception("Backup copy failed for msg %s", message.message_id)
-        await _backup_record(
-            context, user_id, db, chat_id, 0, f"{file_name or message.message_id} ({e})".strip())
-
-
-async def on_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    message = update.message
-    if not message or not user:
-        return
-    db = context.bot_data["db"]
-    if not await is_user_authorized(db, user.id):
-        await message.reply_text(
-            "⛔ Access denied. Use `/auth <password>` to authorize or ask the owner.")
-        return
-    sess = await _backup_load(context, user.id, db)
-    if sess.get("active"):
-        await message.reply_text(
-            "📦 Backup HP sudah berjalan — kirim/forward saja file-filenya.\n"
-            "Selesai? Ketik /backup_done untuk ringkasan akhir.")
-        return
-    sess.update({"active": True, "ok": 0, "fail": 0, "failed": [],
-                 "last_edit": 0.0, "prog_id": None})
-    await _backup_save(context, user.id, db)
-    await message.reply_text(
-        "📦 <b>Backup HP dimulai!</b>\n\n"
-        "Kirim atau forward <b>file apa pun</b> ke chat ini — tiap file langsung "
-        "tersimpan ke drive <b>tanpa tanya Title/Tags</b> (otomatis + tag "
-        "<code>hp-backup</code>).\n\n"
-        "• Boleh banyak sekaligus / album — masing-masing jadi 1 item.\n"
-        "• HP mati di tengah? Buka lagi, kirim sisanya — progres ikut di bawah.\n"
-        "• File &gt; ~2 GB tidak bisa lewat Telegram: pakai halaman web "
-        "<b>Backup HP</b> (/backup-hp) untuk itu.\n\n"
-        "Selesai? Ketik /backup_done",
-        parse_mode="HTML",
-    )
-    await _backup_progress_edit(context, message.chat_id, force=True)
-
-
-async def on_backup_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    message = update.message
-    if not message or not user:
-        return
-    db = context.bot_data["db"]
-    if not await is_user_authorized(db, user.id):
-        return
-    sess = await _backup_load(context, user.id, db)
-    if not sess.get("active"):
-        await message.reply_text("Tidak ada sesi backup yang berjalan. Mulai dengan /backup")
-        return
-    ok = int(sess.get("ok", 0))
-    fail = int(sess.get("fail", 0))
-    failed = sess.get("failed") or []
-    await _backup_clear(context, user.id, db)
-    text = (
-        f"🎉 <b>Backup HP selesai!</b>\n"
-        f"• Berhasil: <b>{ok}</b> · Gagal: <b>{fail}</b>\n"
-    )
-    if failed:
-        # Bounded: Telegram caps one message (~4096 chars) — list the first 30,
-        # count the rest instead of failing the summary itself.
-        shown = "\n".join(f"– <code>{html.escape(str(n)[:80])}</code>" for n in failed[:30])
-        extra = f"\n…dan {len(failed) - 30} lainnya." if len(failed) > 30 else ""
-        text += (
-            f"\nYang gagal <b>belum tersimpan</b> — forward ulang pesannya ke bot "
-            f"(atau /backup lagi lalu kirim ulang):\n{shown}{extra}")
-    else:
-        text += "\nSemua file sudah di drive dan bisa dicari via web. 🎊"
-    await message.reply_text(text, parse_mode="HTML")
+    return (str(title or "").replace("|", "/").strip()[:200]) or "untitled"
 
 
 # ---------------------------------------------------------------------------
@@ -1196,15 +976,10 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if the file already has a valid caption contract matching Title | part/total | tags
     caption_meta = parse_caption(message.caption)
     if caption_meta:
-        title = _safe_backup_title(caption_meta["title"])
+        title = _clean_title(caption_meta["title"])
         part = caption_meta["part"]
         total = caption_meta["total"]
         tags = list(caption_meta["tags"])
-        # Inside a backup session the contract file still counts — keep the
-        # user's metadata, just force the session tag so it stays findable.
-        in_backup = (await _backup_load(context, user.id, db)).get("active", False)
-        if in_backup and not any(t.lower() == "hp-backup" for t in tags):
-            tags.append("hp-backup")
         tags_str = ", ".join(tags)
 
         status_msg = await context.bot.send_message(
@@ -1218,7 +993,7 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=STORAGE_CHANNEL_ID,
                 from_chat_id=message.chat_id,
                 message_id=message.message_id,
-                caption=_safe_backup_caption(title, tags_str) if in_backup else message.caption
+                caption=message.caption
             )
             # The bot's own channel post is NOT echoed back as a channel_post update,
             # so index it inline here instead of relying on on_channel_post.
@@ -1236,8 +1011,6 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:  # noqa: BLE001 — indexing failure shouldn't hide upload success
                 log.exception("Inline index failed for direct-caption copy msg %s", copied_msg.message_id)
-            if in_backup:
-                await _backup_record(context, user.id, db, message.chat_id, 1)
             await status_msg.edit_text(
                 f"🎉 <b>Success!</b>\n\n"
                 f"File has been successfully uploaded and indexed directly via caption contract.\n"
@@ -1249,26 +1022,11 @@ async def on_private_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             log.exception("Failed to copy user file to channel directly")
-            if in_backup:
-                await _backup_record(
-                    context, user.id, db, message.chat_id, 0,
-                    f"{file_name or message.message_id} ({e})".strip())
             await status_msg.edit_text(
                 f"❌ <b>Error copying file:</b> {html.escape(str(e))}\n"
                 "Please check bot configuration and try again.",
                 parse_mode="HTML"
             )
-        return
-
-    # Phone-backup session: no questionnaire — every file is copied with auto
-    # metadata straight to the storage channel (server-side copy, no VPS bytes).
-    # Files over Telegram's ~2 GB per-file cap cannot arrive here at all; those
-    # go through the web backup page (/backup-hp) instead.
-    # Restart-safe: the session lives in bot_settings, so a bot redeploy mid-run
-    # only loses at most the in-flight file — the next file reloads the session.
-    backup_sess = await _backup_load(context, user.id, db)
-    if backup_sess.get("active"):
-        await backup_copy_one(update, context, message, kind, file_name, file_size, auto_meta)
         return
 
     active_upload = context.user_data.get("upload_file")
@@ -2018,9 +1776,6 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>Option A — Direct Drop / Forward:</b>\n"
             "1. Send or <b>forward</b> any file (video, photo, document, animation) directly to this chat.\n"
             "2. Set Title & Tags when prompted (or skip).\n\n"
-            "<b>Option A2 — Phone Backup (no questions asked):</b>\n"
-            "1. Send <code>/backup</code>, then send/forward any files (each ≤ ~2 GB).\n"
-            "2. Finish with <code>/backup_done</code> for the final tally. Bigger files go via the web <b>Backup HP</b> page.\n\n"
             "<b>Option B — Telegram Message Link Import (Protected Channels):</b>\n"
             "1. Copy message link from any public or private channel.\n"
             "2. Send <code>/import &lt;link&gt;</code> or paste the link directly into this chat.\n"
@@ -2258,8 +2013,6 @@ def main():
     app.add_handler(CommandHandler("list_users", on_list_users))
     app.add_handler(CommandHandler("set_web_url", on_set_web_url))
     app.add_handler(CommandHandler("cancel", on_cancel))
-    app.add_handler(CommandHandler("backup", on_backup))
-    app.add_handler(CommandHandler("backup_done", on_backup_done))
     app.add_handler(CommandHandler("menu", on_menu))
     app.add_handler(CommandHandler("pikpak", on_pikpak))
     app.add_handler(CommandHandler("pikpak_ls", on_ls))

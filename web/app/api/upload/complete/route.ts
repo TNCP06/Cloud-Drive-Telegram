@@ -140,7 +140,7 @@ export async function POST(req: NextRequest) {
       "VALUES (?, ?, ?, ?, ?, 'upload', 1, ?, 'queued', ?) " +
       // Do not name the partial source_path index here. Older databases may not
       // have the bot's optional migration yet; the lookup above still makes the
-      // normal retry path idempotent without turning Backup HP into a 500.
+      // normal retry path idempotent without turning retries into a 500.
       "ON CONFLICT DO NOTHING RETURNING id",
     args: [kind, title, tags, dir, partSize, onDisk, isPrivate],
   });

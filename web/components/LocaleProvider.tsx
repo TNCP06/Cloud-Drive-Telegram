@@ -85,8 +85,6 @@ const translations: Record<string, string> = {
   "Folder name": "Nama folder",
   "Change colour": "Ubah warna",
   "Delete category": "Hapus kategori",
-  "PHONE ARCHIVE": "ARSIP HP",
-  "Backup HP": "Backup HP",
   "VPS staging": "Staging VPS",
   "Tambahkan dari perangkat": "Tambahkan dari perangkat",
   "Aktivitas VPS terbaru": "Aktivitas VPS terbaru",

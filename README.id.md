@@ -48,7 +48,6 @@ Isi nilai Telegram (`BOT_TOKEN`, `STORAGE_CHANNEL_ID`, `OWNER_USER_ID`, `TG_API_
 ## Penggunaan
 
 - **Upload:** dashboard → *Upload files*, atau kirim/forward file ke bot.
-- **Backup HP:** dashboard → *Backup HP*, atau gunakan `/backup`, kirim file, lalu `/backup_done`.
 - **Caption:** gunakan `Title | part/total | tag1, tag2`; path seperti `Folder/Sub/Nama` membuat folder bertingkat.
 - **Download:** buka menu item → *Download*.
 - **Streaming:** klik video.

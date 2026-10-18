@@ -129,9 +129,6 @@ export function UploadManager({
           </button>
           <h1>Upload files</h1>
           <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-            <a className="btn subtle sm" href="/backup-hp" title="Archive seluruh HP lama sekaligus">
-              <Icon name="upload" size={14} /> Backup HP
-            </a>
             <ThemeToggle />
           </div>
         </div>

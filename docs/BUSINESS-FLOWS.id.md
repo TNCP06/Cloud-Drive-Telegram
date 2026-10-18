@@ -10,10 +10,6 @@ Browser mengirim chunk ke staging, lalu membuat baris `upload_jobs`. Watcher men
 
 Bot Drop menerima file dari private chat. Metadata mengikuti caption atau dilengkapi melalui halaman upload-bot. Arsip wajib memakai format caption `Title | part/total | tag1, tag2`.
 
-## Backup HP
-
-Pilih file atau folder di `/backup-hp`. Semua pilihan masuk satu antrean, file besar di-split otomatis, disk VPS dipantau, dan job gagal dapat diulang. File kecil dapat dikirim melalui `/backup`, lalu akhiri dengan `/backup_done`.
-
 ## Download dan Streaming
 
 Download item menggunakan bot deep-link atau tombol dashboard. Video diputar melalui proxy range ke streamer; cache, poster, subtitle, dan kompresi diproses di background sesuai konfigurasi.

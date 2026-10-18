@@ -100,17 +100,14 @@ export async function cancelUpload(id: number) {
     }
   }
   revalidatePath("/upload");
-  revalidatePath("/backup-hp");
 }
 
-// Retry every failed job at once (backup runs can fail dozens of files on a
-// flaky connection — retrying one by one is not acceptable). Keeps parts_done.
+// Retry every failed job at once (bulk retry). Keeps parts_done.
 export async function retryAllFailedUploads() {
   await db.execute(
     "UPDATE upload_jobs SET status='pending', message='bulk retry requested...', updated_at=now_text() WHERE status='error'"
   );
   revalidatePath("/upload");
-  revalidatePath("/backup-hp");
 }
 
 // Trigger execution: queued → pending (the watcher will pick it up).
@@ -130,7 +127,6 @@ export async function retryUpload(id: number) {
     args: [id],
   });
   revalidatePath("/upload");
-  revalidatePath("/backup-hp");
 }
 
 export async function startAllUploads() {
@@ -138,7 +134,6 @@ export async function startAllUploads() {
     "UPDATE upload_jobs SET status='pending', message='start requested...', updated_at=now_text() WHERE status='queued'"
   );
   revalidatePath("/upload");
-  revalidatePath("/backup-hp");
 }
 
 export async function clearFinishedUploads() {
@@ -146,5 +141,4 @@ export async function clearFinishedUploads() {
     "DELETE FROM upload_jobs WHERE status IN ('done','error','canceled')"
   );
   revalidatePath("/upload");
-  revalidatePath("/backup-hp");
 }

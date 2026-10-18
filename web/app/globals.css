@@ -1537,34 +1537,6 @@ a:focus-visible,
 .up-pct { font-size: 13px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
 .btn.sm { padding: 4px 10px; font-size: 12.5px; }
 
-/* Backup HP is a guided one-purpose flow, not the full upload form. */
-.backup-inner { max-width: 760px; }
-.backup-head { margin-bottom: 14px; }
-.backup-head > div { display: flex; flex-direction: column; }
-.backup-eyebrow, .backup-section-label {
-  color: var(--faint); font-size: 10.5px; font-weight: 650;
-  letter-spacing: .11em; text-transform: uppercase;
-}
-.backup-head h1 { line-height: 1.15; }
-.backup-intro {
-  margin: 0 0 22px; padding: 15px 17px; color: var(--muted); font-size: 13px;
-  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md);
-}
-.backup-status { padding: 16px 18px; border-color: var(--line-2); box-shadow: var(--sh-1); }
-.backup-status .up-job-title { display: flex; align-items: center; gap: 8px; }
-.backup-status .up-job-title strong { font-size: 20px; line-height: 1; color: var(--ink); }
-.backup-status-label { color: var(--muted); }
-.backup-summary { margin-top: 9px; font-family: var(--ui); line-height: 1.55; white-space: normal; }
-.backup-section-label { margin: 20px 2px 0; }
-.backup-pickers { display: grid; grid-template-columns: 1fr 1fr; }
-.backup-pickers .btn { justify-content: center; min-height: 42px; border-style: dashed; }
-.backup-actions { align-items: center; justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
-.backup-actions .btn.primary:first-child { min-height: 42px; padding-inline: 20px; }
-.backup-actions .btn.subtle:last-child { margin-left: auto; }
-.backup-resume-note {
-  margin-top: 12px; padding-left: 12px; border-left: 2px solid var(--line-2);
-}
-.backup-listhead { margin-bottom: 9px; }
 
 @media (max-width: 560px) {
   .up-inner { padding: 18px 14px 56px; }
@@ -1585,14 +1557,6 @@ a:focus-visible,
   .dialog .dhead, .dialog .dbody { padding-left: 16px; padding-right: 16px; }
   .dialog .dfoot { padding: 12px 16px 16px; flex-wrap: wrap; }
   .dialog .dfoot .btn { flex: 1; justify-content: center; }
-  .backup-head > div { margin-left: 0 !important; }
-  .backup-intro { margin-bottom: 18px; padding: 13px 14px; }
-  .backup-status { padding: 14px; }
-  .backup-status .up-job-title { flex-wrap: wrap; }
-  .backup-status .up-kind { margin-left: auto; }
-  .backup-pickers { display: grid; grid-template-columns: 1fr; }
-  .backup-actions .btn { min-height: 40px; }
-  .backup-actions .btn.subtle { order: 3; }
 }
 
 /* Floating upload progress panel (global, shown on any page except /upload) */
