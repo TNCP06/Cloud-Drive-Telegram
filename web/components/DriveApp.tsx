@@ -37,6 +37,7 @@ import { ViewMenu } from "./ViewMenu";
 import { DetailsPane } from "./DetailsPane";
 import {
   type LayoutPrefs,
+  type SortOrder,
   DEFAULT_PREFS,
   loadPrefs,
   savePrefs,
@@ -177,22 +178,14 @@ export function DriveApp({
   useEffect(() => {
     setPrefs(loadPrefs());
   }, []);
-  const updatePrefs = (patch: Partial<LayoutPrefs>) =>
+  const updatePrefs = (patch: Partial<LayoutPrefs> | ((prev: LayoutPrefs) => Partial<LayoutPrefs>)) =>
     setPrefs((p) => {
-      const next = { ...p, ...patch };
+      const resolved = typeof patch === "function" ? patch(p) : patch;
+      const next = { ...p, ...resolved };
       savePrefs(next);
       return next;
     });
 
-  // Sort / grouping prefs are persisted alongside the layout (loaded post-mount above).
-  const sort = prefs.sort;
-  const sortOrder = prefs.sortOrder;
-  const groupBy = prefs.groupBy;
-  const groupVersions = prefs.groupVersions;
-  const setSort = (key: string) => updatePrefs({ sort: key });
-  const setSortOrder = (next: "asc" | "desc" | ((o: "asc" | "desc") => "asc" | "desc")) =>
-    updatePrefs({ sortOrder: typeof next === "function" ? next(prefs.sortOrder) : next });
-  const setGroupBy = (key: GroupKey) => updatePrefs({ groupBy: key });
   const [menu, setMenu] = useState<{ anchor: HTMLElement; item: DriveFile } | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [manageTags, setManageTags] = useState(false);
@@ -203,6 +196,57 @@ export function DriveApp({
 
   const currentLayoutKey = view === "all" ? (currentFolderId?.toString() || "root") : view;
   const layout = prefs.folderLayouts?.[currentLayoutKey] || prefs.layout;
+
+  // Scoped sort & group: check per-folder/page override first, then fallback to view default or global prefs.
+  const activeFolderSort = prefs.folderSorts?.[currentLayoutKey];
+  const sort = activeFolderSort?.sort || (view === "recent" ? "modified" : prefs.sort);
+  const sortOrder = activeFolderSort?.sortOrder || (view === "recent" ? "desc" : prefs.sortOrder);
+
+  const activeFolderGroup = prefs.folderGroups?.[currentLayoutKey];
+  const groupBy = activeFolderGroup ?? (view === "recent" ? "modified" : prefs.groupBy);
+  const groupVersions = prefs.groupVersions;
+
+  const setSort = (key: string, order?: SortOrder) =>
+    updatePrefs((p) => {
+      const curKey = view === "all" ? (currentFolderId?.toString() || "root") : view;
+      const nextOrder = order || p.folderSorts?.[curKey]?.sortOrder || (key === "name" || key === "kind" ? "asc" : "desc");
+      return {
+        sort: key,
+        sortOrder: nextOrder,
+        folderSorts: {
+          ...(p.folderSorts || {}),
+          [curKey]: { sort: key, sortOrder: nextOrder },
+        },
+      };
+    });
+
+  const setSortOrder = (next: "asc" | "desc" | ((o: "asc" | "desc") => "asc" | "desc")) =>
+    updatePrefs((p) => {
+      const curKey = view === "all" ? (currentFolderId?.toString() || "root") : view;
+      const curSort = p.folderSorts?.[curKey]?.sort || p.sort;
+      const prevOrder = p.folderSorts?.[curKey]?.sortOrder || p.sortOrder;
+      const nextOrder = typeof next === "function" ? next(prevOrder) : next;
+      return {
+        sortOrder: nextOrder,
+        folderSorts: {
+          ...(p.folderSorts || {}),
+          [curKey]: { sort: curSort, sortOrder: nextOrder },
+        },
+      };
+    });
+
+  const setGroupBy = (key: GroupKey) =>
+    updatePrefs((p) => {
+      const curKey = view === "all" ? (currentFolderId?.toString() || "root") : view;
+      return {
+        groupBy: key,
+        folderGroups: {
+          ...(p.folderGroups || {}),
+          [curKey]: key,
+        },
+      };
+    });
+
   const [folderHistory, setFolderHistory] = useState<(number | null)[]>([]);
   const [showCreateFolder, setShowCreateFolder] = useState(false);
 
@@ -213,8 +257,12 @@ export function DriveApp({
   const { addFiles: addFilesCtx, runQueue } = useUpload();
   const [uploadMenu, setUploadMenu] = useState<HTMLElement | null>(null);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const sortBtnRef = useRef<HTMLButtonElement>(null);
+  const groupBtnRef = useRef<HTMLButtonElement>(null);
+  const uploadBtnRef = useRef<HTMLButtonElement>(null);
   // Path of the folder currently open ("A/B/C"), so a one-click upload lands where the user
   // stands — the title prefix routes it through the server's folder resolution (upsert_item
   // splits titles on "/"), the same mechanism drive downloads use.
@@ -1280,7 +1328,10 @@ export function DriveApp({
     !!sortMenu ||
     !!viewMenu ||
     !!folderMenu ||
+    !!uploadMenu ||
     showShortcutsModal ||
+    showCreateFolder ||
+    storageOpen ||
     confirmBulk != null ||
     confirm != null ||
     confirmRestore != null ||
@@ -1525,11 +1576,73 @@ export function DriveApp({
     }
 
     // Alt+P -> Toggle Private / Main space
-    if (!typing && !overlayOpen && e.altKey && (e.key === "p" || e.key === "P")) {
+    if (!typing && !overlayOpen && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "p" || e.key === "P")) {
       e.preventDefault();
       if (isPrivate) exitPrivate();
       else enterPrivate();
       return;
+    }
+
+    // Ctrl+Shift+N -> Create new folder
+    if (!typing && !overlayOpen && (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "n" || e.key === "N")) {
+      if (view === "all" && !query) {
+        e.preventDefault();
+        setShowCreateFolder(true);
+        return;
+      }
+    }
+
+    // Alt+U -> Open upload menu
+    if (!typing && !overlayOpen && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "u" || e.key === "U")) {
+      if (view === "all" && !query) {
+        e.preventDefault();
+        setUploadMenu(uploadBtnRef.current || document.body);
+        return;
+      }
+    }
+
+    // Alt+O -> Open sort menu
+    if (!typing && !overlayOpen && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "o" || e.key === "O")) {
+      e.preventDefault();
+      setSortMenu(sortBtnRef.current || document.body);
+      return;
+    }
+
+    // Alt+G -> Open group by menu
+    if (!typing && !overlayOpen && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === "g" || e.key === "G")) {
+      e.preventDefault();
+      setGroupMenu(groupBtnRef.current || document.body);
+      return;
+    }
+
+    // Shift+Alt+A / R / F / T / S -> Switch views & storage breakdown
+    if (!typing && !overlayOpen && e.shiftKey && e.altKey && !e.ctrlKey && !e.metaKey) {
+      const k = e.key.toLowerCase();
+      if (k === "a") {
+        e.preventDefault();
+        go("all");
+        return;
+      }
+      if (k === "r") {
+        e.preventDefault();
+        go("recent");
+        return;
+      }
+      if (k === "f") {
+        e.preventDefault();
+        go("starred");
+        return;
+      }
+      if (k === "t") {
+        e.preventDefault();
+        go("trash");
+        return;
+      }
+      if (k === "s") {
+        e.preventDefault();
+        setStorageOpen(true);
+        return;
+      }
     }
 
     // Ctrl/Cmd+A → select every visible folder + item.
@@ -1790,8 +1903,7 @@ export function DriveApp({
           onClick={() => {
             if (sort === key) setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
             else {
-              setSort(key);
-              setSortOrder(defOrder);
+              setSort(key, defOrder);
             }
           }}
         >
@@ -1915,6 +2027,8 @@ export function DriveApp({
         onManageTags={() => setManageTags(true)}
         privateSpace={isPrivate}
         onBrandClick={isPrivate ? exitPrivate : undefined}
+        storageOpen={storageOpen}
+        onStorageOpenChange={setStorageOpen}
       />
 
       <div className="main">
@@ -2136,10 +2250,12 @@ export function DriveApp({
           )}
           <button
             className="sortbtn"
+            ref={sortBtnRef}
             onClick={(e) => {
               e.stopPropagation();
               setSortMenu(e.currentTarget);
             }}
+            title={withShortcut(SORTS[sort].label, SHORTCUTS.sortMenu)}
           >
             <Icon name="sort" size={16} />
             {SORTS[sort].label}
@@ -2148,11 +2264,12 @@ export function DriveApp({
 
           <button
             className={"sortbtn" + (groupBy !== "none" ? " on" : "")}
+            ref={groupBtnRef}
             onClick={(e) => {
               e.stopPropagation();
               setGroupMenu(e.currentTarget);
             }}
-            title="Group by"
+            title={withShortcut("Group by", SHORTCUTS.groupMenu)}
           >
             <Icon name="rows" size={15} />
             {groupBy === "none" ? "Group" : `Group: ${GROUP_OPTIONS.find((g) => g.key === groupBy)?.label}`}
@@ -2163,11 +2280,12 @@ export function DriveApp({
           {view === "all" && !query && (
             <button
               className="sortbtn"
+              ref={uploadBtnRef}
               onClick={(e) => {
                 e.stopPropagation();
                 setUploadMenu(e.currentTarget);
               }}
-              title="Upload files or a folder"
+              title={withShortcut("Upload files or a folder", SHORTCUTS.upload)}
             >
               <Icon name="upload" size={15} />
               Upload
@@ -2180,7 +2298,7 @@ export function DriveApp({
             <button
               className="sortbtn"
               onClick={() => setShowCreateFolder(true)}
-              title="Create new folder"
+              title={withShortcut("Create new folder", SHORTCUTS.newFolder)}
             >
               <Icon name="plus" size={15} />
               New folder
@@ -2367,8 +2485,8 @@ export function DriveApp({
                   if (sort === k) {
                     setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
                   } else {
-                    setSort(k);
-                    setSortOrder(k === "name" || k === "kind" ? "asc" : "desc");
+                    const nextOrder = k === "name" || k === "kind" ? "asc" : "desc";
+                    setSort(k, nextOrder);
                   }
                   closeSortMenu();
                 }}

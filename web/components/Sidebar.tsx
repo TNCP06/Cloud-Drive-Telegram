@@ -8,6 +8,7 @@ import { TAG_COLORS } from "@/lib/kinds";
 import type { Tag } from "@/lib/types";
 import { logout } from "@/app/actions/auth";
 import { TagLegend } from "./TagLegend";
+import { SHORTCUTS, withShortcut } from "@/lib/shortcuts";
 
 export interface Counts {
   all: number;
@@ -31,6 +32,13 @@ const NAVS = [
   { id: "trash", icon: "trash", label: "Trash" },
 ] as const;
 
+const NAV_SHORTCUTS: Record<string, typeof SHORTCUTS[keyof typeof SHORTCUTS]> = {
+  all: SHORTCUTS.navAll,
+  recent: SHORTCUTS.navRecent,
+  starred: SHORTCUTS.navFavorites,
+  trash: SHORTCUTS.navTrash,
+};
+
 export function Sidebar({
   view,
   tag,
@@ -42,6 +50,8 @@ export function Sidebar({
   onManageTags,
   onBrandClick,
   privateSpace = false,
+  storageOpen: storageOpenProp,
+  onStorageOpenChange,
 }: {
   view: string;
   tag: number | null;
@@ -53,10 +63,14 @@ export function Sidebar({
   onManageTags: () => void;
   onBrandClick?: () => void;
   privateSpace?: boolean;
+  storageOpen?: boolean;
+  onStorageOpenChange?: (open: boolean) => void;
 }) {
   const [mediaOpen, setMediaOpen] = useState(true);
   const [showMoreTags, setShowMoreTags] = useState(false);
-  const [storageOpen, setStorageOpen] = useState(false);
+  const [localStorageOpen, setLocalStorageOpen] = useState(false);
+  const isStorageOpen = storageOpenProp !== undefined ? storageOpenProp : localStorageOpen;
+  const setStorageOpen = onStorageOpenChange || setLocalStorageOpen;
 
   // Type tags get their own collapsible group (kept in a fixed, intuitive order).
   const SPECIAL_ORDER = ["image", "video", "archive"];
@@ -99,6 +113,7 @@ export function Sidebar({
               key={n.id}
               className={"nav-item" + (view === n.id ? " active" : "")}
               onClick={() => onNav(n.id)}
+              title={withShortcut(n.label, NAV_SHORTCUTS[n.id])}
             >
               <Icon
                 name={n.icon}
@@ -229,7 +244,7 @@ export function Sidebar({
         className="storage"
         type="button"
         onClick={() => setStorageOpen(true)}
-        title="View storage breakdown"
+        title={withShortcut("View storage breakdown", SHORTCUTS.navStorage)}
       >
         <div className="top">
           <div className="num">
@@ -254,7 +269,7 @@ export function Sidebar({
         <TagLegend items={storage.legend} />
       </button>
 
-      {storageOpen && <StorageDetail storage={storage} onClose={() => setStorageOpen(false)} />}
+      {isStorageOpen && <StorageDetail storage={storage} onClose={() => setStorageOpen(false)} />}
     </aside>
   );
 }
@@ -263,7 +278,12 @@ function StorageDetail({ storage, onClose }: { storage: Storage; onClose: () => 
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
-  }, []);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const segs = [...storage.segments].sort((a, b) => b.pct - a.pct);
   if (!mounted) return null;

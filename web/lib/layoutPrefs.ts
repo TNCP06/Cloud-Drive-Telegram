@@ -17,6 +17,11 @@ export type LayoutMode =
 
 export type SortOrder = "asc" | "desc";
 
+export interface FolderSort {
+  sort: string;
+  sortOrder: SortOrder;
+}
+
 export interface LayoutPrefs {
   layout: LayoutMode;
   /** Show the left navigation sidebar (desktop). */
@@ -41,6 +46,10 @@ export interface LayoutPrefs {
   groupVersions: boolean;
   /** Per-folder layout preferences. Key is the folder ID (or 'root'), value is the layout mode. */
   folderLayouts: Record<string, LayoutMode>;
+  /** Per-folder/page sort preferences. Key is the folder ID (or 'root', 'recent', 'starred', 'trash'). */
+  folderSorts: Record<string, FolderSort>;
+  /** Per-folder/page grouping preferences. Key is the folder ID (or 'root', 'recent', 'starred', 'trash'). */
+  folderGroups: Record<string, GroupKey>;
 }
 
 export const DEFAULT_PREFS: LayoutPrefs = {
@@ -56,6 +65,8 @@ export const DEFAULT_PREFS: LayoutPrefs = {
   groupBy: "none",
   groupVersions: true,
   folderLayouts: {},
+  folderSorts: {},
+  folderGroups: {},
 };
 
 const VALID_GROUPS: GroupKey[] = ["none", "name", "type", "tag", "modified", "size"];
@@ -74,11 +85,31 @@ export function loadPrefs(): LayoutPrefs {
     const raw = localStorage.getItem(KEY);
     if (!raw) return DEFAULT_PREFS;
     const parsed = JSON.parse(raw) as Partial<LayoutPrefs>;
-    const merged = { ...DEFAULT_PREFS, ...parsed, folderLayouts: parsed.folderLayouts || {} };
+    const merged = {
+      ...DEFAULT_PREFS,
+      ...parsed,
+      folderLayouts: parsed.folderLayouts || {},
+      folderSorts: parsed.folderSorts || {},
+      folderGroups: parsed.folderGroups || {},
+    };
     if (!VALID_LAYOUTS.includes(merged.layout)) merged.layout = DEFAULT_PREFS.layout;
     if (!VALID_GROUPS.includes(merged.groupBy)) merged.groupBy = DEFAULT_PREFS.groupBy;
     if (!VALID_SORTS.includes(merged.sort)) merged.sort = DEFAULT_PREFS.sort;
     if (merged.sortOrder !== "asc" && merged.sortOrder !== "desc") merged.sortOrder = DEFAULT_PREFS.sortOrder;
+    if (merged.folderSorts) {
+      for (const [k, v] of Object.entries(merged.folderSorts)) {
+        if (!v || !VALID_SORTS.includes(v.sort) || (v.sortOrder !== "asc" && v.sortOrder !== "desc")) {
+          delete merged.folderSorts[k];
+        }
+      }
+    }
+    if (merged.folderGroups) {
+      for (const [k, v] of Object.entries(merged.folderGroups)) {
+        if (!v || !VALID_GROUPS.includes(v)) {
+          delete merged.folderGroups[k];
+        }
+      }
+    }
     return merged;
   } catch {
     return DEFAULT_PREFS;
