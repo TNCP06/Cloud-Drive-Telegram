@@ -163,7 +163,6 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
   let cachedThumbHeight = 0;
   let lastClampedPos = -9999;
   let lastArrowOffset = -9999;
-  let lastShowingThumbNum = -1;
   let lastFormattedSecs = -1;
 
   const updateRects = () => {
@@ -205,7 +204,6 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
     cachedThumbHeight = 0;
     lastClampedPos = -9999;
     lastArrowOffset = -9999;
-    lastShowingThumbNum = -1;
     lastFormattedSecs = -1;
   };
 
@@ -302,10 +300,10 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
     }
   };
 
-  let pendingEvent: any = null;
+  let pendingEvent: MouseEvent | TouchEvent | null = null;
   let rafId: number | null = null;
 
-  const processMove = (event: any) => {
+  const processMove = (event: MouseEvent | TouchEvent) => {
     const duration = pt.player?.media?.duration;
     if (!duration) return;
 
@@ -315,7 +313,7 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
     const scrubberRect = cachedProgressRect;
     if (!scrubberRect || scrubberRect.width <= 0) return;
 
-    const pageX = event.pageX ?? event.touches?.[0]?.pageX ?? 0;
+    const pageX = "pageX" in event ? event.pageX : (event.touches?.[0]?.pageX ?? 0);
     const percentage = Math.max(0, Math.min(100, (100 / scrubberRect.width) * (pageX - scrubberRect.left)));
     const seekTime = Math.max(0, Math.min(duration - 1, duration * (percentage / 100)));
 
@@ -334,8 +332,7 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
   };
 
   // Coalesce high-frequency mousemove events (125-1000Hz) to display vsync (60/120Hz)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pt.startMove = function (event: any) {
+  pt.startMove = function (event: MouseEvent | TouchEvent) {
     if (!this.loaded) return;
     if (!event || !["touchmove", "mousemove"].includes(event.type)) return;
 
@@ -828,7 +825,6 @@ export function VideoPlayer({
         player?.destroy();
       } catch {}
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src, partId]);
 
   const handleClick = (e: React.MouseEvent) => {
