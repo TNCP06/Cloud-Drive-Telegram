@@ -123,11 +123,22 @@ export interface VideoQualityOption {
   size?: number;   // file size in bytes
 }
 
+function formatSeekTime(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+}
+
 /**
  * Targeted seek-preview optimization for Plyr:
  * 1. Hardware-accelerated GPU translation (`transform: translate3d`) for sprite frames instead of layout-thrashing style.left/top.
- * 2. Geometry caching on progress bar hover to eliminate forced synchronous reflows from repeated getBoundingClientRect.
- * 3. Disables redundant multi-image sprite preloading (preloadNearby, getHigherQuality) for sprite sheets.
+ * 2. Strict zero-reflow geometry caching on progress bar hover to eliminate forced synchronous layouts.
+ * 3. Fast O(1)/O(log N) binary search for sprite cues, bypassing O(N) linear array scanning.
+ * 4. Delta-checked style mutations on position, arrow offset, and text content to prevent redundant DOM updates.
+ * 5. Disables redundant multi-image sprite preloading (preloadNearby, getHigherQuality) for sprite sheets.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function setupOptimizedPreviewThumbnails(player: any): () => void {
@@ -138,9 +149,22 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
   pt.preloadNearby = () => Promise.resolve();
   pt.getHigherQuality = () => {};
 
+  // Disable Plyr's default text seek tooltip when thumbnail preview is loaded
+  if (player.config?.tooltips) {
+    player.config.tooltips.seek = false;
+  }
+  if (player.elements?.display?.seekTooltip) {
+    player.elements.display.seekTooltip.style.display = "none";
+  }
+
   let cachedProgressRect: DOMRect | null = null;
   let cachedContainerRect: DOMRect | null = null;
   let cachedContainerWidth = 0;
+  let cachedThumbHeight = 0;
+  let lastClampedPos = -9999;
+  let lastArrowOffset = -9999;
+  let lastShowingThumbNum = -1;
+  let lastFormattedSecs = -1;
 
   const updateRects = () => {
     if (player.elements?.progress) {
@@ -149,8 +173,21 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
     if (player.elements?.container) {
       cachedContainerRect = player.elements.container.getBoundingClientRect();
     }
+    const mediaWidth = player.media?.clientWidth || cachedContainerRect?.width || 0;
+    const aspect = pt.thumbAspectRatio || (pt.thumbnails?.[0]?.width / pt.thumbnails?.[0]?.height) || (16 / 9);
+    const height = Math.max(60, Math.min(180, Math.floor(mediaWidth / aspect / 4)));
+    const width = Math.floor(height * aspect);
+    cachedThumbHeight = height;
+    cachedContainerWidth = width;
+
+    // Set container sizing once during layout update, preventing repetitive DOM writes during mousemove
+    const imageContainer = pt.elements?.thumb?.imageContainer;
+    if (imageContainer) {
+      imageContainer.style.height = `${height}px`;
+      imageContainer.style.width = `${width}px`;
+    }
     const container = pt.elements?.thumb?.container;
-    if (container) {
+    if (container && container.clientWidth) {
       cachedContainerWidth = container.clientWidth;
     }
   };
@@ -159,6 +196,11 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
     cachedProgressRect = null;
     cachedContainerRect = null;
     cachedContainerWidth = 0;
+    cachedThumbHeight = 0;
+    lastClampedPos = -9999;
+    lastArrowOffset = -9999;
+    lastShowingThumbNum = -1;
+    lastFormattedSecs = -1;
   };
 
   const progressEl = player.elements?.progress;
@@ -167,12 +209,22 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
     progressEl.addEventListener("mouseleave", clearRects, { passive: true });
   }
   window.addEventListener("resize", clearRects, { passive: true });
+  player.on?.("enterfullscreen", clearRects);
+  player.on?.("exitfullscreen", clearRects);
+
+  // Prevent Plyr from reading player.media.clientWidth repeatedly on mousemove
+  Object.defineProperty(pt, "thumbContainerHeight", {
+    get() {
+      return cachedThumbHeight || 72;
+    },
+    configurable: true,
+  });
 
   // Use GPU translation for sprite frames instead of layout-thrashing left/top on the full sprite image
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pt.setImageSizeAndOffset = function (previewImage: HTMLImageElement, frame: any) {
     if (!this.usingSprites || !frame) return;
-    const mult = this.thumbContainerHeight / (frame.h || 72);
+    const mult = (cachedThumbHeight || 72) / (frame.h || 72);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if ((previewImage as any)._lastMult !== mult && previewImage.naturalHeight) {
       previewImage.style.height = `${previewImage.naturalHeight * mult}px`;
@@ -185,10 +237,15 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (previewImage as any)._lastMult = mult;
     }
-    previewImage.style.transform = `translate3d(-${frame.x * mult}px, -${frame.y * mult}px, 0)`;
+    previewImage.style.transform = `translate3d(-${Math.round(frame.x * mult)}px, -${Math.round(frame.y * mult)}px, 0)`;
   };
 
-  // Use cached geometry during mousemove to avoid forced synchronous layout reflows
+  // Prevent Plyr from dirtying imageContainer style.width/height on every mousemove
+  pt.setThumbContainerSizeAndPos = function () {
+    this.setThumbContainerPos();
+  };
+
+  // Zero-reflow position update using cached geometry and delta checks
   const origSetThumbContainerPos = pt.setThumbContainerPos;
   pt.setThumbContainerPos = function () {
     if (!cachedProgressRect || !cachedContainerRect) {
@@ -206,10 +263,101 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
     const min = containerRect.left - scrubberRect.left + 10;
     const max = containerRect.right - scrubberRect.left - containerWidth - 10;
     const position = this.mousePosX - scrubberRect.left - containerWidth / 2;
-    const clamped = Math.max(min, Math.min(max, position));
+    const clamped = Math.round(Math.max(min, Math.min(max, position)));
 
-    container.style.left = `${clamped}px`;
-    container.style.setProperty("--preview-arrow-offset", `${position - clamped}px`);
+    if (lastClampedPos !== clamped) {
+      container.style.left = `${clamped}px`;
+      lastClampedPos = clamped;
+    }
+    const arrowOffset = Math.round(position - clamped);
+    if (lastArrowOffset !== arrowOffset) {
+      container.style.setProperty("--preview-arrow-offset", `${arrowOffset}px`);
+      lastArrowOffset = arrowOffset;
+    }
+  };
+
+  // Zero-reflow startMove using cached progress bar rect and debounced textContent
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pt.startMove = function (event: any) {
+    if (!this.loaded) return;
+    if (!event || !["touchmove", "mousemove"].includes(event.type)) return;
+    const duration = this.player.media?.duration;
+    if (!duration) return;
+
+    if (!cachedProgressRect || !cachedContainerRect) {
+      updateRects();
+    }
+    const scrubberRect = cachedProgressRect;
+    if (!scrubberRect || scrubberRect.width <= 0) return;
+
+    const pageX = event.pageX ?? event.touches?.[0]?.pageX ?? 0;
+    const percentage = Math.max(0, Math.min(100, (100 / scrubberRect.width) * (pageX - scrubberRect.left)));
+    const seekTime = Math.max(0, Math.min(duration - 1, duration * (percentage / 100)));
+
+    this.seekTime = seekTime;
+    this.mousePosX = pageX;
+
+    const intSec = Math.floor(seekTime);
+    if (intSec !== lastFormattedSecs) {
+      lastFormattedSecs = intSec;
+      if (this.elements?.thumb?.time) {
+        this.elements.thumb.time.textContent = formatSeekTime(seekTime);
+      }
+    }
+
+    this.showImageAtCurrentTime();
+  };
+
+  // Fast-path O(1)/O(log N) showImageAtCurrentTime to eliminate linear frame scanning
+  pt.showImageAtCurrentTime = function () {
+    if (this.mouseDown) {
+      this.setScrubbingContainerSize?.();
+      return;
+    }
+
+    this.setThumbContainerPos();
+
+    const frames = this.thumbnails?.[0]?.frames;
+    if (!frames || frames.length === 0) {
+      this.toggleThumbContainer(false);
+      return;
+    }
+
+    // Fast-path check: is seekTime still in the last active frame?
+    let thumbNum = this.showingThumb;
+    if (
+      thumbNum == null ||
+      thumbNum < 0 ||
+      thumbNum >= frames.length ||
+      this.seekTime < frames[thumbNum].startTime ||
+      this.seekTime > frames[thumbNum].endTime
+    ) {
+      // Binary search
+      let low = 0;
+      let high = frames.length - 1;
+      thumbNum = -1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        const f = frames[mid];
+        if (this.seekTime < f.startTime) {
+          high = mid - 1;
+        } else if (this.seekTime > f.endTime) {
+          low = mid + 1;
+        } else {
+          thumbNum = mid;
+          break;
+        }
+      }
+    }
+
+    const hasThumb = thumbNum >= 0;
+    this.toggleThumbContainer(hasThumb);
+    if (!hasThumb) return;
+
+    if (this.showingThumb !== thumbNum || !this.currentImageElement) {
+      this.showingThumb = thumbNum;
+      this.loadImage(0);
+    }
   };
 
   return () => {
@@ -218,6 +366,8 @@ function setupOptimizedPreviewThumbnails(player: any): () => void {
       progressEl.removeEventListener("mouseleave", clearRects);
     }
     window.removeEventListener("resize", clearRects);
+    player.off?.("enterfullscreen", clearRects);
+    player.off?.("exitfullscreen", clearRects);
   };
 }
 
@@ -397,7 +547,7 @@ export function VideoPlayer({
           "pip",
           "fullscreen",
         ],
-        tooltips: { controls: true, seek: true },
+        tooltips: { controls: true, seek: !previewReady },
         // One tooltip scheme for the whole bar: "<what it does> (<key>)", so no button is the odd
         // one out. Fullscreen deliberately reads the same in BOTH directions — we delegate Plyr's
         // toggle to the viewer (see below), so Plyr never learns it is in fullscreen and its default
