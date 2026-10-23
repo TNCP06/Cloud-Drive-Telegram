@@ -1135,7 +1135,9 @@ async def restore_subtitle_from_telegram(db, part_id: int, lang: str, tg_client=
 
         if data:
             SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(data)
+            tmp_p = p.with_suffix(".tmp")
+            tmp_p.write_bytes(data)
+            tmp_p.replace(p)
             if not _done_marker(part_id).exists():
                 _done_marker(part_id).write_text("restored", encoding="utf-8")
             log.info("Auto-restored subtitle from Telegram backup: part %d lang %s (%d bytes)",
