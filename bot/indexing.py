@@ -65,6 +65,11 @@ async def on_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message is None:
         return
 
+    # Skip subtitle backup messages so they never enter the file drive
+    caption = getattr(message, "caption", "") or ""
+    if caption.startswith("[CDT-Subtitle]"):
+        return
+
     db = context.bot_data["db"]
     msg_id = message.message_id
 

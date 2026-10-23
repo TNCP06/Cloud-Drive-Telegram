@@ -64,6 +64,7 @@ from stream_compress import (
 )
 
 # Background subtitle generation (Groq Whisper STT + translation) lives in its own module.
+from db_ops import ensure_subtitles_schema
 from stream_subtitles import (
     SUBTITLE_GEN,
     SUBTITLES_DIR,
@@ -86,6 +87,8 @@ from stream_subtitles import (
     convert_to_vtt,
     save_subtitle_track,
     extract_embedded_tracks,
+    restore_subtitle_from_telegram,
+    restore_missing_subtitles_for_part,
 )
 
 # Seek-preview sprite-sheet generation (ffmpeg thumbnails for Plyr progress-bar hover).
@@ -1094,6 +1097,10 @@ async def _next_backfill_part() -> dict | None:
         part_id = _subtitle_priority.pop(0)
         if part_id in _backfill_failed or is_subtitled_done(part_id):
             continue
+        restored = await restore_missing_subtitles_for_part(db, part_id, tg_client)
+        if restored > 0 or is_subtitled_done(part_id):
+            log.info("Priority subtitle: part %d restored from Telegram backup (%d tracks)", part_id, restored)
+            continue
         part = await _fetch_part_row(part_id)
         if part:
             return part
@@ -1395,6 +1402,10 @@ async def lifespan(_app: FastAPI):
 
     db = create_client()
     log.info("PostgreSQL client ready")
+    try:
+        await ensure_subtitles_schema(db)
+    except Exception as e:
+        log.warning("Could not ensure subtitles schema: %s", e)
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if not STREAM_LOCAL_ORIGINAL:
@@ -1499,19 +1510,19 @@ async def get_tasks():
 
 @app.get("/subtitles/{part_id}")
 async def list_subtitles(part_id: int):
-    """List the subtitle languages available on disk for a part. `done` is True once the part is
-    finalised (complete / no-speech / no-audio / budget-exhausted) so a polling client (the web
-    player loading new subtitles live) knows it can stop waiting for more tracks."""
+    """List the subtitle languages available on disk for a part. If files are missing locally,
+    auto-restores them from the Telegram storage channel backup."""
+    await restore_missing_subtitles_for_part(db, part_id, tg_client)
     return {"part_id": part_id, "langs": available_langs(part_id), "done": is_subtitled_done(part_id)}
 
 
 @app.get("/subtitles/{part_id}/{lang}")
 async def get_subtitle(part_id: int, lang: str):
-    """Serve a WebVTT subtitle track. `lang` is validated against what's on disk."""
-    if lang not in available_langs(part_id):
-        return Response("Not found", status_code=404)
+    """Serve a WebVTT subtitle track. Auto-restores from Telegram if missing on VPS disk."""
     p = subtitle_path(part_id, lang)
     if not p.exists():
+        await restore_subtitle_from_telegram(db, part_id, lang, tg_client)
+    if not p.exists() or lang not in available_langs(part_id):
         return Response("Not found", status_code=404)
     return Response(
         p.read_text(encoding="utf-8"),

@@ -451,8 +451,8 @@ land (no reopen needed). The job:
 2. **Fallback ASR Engine (Groq Whisper / Gladia / Cloudflare):** If CapCut is disabled, cookies are missing, the detected language is not in CapCut, or browser automation encounters any error/timeout, the worker transparently falls back to `_transcribe_audio`: `ffmpeg` extracts audio chunks (`SUBTITLE_CHUNK_SECONDS`), transcribes via Groq Whisper (`whisper-large-v3-turbo` with multi-key rotation on 429), then Gladia or Cloudflare Workers AI.
 3. The original-language track is written, then translated to **English + Indonesian** via
    `deep-translator` (timestamps preserved; a target equal to the source language is skipped).
-4. WebVTT files are saved to the **persistent** `/subtitles` volume and a `subtitles` Postgres row is
-   written per language; a `.done` marker prevents re-runs.
+4. WebVTT files are saved to the **persistent** `/subtitles` volume, automatically **backed up to the Telegram storage channel** (`backup_subtitle_to_telegram`, caption `[CDT-Subtitle] part_id={id} lang={lang}`), and recorded in PostgreSQL `subtitles (part_id, lang, created_at, channel_msg_id)`. A `.done` marker prevents re-runs.
+5. **Instant Cloud Restore (Zero Re-generation):** If a VPS is migrated, reset, or the local `/subtitles` volume is ever deleted, when a video is played or checked, the streamer instantly downloads the small 30 KB `.vtt` file from Telegram (`restore_subtitle_from_telegram`) in <0.5s instead of re-downloading the entire video and re-running CapCut/Whisper.
 
 The web player loads them as caption `<track>`s via `/api/subtitles/{partId}` + `/{lang}`. **Subtitle
 files are kept as long as the video is indexed** (the `/subtitles` volume is never auto-evicted).

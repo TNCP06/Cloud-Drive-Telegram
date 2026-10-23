@@ -80,6 +80,9 @@ class MessageAdapter:
                     self.document = DocumentAdapter(name, size, mime)
 
 async def index_message(db, msg):
+    caption = getattr(msg, "caption", "") or ""
+    if caption.startswith("[CDT-Subtitle]"):
+        return False
     kind = detect_kind(msg)
     if kind is None:
         return False
@@ -148,6 +151,16 @@ async def main():
     if purged_ids:
         print(f"Skipping {len(purged_ids)} purged message(s).")
     existing_ids |= purged_ids
+
+    # Subtitle backup messages: skip from catalog
+    try:
+        sub_rs = await db.execute("SELECT channel_msg_id FROM subtitles WHERE channel_msg_id IS NOT NULL")
+        sub_ids = {row[0] for row in sub_rs.rows if row[0]}
+        if sub_ids:
+            print(f"Skipping {len(sub_ids)} subtitle backup message(s).")
+            existing_ids |= sub_ids
+    except Exception:
+        pass
 
     # Initialize Telethon Client using worker.session
     session_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker")

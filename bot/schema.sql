@@ -208,11 +208,14 @@ CREATE TABLE IF NOT EXISTS tg_import_jobs (
 -- The VTT files live on the streamer's persistent /subtitles volume; this table just
 -- tells the web player which languages are available.
 CREATE TABLE IF NOT EXISTS subtitles (
-    part_id    BIGINT NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
-    lang       TEXT NOT NULL,                  -- ISO-639-1 (en, id, …) or 'orig'
-    created_at TEXT NOT NULL DEFAULT now_text(),
+    part_id        BIGINT NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+    lang           TEXT NOT NULL,                  -- ISO-639-1 (en, id, …) or 'orig'
+    created_at     TEXT NOT NULL DEFAULT now_text(),
+    channel_msg_id BIGINT,                         -- Telegram storage channel backup message id
     PRIMARY KEY (part_id, lang)
 );
+ALTER TABLE subtitles ADD COLUMN IF NOT EXISTS channel_msg_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_subtitles_msg ON subtitles(channel_msg_id) WHERE channel_msg_id IS NOT NULL;
 
 -- Owner-managed key/value bot settings (e.g. web_url) — created at runtime by bot.py too.
 CREATE TABLE IF NOT EXISTS bot_settings (

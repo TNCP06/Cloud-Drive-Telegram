@@ -326,6 +326,16 @@ async def split_media_albums(db):
     return len(album_ids)
 
 
+async def ensure_subtitles_schema(db) -> None:
+    """Ensure `subtitles` table has `channel_msg_id` column for Telegram backup."""
+    if db is None:
+        return
+    try:
+        await db.execute("ALTER TABLE subtitles ADD COLUMN IF NOT EXISTS channel_msg_id BIGINT")
+    except Exception:
+        pass
+
+
 async def ensure_purge_schema(db) -> None:
     """Create `purged_messages` if it is missing.
 

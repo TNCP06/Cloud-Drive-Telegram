@@ -440,8 +440,10 @@ async def save_subtitle_track(db, part_id: int, lang: str, vtt_text: str) -> Non
     Also finalises the part (`.done`) so the STT backfill never overwrites a user-provided
     track with an auto-generated one."""
     SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
-    subtitle_path(part_id, lang).write_text(vtt_text, encoding="utf-8")
-    await _record_subtitle(db, part_id, lang)
+    p = subtitle_path(part_id, lang)
+    p.write_text(vtt_text, encoding="utf-8")
+    msg_id = await backup_subtitle_to_telegram(part_id, lang, p)
+    await _record_subtitle(db, part_id, lang, msg_id)
     if not _done_marker(part_id).exists():
         _done_marker(part_id).write_text("manual", encoding="utf-8")
         _cleanup_chunk_state(part_id)
@@ -1068,15 +1070,120 @@ async def _translate_track(segments: list[dict], target: str, source: str | None
 # ---------------------------------------------------------------------------
 # DB
 # ---------------------------------------------------------------------------
-async def _record_subtitle(db, part_id: int, lang: str) -> None:
+async def backup_subtitle_to_telegram(part_id: int, lang: str, vtt_path: Path) -> int | None:
+    """Upload a WebVTT subtitle track to Telegram storage channel as a permanent cloud backup.
+    Returns channel_msg_id on success, or None on failure."""
+    bot_token = os.environ.get("BOT_TOKEN")
+    channel_id = os.environ.get("STORAGE_CHANNEL_ID")
+    if not bot_token or not channel_id or not vtt_path.exists():
+        return None
+
+    api_base = (os.environ.get("TELEGRAM_API_URL") or "https://api.telegram.org").rstrip("/")
+    url = f"{api_base}/bot{bot_token}/sendDocument"
+
+    filename = f"part_{part_id}.{lang}.vtt"
+    caption = f"[CDT-Subtitle] part_id={part_id} lang={lang}"
+    data = {"chat_id": str(channel_id), "caption": caption}
+
+    try:
+        with open(vtt_path, "rb") as fh:
+            files = {"document": (filename, fh, "text/vtt")}
+            timeout = httpx.Timeout(45.0, connect=15.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(url, data=data, files=files)
+                if resp.status_code == 200:
+                    body = resp.json()
+                    if body.get("ok"):
+                        msg_id = int(body.get("result", {}).get("message_id"))
+                        log.info("Backed up subtitle to Telegram: part %d lang %s -> msg_id %d",
+                                 part_id, lang, msg_id)
+                        return msg_id
+                log.warning("Telegram subtitle backup failed HTTP %d: %s", resp.status_code, resp.text[:200])
+    except Exception as ex:
+        log.warning("Telegram subtitle backup error for part %d/%s: %s", part_id, lang, ex)
+    return None
+
+
+async def restore_subtitle_from_telegram(db, part_id: int, lang: str, tg_client=None) -> bool:
+    """If a subtitle file is missing on VPS disk, check if it's backed up in Telegram.
+    If found, download it (<0.5s) and save to /subtitles/part_{part_id}.{lang}.vtt."""
+    p = subtitle_path(part_id, lang)
+    if p.exists():
+        return True
+    if db is None:
+        return False
+
+    try:
+        rs = await db.execute(
+            "SELECT channel_msg_id FROM subtitles WHERE part_id = ? AND lang = ?",
+            [part_id, lang],
+        )
+        if not rs.rows or not rs.rows[0][0]:
+            return False
+
+        msg_id = int(rs.rows[0][0])
+        data: bytes | None = None
+
+        if tg_client is not None:
+            try:
+                channel_id = int(os.environ.get("STORAGE_CHANNEL_ID", "0"))
+                msg = await tg_client.get_messages(channel_id, ids=msg_id)
+                if msg and msg.media:
+                    data = await tg_client.download_media(msg, file=bytes)
+            except Exception as tg_err:
+                log.debug("Telethon subtitle download failed (%s)", tg_err)
+
+        if data:
+            SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+            if not _done_marker(part_id).exists():
+                _done_marker(part_id).write_text("restored", encoding="utf-8")
+            log.info("Auto-restored subtitle from Telegram backup: part %d lang %s (%d bytes)",
+                     part_id, lang, len(data))
+            return True
+    except Exception as ex:
+        log.warning("Failed to restore subtitle part %d/%s from Telegram: %s", part_id, lang, ex)
+    return False
+
+
+async def restore_missing_subtitles_for_part(db, part_id: int, tg_client=None) -> int:
+    """Restore all backed-up subtitle tracks for a part that are missing on local disk."""
+    if db is None:
+        return 0
+    restored = 0
+    try:
+        rs = await db.execute(
+            "SELECT lang, channel_msg_id FROM subtitles WHERE part_id = ? AND channel_msg_id IS NOT NULL",
+            [part_id],
+        )
+        for row in rs.rows:
+            lang = str(row[0])
+            p = subtitle_path(part_id, lang)
+            if not p.exists():
+                ok = await restore_subtitle_from_telegram(db, part_id, lang, tg_client)
+                if ok:
+                    restored += 1
+    except Exception as ex:
+        log.debug("Error checking subtitle restore for part %d: %s", part_id, ex)
+    return restored
+
+
+async def _record_subtitle(db, part_id: int, lang: str, channel_msg_id: int | None = None) -> None:
     if db is None:
         return
     try:
-        await db.execute(
-            "INSERT INTO subtitles (part_id, lang, created_at) VALUES (?, ?, now_text()) "
-            "ON CONFLICT(part_id, lang) DO UPDATE SET created_at=now_text()",
-            [part_id, lang],
-        )
+        if channel_msg_id:
+            await db.execute(
+                "INSERT INTO subtitles (part_id, lang, created_at, channel_msg_id) VALUES (?, ?, now_text(), ?) "
+                "ON CONFLICT(part_id, lang) DO UPDATE SET created_at=now_text(), channel_msg_id=COALESCE(?, subtitles.channel_msg_id)",
+                [part_id, lang, channel_msg_id, channel_msg_id],
+            )
+        else:
+            await db.execute(
+                "INSERT INTO subtitles (part_id, lang, created_at) VALUES (?, ?, now_text()) "
+                "ON CONFLICT(part_id, lang) DO UPDATE SET created_at=now_text()",
+                [part_id, lang],
+            )
     except Exception as e:  # noqa: BLE001
         log.warning("Could not record subtitle row part %d/%s: %s", part_id, lang, e)
 
@@ -1451,8 +1558,10 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
 
             # Write/refresh the ORIGINAL track from all chunks transcribed so far.
             orig_lang = source_lang if source_lang != "xx" else "orig"
-            subtitle_path(part_id, orig_lang).write_text(_build_vtt(segments), encoding="utf-8")
-            await _record_subtitle(db, part_id, orig_lang)
+            orig_p = subtitle_path(part_id, orig_lang)
+            orig_p.write_text(_build_vtt(segments), encoding="utf-8")
+            orig_msg_id = await backup_subtitle_to_telegram(part_id, orig_lang, orig_p)
+            await _record_subtitle(db, part_id, orig_lang, orig_msg_id)
 
             # (Re)translate to each target language from the current full set. A repair pass
             # fills a once-missing chunk, so we always rebuild the translation rather than
@@ -1465,8 +1574,10 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
                 # retry the translation). Worst case the part keeps only its original track.
                 translated = await _translate_track(segments, target, source_lang)
                 if translated:
-                    subtitle_path(part_id, target).write_text(_build_vtt(translated), encoding="utf-8")
-                    await _record_subtitle(db, part_id, target)
+                    t_p = subtitle_path(part_id, target)
+                    t_p.write_text(_build_vtt(translated), encoding="utf-8")
+                    t_msg_id = await backup_subtitle_to_telegram(part_id, target, t_p)
+                    await _record_subtitle(db, part_id, target, t_msg_id)
 
             if missing == 0:
                 # Every chunk transcribed → finished. Drop the repair scaffolding.
