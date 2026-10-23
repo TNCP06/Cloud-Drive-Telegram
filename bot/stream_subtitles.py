@@ -55,6 +55,11 @@ log = logging.getLogger("streamer")
 SUBTITLE_GEN = os.environ.get("SUBTITLE_GEN", "1") not in ("0", "false", "False", "")
 SUBTITLES_DIR = Path(os.environ.get("SUBTITLES_DIR", "/subtitles"))
 
+# Full Whisper chunk transcription fallback (split audio into 10-min chunks and transcribe all).
+# Disabled by default (0) when CapCut is primary, to prevent poor-quality Whisper hallucinations.
+# Whisper is strictly restricted to short 15s language ID probe samples unless explicitly enabled.
+ENABLE_WHISPER_FULL_STT = os.environ.get("ENABLE_WHISPER_FULL_STT", "0") in ("1", "true", "True")
+
 # Comma-separated Groq API keys — rotated on rate-limit (429) for free-tier failover.
 GROQ_API_KEYS = [k.strip() for k in os.environ.get("GROQ_API_KEYS", "").split(",") if k.strip()]
 # Models tried in order (turbo first = faster/cheaper, falls back to full v3).
@@ -69,7 +74,7 @@ GROQ_TRANSCRIBE_URL = os.environ.get(
 # (we control the quota, not Google's per-IP throttle) and cleaner on hard pairs (e.g. Traditional
 # Chinese → id). Set GROQ_TRANSLATE=0 to disable and keep the Google-only behaviour.
 GROQ_TRANSLATE = os.environ.get("GROQ_TRANSLATE", "1") not in ("0", "false", "False", "")
-GROQ_TRANSLATE_MODEL = os.environ.get("GROQ_TRANSLATE_MODEL", "llama-3.3-70b-versatile")
+GROQ_TRANSLATE_MODEL = os.environ.get("GROQ_TRANSLATE_MODEL", "qwen/qwen3.8-27b")
 GROQ_CHAT_URL = os.environ.get("GROQ_CHAT_URL", "https://api.groq.com/openai/v1/chat/completions")
 
 # Optional SERVER-SIDE STT FAILOVER via Cloudflare Workers AI Whisper — used ONLY when every Groq
@@ -858,6 +863,7 @@ def _groq_translate_batch(texts: list[str], target: str, source: str | None) -> 
         f"ONLY the translated lines: no numbering, no commentary, no blank lines between them. "
         f"If a line is untranslatable, output its best transliteration rather than dropping it.")
     user = "\n".join(texts)
+    max_out_tokens = min(900, max(150, len(texts) * 35))
     for key in _key_order():
         try:
             with httpx.Client(timeout=120) as c:
@@ -865,6 +871,7 @@ def _groq_translate_batch(texts: list[str], target: str, source: str | None) -> 
                     GROQ_CHAT_URL,
                     headers={"Authorization": f"Bearer {key}"},
                     json={"model": GROQ_TRANSLATE_MODEL, "temperature": 0,
+                          "max_tokens": max_out_tokens,
                           "messages": [{"role": "system", "content": system},
                                        {"role": "user", "content": user}]},
                 )
@@ -872,6 +879,9 @@ def _groq_translate_batch(texts: list[str], target: str, source: str | None) -> 
                 continue  # rate-limited on this key → try the next
             resp.raise_for_status()
             content = (resp.json()["choices"][0]["message"]["content"] or "").strip("\n")
+            if content.startswith("```"):
+                content = re.sub(r"^```[a-zA-Z]*\n?", "", content)
+                content = re.sub(r"\n?```$", "", content).strip("\n")
             lines = content.split("\n")
             while lines and lines[-1].strip() == "":  # trim trailing formatting blanks only
                 lines.pop()
@@ -973,23 +983,10 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
                 log.warning("Batch translate to %s failed (%s) - attempt %d/5", target, e, attempt + 1)
                 time.sleep(2)
 
-        # Fallback to per-item with rate limit prevention
-        log.warning("Batch translate to %s failed all attempts — falling back to per-item", target)
-        out: list[str | None] = []
-        for t in texts:
-            if not t or t in (".", "Oh", "M"):
-                out.append(t)
-                continue
-            for _ in range(3):
-                try:
-                    out.append(translator.translate(t) or None)
-                    break
-                except Exception:  # noqa: BLE001
-                    time.sleep(1)
-            else:
-                out.append(None)
-            time.sleep(0.5)
-        return out
+        # Do not hammer Google with slow per-item requests when rate-limited;
+        # immediately return None so the Groq LLM failover handles it in seconds.
+        log.warning("Batch translate to %s throttled on Google — delegating to Groq LLM failover", target)
+        return [None] * len(texts)
 
     def translate_batch(texts: list[str]) -> list[str | None]:
         """Translate a batch → same-length list. Google first; any line Google couldn't translate
@@ -1366,87 +1363,62 @@ async def repair_translations_on_disk(db) -> None:
 # Language Probe (Whisper short audio sample -> detect spoken language)
 # ---------------------------------------------------------------------------
 async def probe_audio_language(src_path: str) -> tuple[str | None, str | None]:
-    """Probe a short audio snippet via Whisper to detect the spoken language.
+    """Probe audio snippets via Whisper to detect the spoken language.
 
-    Returns (iso_code, language_name) e.g. ('id', 'indonesian') or ('ja', 'japanese'),
+    Returns (iso_code, language_name) e.g. ('id', 'indonesian') or ('zh', 'chinese'),
     or (None, None) if no speech was detected, probe failed, or audio is silent/music-only.
-    Probes a secondary window if the first window contains only intro silence/music.
+    Probes progressive time windows (10s, 35s, 75s, 125s, 175s) to bypass openings/theme songs.
     """
     if not (_gladia_stt_enabled() or bool(GROQ_API_KEYS) or _cloudflare_stt_enabled()):
         return None, None
 
     tmp = Path(tempfile.mkdtemp(prefix="subprobe_"))
     try:
-        # Window 1: 10s -> 30s (skips 10s intro silence/logos)
-        probe1 = tmp / "probe1.flac"
-        cmd1 = [
-            "ffmpeg", "-y", "-ss", "10", "-t", "20",
-            "-i", src_path,
-            "-vn", "-ac", "1", "-ar", "16000",
-            "-c:a", "flac", str(probe1)
-        ]
-        proc1 = await asyncio.create_subprocess_exec(
-            *cmd1, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        await proc1.communicate()
-
-        # Fallback for short files (<15s): extract from 0s -> 20s
-        if not probe1.exists() or probe1.stat().st_size == 0:
-            cmd_short = [
-                "ffmpeg", "-y", "-ss", "0", "-t", "20",
-                "-i", src_path,
-                "-vn", "-ac", "1", "-ar", "16000",
-                "-c:a", "flac", str(probe1)
-            ]
-            proc_s = await asyncio.create_subprocess_exec(
-                *cmd_short, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            await proc_s.communicate()
-
-        if not probe1.exists() or probe1.stat().st_size == 0:
-            log.info("Subtitle probe: %s has no audio track", src_path)
-            return None, None
-
-        timeout = httpx.Timeout(40.0, connect=15.0)
+        timeout = httpx.Timeout(30.0, connect=15.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            # 1. Check window 1
-            try:
-                res1 = await _transcribe_chunk(client, probe1)
-                segs1 = [s for s in (res1.get("segments") or [])
-                         if _is_confident_segment(s) and (s.get("text") or "").strip()]
-                if segs1:
-                    lang1 = res1.get("language")
-                    iso1 = _iso_from_groq_language(lang1)
-                    if iso1 != "xx":
-                        return iso1, lang1
-            except Exception as e:
-                log.debug("Subtitle probe window 1 failed: %s", e)
+            candidate_starts = [10, 35, 75, 125, 175]
+            for idx, start_sec in enumerate(candidate_starts, 1):
+                probe_file = tmp / f"probe_{idx}.flac"
+                cmd = [
+                    "ffmpeg", "-y", "-ss", str(start_sec), "-t", "18",
+                    "-i", src_path,
+                    "-vn", "-ac", "1", "-ar", "16000",
+                    "-c:a", "flac", str(probe_file)
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                await proc.communicate()
 
-            # 2. Window 2: if window 1 had no confident speech (e.g. music/silence), test 35s -> 55s
-            probe2 = tmp / "probe2.flac"
-            cmd2 = [
-                "ffmpeg", "-y", "-ss", "35", "-t", "20",
-                "-i", src_path,
-                "-vn", "-ac", "1", "-ar", "16000",
-                "-c:a", "flac", str(probe2)
-            ]
-            proc2 = await asyncio.create_subprocess_exec(
-                *cmd2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            await proc2.communicate()
+                # Fallback for short files (<15s): extract from 0s -> 18s
+                if idx == 1 and (not probe_file.exists() or probe_file.stat().st_size == 0):
+                    cmd_short = [
+                        "ffmpeg", "-y", "-ss", "0", "-t", "18",
+                        "-i", src_path,
+                        "-vn", "-ac", "1", "-ar", "16000",
+                        "-c:a", "flac", str(probe_file)
+                    ]
+                    proc_s = await asyncio.create_subprocess_exec(
+                        *cmd_short, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    )
+                    await proc_s.communicate()
 
-            if probe2.exists() and probe2.stat().st_size > 0:
+                if not probe_file.exists() or probe_file.stat().st_size == 0:
+                    # Video is shorter than this start offset, no more windows
+                    break
+
                 try:
-                    res2 = await _transcribe_chunk(client, probe2)
-                    segs2 = [s for s in (res2.get("segments") or [])
-                             if _is_confident_segment(s) and (s.get("text") or "").strip()]
-                    if segs2:
-                        lang2 = res2.get("language")
-                        iso2 = _iso_from_groq_language(lang2)
-                        if iso2 != "xx":
-                            return iso2, lang2
+                    res = await _transcribe_chunk(client, probe_file)
+                    segs = [s for s in (res.get("segments") or [])
+                            if _is_confident_segment(s) and (s.get("text") or "").strip()]
+                    if segs:
+                        lang = res.get("language")
+                        iso = _iso_from_groq_language(lang)
+                        if iso != "xx":
+                            log.info("Subtitle probe: confident speech detected at %ds -> %s (%s)", start_sec, lang, iso)
+                            return iso, lang
                 except Exception as e:
-                    log.debug("Subtitle probe window 2 failed: %s", e)
+                    log.debug("Subtitle probe window at %ds failed: %s", start_sec, e)
 
         return None, None
     except Exception as ex:
@@ -1512,31 +1484,36 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
                             log.warning("Subtitle: CapCut returned no segments for part %d — falling back to Whisper/Gladia", part_id)
                     except Exception as ex:  # noqa: BLE001
                         log.warning("Subtitle: CapCut failed for part %d (%s) — falling back to Whisper/Gladia", part_id, ex)
-                elif detected_iso is not None:
-                    # Speech was detected, but language is not supported by CapCut dropdown
-                    log.info("Subtitle: detected language '%s' (%s) not in CapCut — routing directly to Whisper",
-                             detected_lang_name, detected_iso)
                 else:
-                    # Probe returned None (no confident speech in probe windows, or probe STT unavailable)
-                    # If no Whisper STT keys configured at all, try CapCut default language as fallback
-                    if not (GROQ_API_KEYS or _gladia_stt_enabled() or _cloudflare_stt_enabled()) and CAPCUT_LANG:
-                        log.info("Subtitle: no probe STT available — trying CapCut default language '%s'", CAPCUT_LANG)
-                        default_info = resolve_capcut_language(CAPCUT_LANG)
-                        target_lang = default_info["name"] if default_info else CAPCUT_LANG
-                        try:
-                            capcut_segs = await transcribe_with_capcut(src_path, language=target_lang, timeout=CAPCUT_TIMEOUT_S)
-                            if capcut_segs:
-                                segments = capcut_segs
-                                source_lang = default_info["iso"] if default_info else "orig"
-                                missing = 0
-                                total = 1
-                        except Exception as ex:
-                            log.warning("Subtitle: CapCut default failed: %s", ex)
-                    else:
-                        log.info("Subtitle: probe found no initial speech for part %d — deferring to full Whisper scan", part_id)
+                    # Probe returned None (e.g. music/intro silence) OR language is not directly mapped:
+                    # Always route to CapCut using the configured default language (never jump to full Whisper).
+                    default_info = resolve_capcut_language(CAPCUT_LANG)
+                    target_lang = default_info["name"] if default_info else CAPCUT_LANG
+                    log.info("Subtitle: spoken language undetermined by probe for part %d — routing to CapCut default '%s'",
+                             part_id, target_lang)
+                    try:
+                        capcut_segs = await transcribe_with_capcut(src_path, language=target_lang, timeout=CAPCUT_TIMEOUT_S)
+                        if capcut_segs:
+                            segments = capcut_segs
+                            source_lang = default_info["iso"] if default_info else "orig"
+                            missing = 0
+                            total = 1
+                            log.info("Subtitle: part %d transcribed via CapCut default (%d segments, lang=%s)",
+                                     part_id, len(segments), source_lang)
+                        else:
+                            log.warning("Subtitle: CapCut default returned no segments for part %d", part_id)
+                    except Exception as ex:  # noqa: BLE001
+                        log.warning("Subtitle: CapCut default failed for part %d: %s", part_id, ex)
 
             if not segments:
-                segments, source_lang, missing, total = await _transcribe_audio(part_id, src_path)
+                if ENABLE_WHISPER_FULL_STT:
+                    log.info("Subtitle: falling back to Whisper full transcription for part %d", part_id)
+                    segments, source_lang, missing, total = await _transcribe_audio(part_id, src_path)
+                else:
+                    log.info("Subtitle: CapCut produced no segments and full Whisper STT is disabled — marking no-speech for part %d", part_id)
+                    _done_marker(part_id).write_text("no-speech")
+                    _cleanup_chunk_state(part_id)
+                    return
 
             if total == 0:
                 # No audio track at all → nothing will ever be produced. Permanent skip.
