@@ -13,6 +13,7 @@ import { TagPicker } from "./TagPicker";
 import { VideoPlayer, type VideoQualityOption } from "./VideoPlayer";
 import { DocPreview } from "./DocPreview";
 import { SubtitleDialog } from "./SubtitleDialog";
+import { SHORTCUTS, withShortcut } from "@/lib/shortcuts";
 import { reharvestThumbnail, uploadThumbnail } from "@/app/actions";
 import type { DriveFile, Folder, GalleryPart, Kind, Tag } from "@/lib/types";
 
@@ -633,6 +634,14 @@ export function PreviewDrawer({
         return;
       }
 
+      // "Shift+C" opens subtitle manager for streamable video.
+      if (isVideoStage && e.shiftKey && (e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        e.stopPropagation();
+        openPopup(() => setSubsOpen(true));
+        return;
+      }
+
       // "P" toggles looping on the current video; "I" pops it out into picture-in-picture, matching
       // YouTube's miniplayer key.
       if (isPartStreamableVideo(activePart, item.kind) && e.key.length === 1 && "pPiI".includes(e.key)) {
@@ -837,7 +846,7 @@ export function PreviewDrawer({
                   <button
                     className="viewer-iconbtn"
                     onClick={() => openPopup(() => setSubsOpen(true))}
-                    title="Add subtitle"
+                    title={withShortcut("Subtitles", SHORTCUTS.viewerSubtitles)}
                   >
                     <Icon name="subtitles" size={17} />
                   </button>

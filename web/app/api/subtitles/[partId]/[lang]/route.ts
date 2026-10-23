@@ -52,3 +52,35 @@ export async function GET(
     return new Response("Subtitle service unavailable.", { status: 502 });
   }
 }
+
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: Promise<{ partId: string; lang: string }> }
+) {
+  if (!(await checkAuth())) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  }
+  const { partId, lang } = await params;
+  const id = Number(partId);
+  if (!Number.isInteger(id) || id <= 0 || !(await authorizePart(id))) {
+    return NextResponse.json({ error: "Not found." }, { status: 404 });
+  }
+  if (!/^[a-z]{2,8}$/i.test(lang)) {
+    return NextResponse.json({ error: "Bad language." }, { status: 400 });
+  }
+  try {
+    const headers: Record<string, string> = { Connection: "close" };
+    if (process.env.STREAMER_SECRET) headers["X-Streamer-Secret"] = process.env.STREAMER_SECRET;
+    const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}/${lang}`, {
+      method: "DELETE",
+      headers,
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      return NextResponse.json({ error: data?.detail ?? "Delete failed." }, { status: resp.status });
+    }
+    return NextResponse.json(data);
+  } catch {
+    return NextResponse.json({ error: "Subtitle service unavailable." }, { status: 502 });
+  }
+}

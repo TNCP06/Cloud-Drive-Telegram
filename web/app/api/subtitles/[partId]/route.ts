@@ -38,6 +38,7 @@ export async function GET(
     const data = await resp.json();
     return NextResponse.json({
       langs: Array.isArray(data?.langs) ? data.langs : [],
+      tracks: Array.isArray(data?.tracks) ? data.tracks : [],
       done: data?.done === true,
     });
   } catch {

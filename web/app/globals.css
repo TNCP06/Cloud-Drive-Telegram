@@ -1621,6 +1621,46 @@ a:focus-visible,
 /* tombol nyalakan/matikan watcher di pojok kanan baris status */
 .wbtn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
 
+/* Subtitle Manager Modal styles */
+.sub-tabs { display: flex; border-bottom: 1px solid var(--line); background: var(--card-2); border-radius: var(--r-md) var(--r-md) 0 0; }
+.sub-tab {
+  flex: 1; padding: 10px 12px; background: none; border: 0; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: var(--muted);
+  border-bottom: 2px solid transparent; font-variant-numeric: tabular-nums;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  transition: color .15s, background .15s, border-color .15s;
+}
+.sub-tab:hover { color: var(--ink); background: color-mix(in oklab, var(--card) 50%, var(--card-2)); }
+.sub-tab.on { color: var(--accent); border-bottom-color: var(--accent); background: var(--card); }
+.sub-tab:focus-visible { outline: none; box-shadow: var(--focus-ring); z-index: 1; }
+
+.sub-track-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-md); transition: border-color .15s, box-shadow .15s;
+}
+.sub-track-item:hover { border-color: var(--line-strong); }
+.sub-badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px;
+  font-size: 11.5px; font-weight: 500; border-radius: 99px;
+  background: var(--card-2); color: var(--muted); border: 1px solid var(--line);
+}
+.sub-badge.cloud {
+  background: color-mix(in oklab, #3C7A74 15%, var(--card));
+  color: #2F635E; border-color: color-mix(in oklab, #3C7A74 30%, var(--line));
+}
+[data-theme="dark"] .sub-badge.cloud {
+  background: color-mix(in oklab, #5EB2A8 18%, var(--card));
+  color: #79D1C7; border-color: color-mix(in oklab, #5EB2A8 35%, var(--line));
+}
+.sub-sync-btn {
+  padding: 6px 12px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+  border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--card);
+  color: var(--ink); cursor: pointer; transition: background .12s, border-color .12s;
+}
+.sub-sync-btn:hover { background: var(--card-2); border-color: var(--line-strong); }
+.sub-sync-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
 /* ===========================================================================
    Penjelajah file laptop (FsBrowser)
    =========================================================================== */

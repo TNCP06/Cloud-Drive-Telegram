@@ -89,6 +89,13 @@ from stream_subtitles import (
     extract_embedded_tracks,
     restore_subtitle_from_telegram,
     restore_missing_subtitles_for_part,
+    _safe_unlink,
+    _done_marker,
+    _partial_marker,
+    _cleanup_chunk_state,
+    _parse_vtt,
+    _build_vtt,
+    _translate_track,
 )
 
 # Seek-preview sprite-sheet generation (ffmpeg thumbnails for Plyr progress-bar hover).
@@ -1513,7 +1520,172 @@ async def list_subtitles(part_id: int):
     """List the subtitle languages available on disk for a part. If files are missing locally,
     auto-restores them from the Telegram storage channel backup."""
     await restore_missing_subtitles_for_part(db, part_id, tg_client)
-    return {"part_id": part_id, "langs": available_langs(part_id), "done": is_subtitled_done(part_id)}
+    langs = available_langs(part_id)
+    tracks = []
+    try:
+        rs = await db.execute("SELECT lang, channel_msg_id FROM subtitles WHERE part_id = ?", [part_id])
+        backed = {r[0]: bool(r[1]) for r in rs.rows}
+    except Exception:
+        backed = {}
+    for l in langs:
+        tracks.append({
+            "lang": l,
+            "backed_up": backed.get(l, False),
+        })
+    return {
+        "part_id": part_id,
+        "langs": langs,
+        "tracks": tracks,
+        "done": is_subtitled_done(part_id),
+    }
+
+
+@app.delete("/subtitles/{part_id}/{lang}")
+async def delete_subtitle(part_id: int, lang: str):
+    """Delete a subtitle track from disk, database, and Telegram cloud backup."""
+    lang = sanitize_lang(lang, "id")
+    p = subtitle_path(part_id, lang)
+    if p.exists():
+        _safe_unlink(p)
+    try:
+        rs = await db.execute("SELECT channel_msg_id FROM subtitles WHERE part_id = ? AND lang = ?", [part_id, lang])
+        if rs.rows and rs.rows[0][0] and tg_client:
+            msg_id = int(rs.rows[0][0])
+            try:
+                await tg_client.delete_messages(STORAGE_CHANNEL_ID, [msg_id])
+            except Exception as e:
+                log.warning("Could not delete subtitle backup message %d: %s", msg_id, e)
+        await db.execute("DELETE FROM subtitles WHERE part_id = ? AND lang = ?", [part_id, lang])
+    except Exception as e:
+        log.warning("Could not delete subtitle row part %d lang %s: %s", part_id, lang, e)
+
+    if not available_langs(part_id):
+        _safe_unlink(_done_marker(part_id))
+        _safe_unlink(_partial_marker(part_id))
+        _cleanup_chunk_state(part_id)
+    return {"ok": True, "part_id": part_id, "lang": lang}
+
+
+@app.post("/subtitles/{part_id}/translate")
+async def translate_subtitle_track(part_id: int, source: str = "orig", target: str = "id"):
+    """Translate an existing subtitle track on-demand to another language."""
+    if not await _fetch_part_row(part_id):
+        raise HTTPException(status_code=404, detail="Part not found or not a video")
+    source = sanitize_lang(source, "orig")
+    target = sanitize_lang(target, "id")
+    if source == target:
+        raise HTTPException(status_code=400, detail="Source and target languages must differ")
+    src_path = subtitle_path(part_id, source)
+    if not src_path.exists():
+        await restore_subtitle_from_telegram(db, part_id, source, tg_client)
+    if not src_path.exists():
+        avail = available_langs(part_id)
+        if avail:
+            src_path = subtitle_path(part_id, avail[0])
+            source = avail[0]
+        else:
+            raise HTTPException(status_code=404, detail="No source subtitle track found to translate")
+
+    segments = _parse_vtt(src_path)
+    if not segments:
+        raise HTTPException(status_code=400, detail="Source track has no subtitle cues")
+
+    translated = await _translate_track(segments, target, source)
+    if not translated:
+        raise HTTPException(status_code=502, detail=f"Translation to '{target}' failed")
+
+    vtt_text = _build_vtt(translated)
+    await save_subtitle_track(db, part_id, target, vtt_text)
+    log.info("On-demand subtitle translated: part %d %s -> %s", part_id, source, target)
+    return {"ok": True, "part_id": part_id, "lang": target}
+
+
+@app.post("/subtitles/{part_id}/offset")
+async def offset_subtitle_timing(part_id: int, lang: str = "id", offset_seconds: float = 0.0):
+    """Permanently shift timing of all cues in a subtitle track by offset_seconds."""
+    if not await _fetch_part_row(part_id):
+        raise HTTPException(status_code=404, detail="Part not found or not a video")
+    lang = sanitize_lang(lang, "id")
+    p = subtitle_path(part_id, lang)
+    if not p.exists():
+        await restore_subtitle_from_telegram(db, part_id, lang, tg_client)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"Subtitle track '{lang}' not found")
+
+    segments = _parse_vtt(p)
+    if not segments:
+        raise HTTPException(status_code=400, detail="No cues found in subtitle track")
+
+    for seg in segments:
+        seg["start"] = max(0.0, round(seg["start"] + offset_seconds, 3))
+        seg["end"] = max(seg["start"] + 0.1, round(seg["end"] + offset_seconds, 3))
+
+    new_vtt = _build_vtt(segments)
+    await save_subtitle_track(db, part_id, lang, new_vtt)
+    log.info("Subtitle offset applied: part %d lang %s %+.2fs", part_id, lang, offset_seconds)
+    return {"ok": True, "part_id": part_id, "lang": lang, "offset_seconds": offset_seconds}
+
+
+_generate_jobs: dict[int, dict] = {}
+
+
+async def _run_generate_job(part_id: int) -> None:
+    job = _generate_jobs[part_id]
+    path: str | None = None
+    fresh = False
+    try:
+        part = await _fetch_part_row(part_id)
+        if not part:
+            job.update(status="error", message="Video part not found or deleted")
+            return
+        path = _local_file_paths.get(part_id)
+        if not path or not os.path.exists(path):
+            job["message"] = "Downloading audio/video from Telegram…"
+            async with _backfill_download_lock:
+                path = await _download_part_original(part)
+            fresh = True
+        job["message"] = "Transcribing with AI (CapCut Web / Whisper)…"
+        await _ensure_poster(part_id, path)
+        await run_subtitle_job(db, part_id, path)
+        langs = available_langs(part_id)
+        if langs:
+            job.update(status="done", message=f"Generated {len(langs)} track(s): {', '.join(langs)}", langs=langs)
+        else:
+            job.update(status="done", message="Completed (no speech detected in audio)")
+    except Exception as e:
+        log.exception("On-demand subtitle generate failed for part %d", part_id)
+        job.update(status="error", message=str(e))
+    finally:
+        if fresh and path and os.path.exists(path) and path not in _local_file_paths.values():
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+
+@app.post("/subtitles/{part_id}/generate")
+async def start_subtitle_generate(part_id: int, force: bool = False):
+    """Trigger on-demand AI subtitle generation for a video part."""
+    if not (SUBTITLE_GEN and stt_available()):
+        raise HTTPException(status_code=400, detail="Subtitle generation is not enabled or no STT keys configured")
+    part = await _fetch_part_row(part_id)
+    if not part:
+        raise HTTPException(status_code=404, detail="Part not found or not a video")
+    job = _generate_jobs.get(part_id)
+    if job and job.get("status") == "running":
+        return job
+    if force:
+        _safe_unlink(_done_marker(part_id))
+        _safe_unlink(_partial_marker(part_id))
+        _cleanup_chunk_state(part_id)
+    _generate_jobs[part_id] = {"status": "running", "message": "Starting on-demand generation…"}
+    asyncio.create_task(_run_generate_job(part_id))
+    return _generate_jobs[part_id]
+
+
+@app.get("/subtitles/{part_id}/generate/status")
+async def subtitle_generate_status(part_id: int):
+    return _generate_jobs.get(part_id) or {"status": "idle", "message": ""}
 
 
 @app.get("/subtitles/{part_id}/{lang}")

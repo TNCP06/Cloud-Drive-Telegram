@@ -337,6 +337,13 @@ export const SHORTCUTS = {
     desc: "Toggle video looping mode",
     category: "media",
   },
+  viewerSubtitles: {
+    id: "viewerSubtitles",
+    key: "C",
+    label: "Shift+C",
+    desc: "Open subtitle manager",
+    category: "media",
+  },
 } as const satisfies Record<string, ShortcutDef>;
 
 export type ShortcutKey = keyof typeof SHORTCUTS;
