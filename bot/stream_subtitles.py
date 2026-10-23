@@ -43,6 +43,7 @@ from capcut_subtitles import (
     CAPCUT_TIMEOUT_S,
     capcut_available,
     capcut_lang_iso,
+    resolve_capcut_language,
     transcribe_with_capcut,
 )
 
@@ -1253,6 +1254,100 @@ async def repair_translations_on_disk(db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Language Probe (Whisper short audio sample -> detect spoken language)
+# ---------------------------------------------------------------------------
+async def probe_audio_language(src_path: str) -> tuple[str | None, str | None]:
+    """Probe a short audio snippet via Whisper to detect the spoken language.
+
+    Returns (iso_code, language_name) e.g. ('id', 'indonesian') or ('ja', 'japanese'),
+    or (None, None) if no speech was detected, probe failed, or audio is silent/music-only.
+    Probes a secondary window if the first window contains only intro silence/music.
+    """
+    if not (_gladia_stt_enabled() or bool(GROQ_API_KEYS) or _cloudflare_stt_enabled()):
+        return None, None
+
+    tmp = Path(tempfile.mkdtemp(prefix="subprobe_"))
+    try:
+        # Window 1: 10s -> 30s (skips 10s intro silence/logos)
+        probe1 = tmp / "probe1.flac"
+        cmd1 = [
+            "ffmpeg", "-y", "-ss", "10", "-t", "20",
+            "-i", src_path,
+            "-vn", "-ac", "1", "-ar", "16000",
+            "-c:a", "flac", str(probe1)
+        ]
+        proc1 = await asyncio.create_subprocess_exec(
+            *cmd1, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc1.communicate()
+
+        # Fallback for short files (<15s): extract from 0s -> 20s
+        if not probe1.exists() or probe1.stat().st_size == 0:
+            cmd_short = [
+                "ffmpeg", "-y", "-ss", "0", "-t", "20",
+                "-i", src_path,
+                "-vn", "-ac", "1", "-ar", "16000",
+                "-c:a", "flac", str(probe1)
+            ]
+            proc_s = await asyncio.create_subprocess_exec(
+                *cmd_short, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            await proc_s.communicate()
+
+        if not probe1.exists() or probe1.stat().st_size == 0:
+            log.info("Subtitle probe: %s has no audio track", src_path)
+            return None, None
+
+        timeout = httpx.Timeout(40.0, connect=15.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # 1. Check window 1
+            try:
+                res1 = await _transcribe_chunk(client, probe1)
+                segs1 = [s for s in (res1.get("segments") or [])
+                         if _is_confident_segment(s) and (s.get("text") or "").strip()]
+                if segs1:
+                    lang1 = res1.get("language")
+                    iso1 = _iso_from_groq_language(lang1)
+                    if iso1 != "xx":
+                        return iso1, lang1
+            except Exception as e:
+                log.debug("Subtitle probe window 1 failed: %s", e)
+
+            # 2. Window 2: if window 1 had no confident speech (e.g. music/silence), test 35s -> 55s
+            probe2 = tmp / "probe2.flac"
+            cmd2 = [
+                "ffmpeg", "-y", "-ss", "35", "-t", "20",
+                "-i", src_path,
+                "-vn", "-ac", "1", "-ar", "16000",
+                "-c:a", "flac", str(probe2)
+            ]
+            proc2 = await asyncio.create_subprocess_exec(
+                *cmd2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            await proc2.communicate()
+
+            if probe2.exists() and probe2.stat().st_size > 0:
+                try:
+                    res2 = await _transcribe_chunk(client, probe2)
+                    segs2 = [s for s in (res2.get("segments") or [])
+                             if _is_confident_segment(s) and (s.get("text") or "").strip()]
+                    if segs2:
+                        lang2 = res2.get("language")
+                        iso2 = _iso_from_groq_language(lang2)
+                        if iso2 != "xx":
+                            return iso2, lang2
+                except Exception as e:
+                    log.debug("Subtitle probe window 2 failed: %s", e)
+
+        return None, None
+    except Exception as ex:
+        log.warning("Subtitle probe error for %s: %s", src_path, ex)
+        return None, None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
 async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str | None = None) -> None:
@@ -1286,21 +1381,50 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
             missing: int = 0
             total: int = 1
 
+            # 1. Probe audio for spoken language identification via short Whisper sample
+            detected_iso, detected_lang_name = await probe_audio_language(src_path)
+            capcut_info = resolve_capcut_language(detected_iso or detected_lang_name) if (detected_iso or detected_lang_name) else None
+
             if CAPCUT_PRIMARY and capcut_available():
-                try:
-                    log.info("Subtitle: attempting primary transcription with CapCut for part %d …", part_id)
-                    capcut_segs = await transcribe_with_capcut(src_path, language=CAPCUT_LANG, timeout=CAPCUT_TIMEOUT_S)
-                    if capcut_segs:
-                        segments = capcut_segs
-                        source_lang = capcut_lang_iso(CAPCUT_LANG)
-                        missing = 0
-                        total = 1
-                        log.info("Subtitle: part %d transcribed via CapCut (%d segments, lang=%s)",
-                                 part_id, len(segments), source_lang)
+                if capcut_info:
+                    target_capcut_lang = capcut_info["name"]
+                    log.info("Subtitle: detected spoken language '%s' (%s) for part %d — routing to CapCut Web (%s)",
+                             detected_lang_name, detected_iso, part_id, target_capcut_lang)
+                    try:
+                        capcut_segs = await transcribe_with_capcut(src_path, language=target_capcut_lang, timeout=CAPCUT_TIMEOUT_S)
+                        if capcut_segs:
+                            segments = capcut_segs
+                            source_lang = capcut_info["iso"]
+                            missing = 0
+                            total = 1
+                            log.info("Subtitle: part %d transcribed via CapCut (%d segments, lang=%s)",
+                                     part_id, len(segments), source_lang)
+                        else:
+                            log.warning("Subtitle: CapCut returned no segments for part %d — falling back to Whisper/Gladia", part_id)
+                    except Exception as ex:  # noqa: BLE001
+                        log.warning("Subtitle: CapCut failed for part %d (%s) — falling back to Whisper/Gladia", part_id, ex)
+                elif detected_iso is not None:
+                    # Speech was detected, but language is not supported by CapCut dropdown
+                    log.info("Subtitle: detected language '%s' (%s) not in CapCut — routing directly to Whisper",
+                             detected_lang_name, detected_iso)
+                else:
+                    # Probe returned None (no confident speech in probe windows, or probe STT unavailable)
+                    # If no Whisper STT keys configured at all, try CapCut default language as fallback
+                    if not (GROQ_API_KEYS or _gladia_stt_enabled() or _cloudflare_stt_enabled()) and CAPCUT_LANG:
+                        log.info("Subtitle: no probe STT available — trying CapCut default language '%s'", CAPCUT_LANG)
+                        default_info = resolve_capcut_language(CAPCUT_LANG)
+                        target_lang = default_info["name"] if default_info else CAPCUT_LANG
+                        try:
+                            capcut_segs = await transcribe_with_capcut(src_path, language=target_lang, timeout=CAPCUT_TIMEOUT_S)
+                            if capcut_segs:
+                                segments = capcut_segs
+                                source_lang = default_info["iso"] if default_info else "orig"
+                                missing = 0
+                                total = 1
+                        except Exception as ex:
+                            log.warning("Subtitle: CapCut default failed: %s", ex)
                     else:
-                        log.warning("Subtitle: CapCut returned no segments for part %d — falling back to Whisper/Gladia", part_id)
-                except Exception as ex:  # noqa: BLE001
-                    log.warning("Subtitle: CapCut failed for part %d (%s) — falling back to Whisper/Gladia", part_id, ex)
+                        log.info("Subtitle: probe found no initial speech for part %d — deferring to full Whisper scan", part_id)
 
             if not segments:
                 segments, source_lang, missing, total = await _transcribe_audio(part_id, src_path)

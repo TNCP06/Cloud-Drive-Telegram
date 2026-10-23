@@ -13,6 +13,7 @@ import glob
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -27,37 +28,50 @@ CAPCUT_TIMEOUT_S = int(os.environ.get("CAPCUT_TIMEOUT_S", "180"))
 CAPCUT_HEADLESS = os.environ.get("CAPCUT_HEADLESS", "1") not in ("0", "false", "False", "")
 
 
+# All supported languages in CapCut Web Auto captions mapped to UI match pattern and 2-letter ISO code
+CAPCUT_LANGUAGE_MAP: dict[str, dict] = {
+    "id": {"name": "Indonesian", "pattern": r"Indonesian|Bahasa Indonesia", "iso": "id"},
+    "en": {"name": "English (US)", "pattern": r"English \(US\)|English", "iso": "en"},
+    "ja": {"name": "Japanese", "pattern": r"Japanese|日本語", "iso": "ja"},
+    "ko": {"name": "Korean", "pattern": r"Korean|한국어", "iso": "ko"},
+    "zh": {"name": "Chinese", "pattern": r"Chinese|中文|Mandarin", "iso": "zh"},
+    "es": {"name": "Spanish", "pattern": r"Spanish|Español", "iso": "es"},
+    "pt": {"name": "Portuguese", "pattern": r"Portuguese|Português", "iso": "pt"},
+    "fr": {"name": "French", "pattern": r"French|Français", "iso": "fr"},
+    "de": {"name": "German", "pattern": r"German|Deutsch", "iso": "de"},
+    "vi": {"name": "Vietnamese", "pattern": r"Vietnamese|Tiếng Việt", "iso": "vi"},
+    "th": {"name": "Thai", "pattern": r"Thai|ไทย", "iso": "th"},
+    "it": {"name": "Italian", "pattern": r"Italian|Italiano", "iso": "it"},
+    "ar": {"name": "Arabic", "pattern": r"Arabic|العربية", "iso": "ar"},
+    "ru": {"name": "Russian", "pattern": r"Russian|Русский", "iso": "ru"},
+    "tr": {"name": "Turkish", "pattern": r"Turkish|Türkçe", "iso": "tr"},
+    "ms": {"name": "Malay", "pattern": r"Malay|Bahasa Melayu", "iso": "ms"},
+    "tl": {"name": "Filipino", "pattern": r"Filipino|Tagalog", "iso": "tl"},
+    "hi": {"name": "Hindi", "pattern": r"Hindi", "iso": "hi"},
+    "nl": {"name": "Dutch", "pattern": r"Dutch|Nederlands", "iso": "nl"},
+    "pl": {"name": "Polish", "pattern": r"Polish|Polski", "iso": "pl"},
+    "ro": {"name": "Romanian", "pattern": r"Romanian|Română", "iso": "ro"},
+}
+
+
+def resolve_capcut_language(lang: str | None) -> dict | None:
+    """Resolve an ISO code or Whisper language name to CapCut configuration dict."""
+    if not lang:
+        return None
+    key = lang.strip().lower()
+    if key in CAPCUT_LANGUAGE_MAP:
+        return CAPCUT_LANGUAGE_MAP[key]
+    for info in CAPCUT_LANGUAGE_MAP.values():
+        if re.search(info["pattern"], key, re.IGNORECASE) or key == info["name"].lower():
+            return info
+    return None
+
+
 def capcut_lang_iso(language: str | None) -> str:
     """Map human language name or ISO code to 2-letter ISO code."""
-    if not language:
-        return "id"
-    l = language.strip().lower()
-    if "indo" in l:
-        return "id"
-    if "eng" in l:
-        return "en"
-    if "japan" in l:
-        return "ja"
-    if "korean" in l:
-        return "ko"
-    if "chin" in l or "mandarin" in l:
-        return "zh"
-    if "span" in l:
-        return "es"
-    if "french" in l:
-        return "fr"
-    if "ger" in l:
-        return "de"
-    if "malay" in l:
-        return "ms"
-    if "arab" in l:
-        return "ar"
-    if "viet" in l:
-        return "vi"
-    if "thai" in l:
-        return "th"
-    if len(l) == 2:
-        return l
+    info = resolve_capcut_language(language)
+    if info:
+        return info["iso"]
     return "id"
 
 
@@ -237,6 +251,89 @@ def _cleanup_capcut_library(page) -> None:
         log.debug("CapCut: library cleanup skipped (%s)", e)
 
 
+def _select_capcut_language(page, language: str) -> bool:
+    """Select the target spoken language in CapCut's Auto captions panel."""
+    lang_info = resolve_capcut_language(language)
+    target_name = lang_info["name"] if lang_info else language
+    pattern = lang_info["pattern"] if lang_info else re.escape(language)
+    log.info("CapCut: setting transcription language to '%s' …", target_name)
+
+    try:
+        # 1. Check if the target language is already selected on the sidebar above Generate button
+        already_selected = page.evaluate("""(pat) => {
+            const re = new RegExp(pat, 'i');
+            const gen = Array.from(document.querySelectorAll('button')).find(b => b.innerText && b.innerText.includes('Generate') && !b.innerText.includes('Generated'));
+            if (!gen) return false;
+            const genTop = gen.getBoundingClientRect().top;
+            const els = Array.from(document.querySelectorAll('span, div, button, p')).filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.left >= 0 && r.right <= 450 && r.top >= genTop - 200 && r.bottom <= genTop;
+            });
+            return els.some(el => re.test(el.innerText || ''));
+        }""", pattern)
+
+        if already_selected:
+            log.info("CapCut: language '%s' is already active in UI", target_name)
+            return True
+
+        # 2. Click the language dropdown trigger above the Generate button
+        opened = page.evaluate("""() => {
+            const gen = Array.from(document.querySelectorAll('button')).find(b => b.innerText && b.innerText.includes('Generate') && !b.innerText.includes('Generated'));
+            if (!gen) return false;
+            const genTop = gen.getBoundingClientRect().top;
+            const langNames = ['English', 'Indonesian', 'Bahasa', 'Japanese', 'Korean', 'Chinese', 'Spanish', 'Portuguese', 'French', 'German', 'Vietnamese', 'Thai', 'Italian', 'Arabic', 'Russian', 'Malay', 'Filipino', 'Hindi', 'Dutch', 'Turkish', 'Polish', 'Romanian'];
+            const els = Array.from(document.querySelectorAll('div, button, span')).filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.left >= 0 && r.right <= 450 && r.top >= genTop - 200 && r.bottom <= genTop && r.height >= 20 && r.width >= 40;
+            });
+            for (const el of els) {
+                const txt = el.innerText || '';
+                if (langNames.some(l => txt.includes(l)) || (el.className && el.className.includes('select')) || el.getAttribute('aria-haspopup')) {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+
+        if not opened:
+            for el in page.locator("[class*='select'], [class*='dropdown'], button").all():
+                box = el.bounding_box()
+                if box and box["y"] < 400 and box["x"] < 450 and box["height"] >= 20:
+                    el.click(force=True)
+                    opened = True
+                    break
+
+        time.sleep(1.5)
+
+        # 3. Locate target language in the dropdown menu list and click it
+        lang_items = page.locator(f"text=/{pattern}/i").all()
+        target_el = None
+        for item in lang_items:
+            try:
+                if item.is_visible():
+                    target_el = item
+                    break
+            except Exception:
+                pass
+        if not target_el and lang_items:
+            target_el = lang_items[-1]
+
+        if target_el:
+            target_el.scroll_into_view_if_needed()
+            time.sleep(0.5)
+            target_el.click(force=True)
+            log.info("CapCut: successfully selected language '%s'", target_name)
+            time.sleep(1.0)
+            return True
+        else:
+            log.warning("CapCut: language option for '%s' not visible in dropdown list", target_name)
+            return False
+    except Exception as e:
+        log.debug("CapCut: language selection error (%s), using default", e)
+        return False
+
+
 def _transcribe_single_account(page, video_abs_path: str, language: str, timeout: int,
                               captured_utterances: list[dict]) -> bool:
     """Execute the full browser automation flow for a single CapCut session."""
@@ -313,23 +410,7 @@ def _transcribe_single_account(page, video_abs_path: str, language: str, timeout
 
     # Select language if specified
     if language:
-        try:
-            all_en = page.locator("text='English (US)'").all()
-            for el in all_en:
-                box = el.bounding_box()
-                if box and box["y"] < 350 and box["x"] < 500:
-                    el.click(force=True)
-                    time.sleep(1.5)
-                    break
-
-            lang_item = page.locator(f"text=/{language}/i").last
-            if lang_item.count() > 0:
-                lang_item.scroll_into_view_if_needed()
-                time.sleep(0.5)
-                lang_item.click(force=True)
-                log.info("CapCut: selected language '%s'", language)
-        except Exception as e:
-            log.debug("CapCut: language selection error (%s), using default", e)
+        _select_capcut_language(page, language)
 
     time.sleep(2)
     _dismiss_popups(page)

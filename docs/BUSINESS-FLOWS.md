@@ -444,8 +444,11 @@ so a just-opened/just-uploaded video is subtitled next — still by the single s
 parallel job — and the **web player polls `/api/subtitles/{partId}` and loads the tracks live** as they
 land (no reopen needed). The job:
 
-1. **Primary ASR Engine (CapCut Web):** If `CAPCUT_PRIMARY=1` and CapCut cookies are configured (`cookies/` or `CAPCUT_COOKIE_FILE`), the worker attempts automated browser transcription via CapCut Web editor (`bot/capcut_subtitles.py`). It intercepts the internal `caption/query` API responses for Indonesian/target language speech, immediately extracts high-accuracy utterances, and purges the cloud project draft to preserve storage.
-2. **Fallback ASR Engine (Groq Whisper / Gladia / Cloudflare):** If CapCut is disabled, cookies are missing, or browser automation encounters any error/timeout, the worker transparently falls back to `_transcribe_audio`: `ffmpeg` extracts audio chunks (`SUBTITLE_CHUNK_SECONDS`), transcribes via Groq Whisper (`whisper-large-v3-turbo` with multi-key rotation on 429), then Gladia or Cloudflare Workers AI.
+1. **Language ID Probe & Primary ASR Engine (CapCut Web):**
+   - **Language ID Probe (`probe_audio_language`):** Extracts a 20s audio sample via `ffmpeg` (skipping intro silence/logos, testing a secondary window if window 1 has no speech) and runs a <0.5s Whisper probe to detect the true spoken language.
+   - If speech is detected and supported by CapCut (English, Japanese, Korean, Chinese, Spanish, Indonesian, French, German, Vietnamese, Thai, Arabic, Russian, etc.), CapCut Web editor selects that exact language in its dropdown, uploads the video, intercepts `caption/query`, extracts subtitles, and purges the draft project from cloud storage.
+   - If no speech is detected in the probe (e.g. ambient/silent/music video), it safely bypasses CapCut (no wasted browser execution or upload) and defers to the full chunked Whisper pipeline, which accurately verifies silence across all chunks and marks `.done` with `no-speech` or `no-audio`.
+2. **Fallback ASR Engine (Groq Whisper / Gladia / Cloudflare):** If CapCut is disabled, cookies are missing, the detected language is not in CapCut, or browser automation encounters any error/timeout, the worker transparently falls back to `_transcribe_audio`: `ffmpeg` extracts audio chunks (`SUBTITLE_CHUNK_SECONDS`), transcribes via Groq Whisper (`whisper-large-v3-turbo` with multi-key rotation on 429), then Gladia or Cloudflare Workers AI.
 3. The original-language track is written, then translated to **English + Indonesian** via
    `deep-translator` (timestamps preserved; a target equal to the source language is skipped).
 4. WebVTT files are saved to the **persistent** `/subtitles` volume and a `subtitles` Postgres row is
