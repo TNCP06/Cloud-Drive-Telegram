@@ -9,3 +9,4 @@ uvicorn[standard]==0.34.3
 httpx>=0.23.0
 Pillow==11.0.0
 deep-translator==1.11.4
+playwright>=1.40.0

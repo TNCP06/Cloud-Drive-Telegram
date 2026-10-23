@@ -57,6 +57,7 @@ echo --^> Installing Python dependencies...
 python -m pip install --upgrade pip >nul
 python -m pip install -r bot\requirements.txt
 if errorlevel 1 ( echo [X] pip install failed. & pause & exit /b 1 )
+python -m playwright install chromium
 echo [ok] Python dependencies installed.
 
 REM --- 2. Env files ---------------------------------------------------------
@@ -114,7 +115,7 @@ goto :feat_done
 call :setflag STREAM_LOCAL_ORIGINAL 1
 call :setflag VIDEO_COMPRESS 1
 call :setflag SUBTITLE_GEN 1
-echo [ok] All optional features on - set GROQ_API_KEYS in bot\.env or subtitles stay idle.
+echo [ok] All optional features on - add CapCut cookies or set GROQ_API_KEYS in bot\.env.
 goto :feat_done
 
 :feat_pick
@@ -133,10 +134,10 @@ call :setflag STREAM_LOCAL_ORIGINAL 0
 call :setflag VIDEO_COMPRESS 0
 
 :feat_subs
-call :ask "  Automatic subtitles (Groq Whisper STT + translation)? [y/N] "
+call :ask "  Automatic subtitles (CapCut Web / Groq Whisper STT + translation)? [y/N] "
 if /i not "!ANS!"=="y" goto :feat_nosubs
 call :setflag SUBTITLE_GEN 1
-echo   [!] Set GROQ_API_KEYS in bot\.env or subtitle generation stays idle.
+echo   [!] Add CapCut cookies or set GROQ_API_KEYS in bot\.env, or subtitle generation stays idle.
 goto :feat_done
 
 :feat_nosubs

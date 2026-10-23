@@ -142,9 +142,14 @@ services:
       VIDEO_TRANSCODE_THREADS: "0"      # 0 = ffmpeg auto (all cores); 1-2 = leave a core free. We also `nice` it.
       COMPRESSED_MAX_SIZE_GB: "6"       # LRU-cap the compressed dir at 6 GB (same as CACHE_MAX_SIZE_GB)
                                          # so persistent transcodes can't fill the 25 GB disk. 0 = keep forever.
-      # --- background subtitle generation (Groq Whisper STT + translation) ---
+      # --- background subtitle generation (CapCut Web / Groq Whisper STT + translation) ---
       SUBTITLE_GEN: ${SUBTITLE_GEN:-1}  # set 0 in .env to disable subtitle generation (MVP setup does)
       SUBTITLES_DIR: /subtitles         # PERSISTENT — generated VTT tracks live here
+      CAPCUT_PRIMARY: ${CAPCUT_PRIMARY:-1}  # 1 = try CapCut first, fallback to Whisper; 0 = Whisper first
+      CAPCUT_COOKIE_FILE: ${CAPCUT_COOKIE_FILE:-}
+      CAPCUT_LANG: ${CAPCUT_LANG:-Indonesian}
+      CAPCUT_TIMEOUT_S: ${CAPCUT_TIMEOUT_S:-180}
+      CAPCUT_HEADLESS: ${CAPCUT_HEADLESS:-1}
       GROQ_API_KEYS: ${GROQ_API_KEYS:-} # comma-separated Groq keys (rotated on 429)
       GROQ_STT_MODELS: whisper-large-v3-turbo,whisper-large-v3
       GLADIA_API_KEY: ${GLADIA_API_KEY:-}  # optional STT failover (async API); empty = Groq-only
@@ -177,6 +182,7 @@ services:
       - compressed:/compressed           # PERSISTENT — compressed videos live here
       - subtitles:/subtitles             # PERSISTENT — generated subtitle tracks live here
       - seekpreviews:/seekpreviews       # PERSISTENT — seek-preview sprite sheets live here
+      - ./cookies:/app/cookies:ro
       - ./bot/streamer.session:/app/streamer.session
       - telegram-bot-api-data:/var/lib/telegram-bot-api
     depends_on:

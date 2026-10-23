@@ -92,3 +92,8 @@ gemini.md
 cache/
 captures/
 .playwright-mcp/
+# CapCut cookies & profiles
+cookies/
+cookies.txt
+*.cookie.json
+profile_switcher_*.json

@@ -37,6 +37,14 @@ import tempfile
 from pathlib import Path
 
 import httpx
+from capcut_subtitles import (
+    CAPCUT_LANG,
+    CAPCUT_PRIMARY,
+    CAPCUT_TIMEOUT_S,
+    capcut_available,
+    capcut_lang_iso,
+    transcribe_with_capcut,
+)
 
 log = logging.getLogger("streamer")
 
@@ -92,8 +100,8 @@ def _gladia_stt_enabled() -> bool:
 
 
 def stt_available() -> bool:
-    """True if any STT provider is configured (Gladia, Groq keys, or the Cloudflare failover)."""
-    return _gladia_stt_enabled() or bool(GROQ_API_KEYS) or _cloudflare_stt_enabled()
+    """True if any STT provider is configured (CapCut, Gladia, Groq keys, or the Cloudflare failover)."""
+    return capcut_available() or _gladia_stt_enabled() or bool(GROQ_API_KEYS) or _cloudflare_stt_enabled()
 
 # Target languages every video should end up with (besides the original).
 SUBTITLE_TARGET_LANGS = [l.strip() for l in os.environ.get(
@@ -1267,12 +1275,35 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
             if os.path.getsize(src_path) < SUBTITLE_MIN_BYTES:
                 return
             if not stt_available():
-                log.warning("Subtitle: no STT provider configured (Groq/Cloudflare) — skipping part %d", part_id)
+                log.warning("Subtitle: no STT provider configured (CapCut/Gladia/Groq/Cloudflare) — skipping part %d", part_id)
                 return
 
             SUBTITLES_DIR.mkdir(parents=True, exist_ok=True)
             log.info("Subtitle: transcribing part %d …", part_id)
-            segments, source_lang, missing, total = await _transcribe_audio(part_id, src_path)
+
+            segments: list[dict] = []
+            source_lang: str = "xx"
+            missing: int = 0
+            total: int = 1
+
+            if CAPCUT_PRIMARY and capcut_available():
+                try:
+                    log.info("Subtitle: attempting primary transcription with CapCut for part %d …", part_id)
+                    capcut_segs = await transcribe_with_capcut(src_path, language=CAPCUT_LANG, timeout=CAPCUT_TIMEOUT_S)
+                    if capcut_segs:
+                        segments = capcut_segs
+                        source_lang = capcut_lang_iso(CAPCUT_LANG)
+                        missing = 0
+                        total = 1
+                        log.info("Subtitle: part %d transcribed via CapCut (%d segments, lang=%s)",
+                                 part_id, len(segments), source_lang)
+                    else:
+                        log.warning("Subtitle: CapCut returned no segments for part %d — falling back to Whisper/Gladia", part_id)
+                except Exception as ex:  # noqa: BLE001
+                    log.warning("Subtitle: CapCut failed for part %d (%s) — falling back to Whisper/Gladia", part_id, ex)
+
+            if not segments:
+                segments, source_lang, missing, total = await _transcribe_audio(part_id, src_path)
 
             if total == 0:
                 # No audio track at all → nothing will ever be produced. Permanent skip.

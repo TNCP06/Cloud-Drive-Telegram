@@ -435,7 +435,7 @@ file first. This supports both single-part and multi-part media (e.g. photos/vid
    * Local Bot API Mode: Supports single-part and multi-part media, cold start buffer delay of ~5-15s to download the file from Telegram to the VPS (at full network speed, e.g. 50MB/s), subsequent seeks and repeat views are instant.
    * Fallback Mode: Strictly throttled to ~3Mbps by Telegram's remote MTProto interface.
 
-## E4. Automatic subtitle generation (background, Groq Whisper)
+## E4. Automatic subtitle generation (background, CapCut Web / Groq Whisper)
 
 Subtitles are produced by **one** background worker (`stream_subtitles.py`, separate from compression),
 **if subtitles don't already exist**. Watching a video does **not** run STT on the streaming path; instead
@@ -444,11 +444,8 @@ so a just-opened/just-uploaded video is subtitled next — still by the single s
 parallel job — and the **web player polls `/api/subtitles/{partId}` and loads the tracks live** as they
 land (no reopen needed). The job:
 
-1. `ffmpeg` extracts the audio as time-sliced 16 kHz mono FLAC chunks (`SUBTITLE_CHUNK_SECONDS`,
-   default 600s) to stay under Groq's per-file cap.
-2. Each chunk is transcribed via Groq's **free Whisper API** (`whisper-large-v3-turbo`, falling back to
-   `whisper-large-v3`). Multiple `GROQ_API_KEYS` are **rotated on rate-limit (429)** for failover;
-   segment timestamps are offset per chunk and merged.
+1. **Primary ASR Engine (CapCut Web):** If `CAPCUT_PRIMARY=1` and CapCut cookies are configured (`cookies/` or `CAPCUT_COOKIE_FILE`), the worker attempts automated browser transcription via CapCut Web editor (`bot/capcut_subtitles.py`). It intercepts the internal `caption/query` API responses for Indonesian/target language speech, immediately extracts high-accuracy utterances, and purges the cloud project draft to preserve storage.
+2. **Fallback ASR Engine (Groq Whisper / Gladia / Cloudflare):** If CapCut is disabled, cookies are missing, or browser automation encounters any error/timeout, the worker transparently falls back to `_transcribe_audio`: `ffmpeg` extracts audio chunks (`SUBTITLE_CHUNK_SECONDS`), transcribes via Groq Whisper (`whisper-large-v3-turbo` with multi-key rotation on 429), then Gladia or Cloudflare Workers AI.
 3. The original-language track is written, then translated to **English + Indonesian** via
    `deep-translator` (timestamps preserved; a target equal to the source language is skipped).
 4. WebVTT files are saved to the **persistent** `/subtitles` volume and a `subtitles` Postgres row is
@@ -456,7 +453,7 @@ land (no reopen needed). The job:
 
 The web player loads them as caption `<track>`s via `/api/subtitles/{partId}` + `/{lang}`. **Subtitle
 files are kept as long as the video is indexed** (the `/subtitles` volume is never auto-evicted).
-Disabled with `SUBTITLE_GEN=0` or an empty `GROQ_API_KEYS`.
+Disabled with `SUBTITLE_GEN=0`.
 
 **Retroactive backfill (slow):** a background loop (`_subtitle_backfill_loop`) also subtitles
 **already-indexed** videos that predate this feature. It processes **one video at a time** (serialized by

@@ -181,10 +181,10 @@ else
   ok "  API-only streaming: sparse chunks, LRU-evicted. No seek previews, no transcoding."
 fi
 
-# 5. Subtitles (downloads each video once in the background, then Whisper + translate).
-if ask "Automatic subtitles (Groq Whisper STT + translation; downloads each video once)?" "$(dflt SUBTITLE_GEN)"; then
+# 5. Subtitles (downloads each video once in the background, then CapCut / Whisper + translate).
+if ask "Automatic subtitles (CapCut Web / Groq Whisper STT + translation; downloads each video once)?" "$(dflt SUBTITLE_GEN)"; then
   set_env SUBTITLE_GEN 1
-  [ -n "${GROQ_API_KEYS:-}" ] || warn "  GROQ_API_KEYS is empty — subtitles stay idle until you set it in .env."
+  [ -n "${GROQ_API_KEYS:-}" ] || warn "  GROQ_API_KEYS is empty — will use CapCut if cookies are placed in ./cookies, or subtitles stay idle."
 else
   set_env SUBTITLE_GEN 0
 fi
