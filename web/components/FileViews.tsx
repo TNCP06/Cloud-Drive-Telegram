@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@/lib/icons";
 import { TAG_COLORS } from "@/lib/kinds";
 import { fileTypeFor, displayName } from "@/lib/fileType";
@@ -9,15 +9,11 @@ import { fmtSize, fmtDate, trashDaysLeft } from "@/lib/format";
 import type { DriveFile, Tag, Folder } from "@/lib/types";
 
 /* ---- Client-only text (timestamps) ----
-   Relative/localized timestamps (fmtDate/trashDaysLeft) depend on the viewer's
-   clock + timezone, so the server (UTC on the VPS) and the browser render
-   different strings → React hydration error #418. Render nothing on the server
-   and first client paint (identical → no mismatch), then the real value after
-   mount. */
+   suppressHydrationWarning silences timezone differences between VPS SSR (UTC)
+   and browser client local time without allocating thousands of useState/useEffect
+   lifecycles across the file list. */
 function ClientText({ render }: { render: () => string }) {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-  return <span suppressHydrationWarning>{mounted ? render() : ""}</span>;
+  return <span suppressHydrationWarning>{render()}</span>;
 }
 
 /* ---- Tag chip ---- */
@@ -72,9 +68,10 @@ function TypeTile({ item, size = 40 }: { item: DriveFile; size?: number }) {
   );
 }
 
-interface ItemProps {
+export interface ItemProps {
   item: DriveFile;
-  tags: Tag[];
+  tags?: Tag[];
+  tagMap?: Map<number, Tag>;
   onStar: (item: DriveFile) => void;
   onMenu: (item: DriveFile, anchor: HTMLElement) => void;
   /** Activation: open the item (double-click / Enter). */
@@ -94,6 +91,44 @@ interface ItemProps {
   showExtensions?: boolean;
   /** Show per-card detail items (size/date/tags). Off = name only. */
   showDetails?: boolean;
+}
+
+export interface FolderProps {
+  folder: Folder;
+  onOpen: (id: number) => void;
+  onMenu: (folder: Folder, anchor: HTMLElement) => void;
+  /** Selection: single-click / Space (honours Ctrl/Meta toggle + Shift range). */
+  onSelect?: (folder: Folder, e: React.MouseEvent | React.KeyboardEvent) => void;
+  /** Open the folder's details popup (Alt+Enter). */
+  onDetail?: (folder: Folder) => void;
+  onSelectToggle?: (folder: Folder, e: React.MouseEvent) => void;
+  selected?: boolean;
+  focused?: boolean;
+  itemCount?: number;
+  subfolderCount?: number;
+}
+
+function areFolderPropsEqual(prev: FolderProps, next: FolderProps): boolean {
+  return (
+    prev.folder === next.folder &&
+    prev.selected === next.selected &&
+    prev.focused === next.focused &&
+    prev.itemCount === next.itemCount &&
+    prev.subfolderCount === next.subfolderCount
+  );
+}
+
+function areItemPropsEqual(prev: ItemProps, next: ItemProps): boolean {
+  return (
+    prev.item === next.item &&
+    prev.selected === next.selected &&
+    prev.focused === next.focused &&
+    prev.versionCount === next.versionCount &&
+    prev.showExtensions === next.showExtensions &&
+    prev.showDetails === next.showDetails &&
+    prev.tags === next.tags &&
+    prev.tagMap === next.tagMap
+  );
 }
 
 /* ---- Selection-on-click / activation-on-double-click wiring ----
@@ -169,23 +204,6 @@ function folderActivation(
   };
 }
 
-/* ---- Folder cell props (shared by FolderCard + FolderRow) ---- */
-interface FolderProps {
-  folder: Folder;
-  onOpen: (id: number) => void;
-  onMenu: (folder: Folder, anchor: HTMLElement) => void;
-  /** Selection: single-click / Space (honours Ctrl/Meta toggle + Shift range). */
-  onSelect?: (folder: Folder, e: React.MouseEvent | React.KeyboardEvent) => void;
-  /** Open the folder's details popup (Alt+Enter). */
-  onDetail?: (folder: Folder) => void;
-  onSelectToggle?: (folder: Folder, e: React.MouseEvent) => void;
-  selected?: boolean;
-  focused?: boolean;
-  /** Total items inside (recursive, excludes trashed). */
-  itemCount?: number;
-  /** Total sub-folders inside (recursive). */
-  subfolderCount?: number;
-}
 
 /** Compact "3 folders · 12 items" summary line for a folder (or "Empty folder"). */
 function folderMeta(itemCount?: number, subfolderCount?: number): string {
@@ -228,7 +246,7 @@ function VersionBadge({
 }
 
 /* ============================================================ Folder Card */
-export function FolderCard({
+function FolderCardComponent({
   folder,
   onOpen,
   onMenu,
@@ -263,9 +281,10 @@ export function FolderCard({
     </div>
   );
 }
+export const FolderCard = memo(FolderCardComponent, areFolderPropsEqual);
 
 /* ============================================================ File Folder Card */
-export function FileFolderCard({
+function FileFolderCardComponent({
   item,
   onMenu,
   onOpen,
@@ -311,10 +330,11 @@ export function FileFolderCard({
     </div>
   );
 }
+export const FileFolderCard = memo(FileFolderCardComponent, areItemPropsEqual);
 
 
 /* ============================================================ Folder Row */
-export function FolderRow({
+function FolderRowComponent({
   folder,
   onOpen,
   onMenu,
@@ -370,11 +390,13 @@ export function FolderRow({
     </div>
   );
 }
+export const FolderRow = memo(FolderRowComponent, areFolderPropsEqual);
 
 /* ============================================================ Grid card */
-export function FileCard({
+function FileCardComponent({
   item,
   tags,
+  tagMap,
   onStar,
   onMenu,
   onOpen,
@@ -388,7 +410,9 @@ export function FileCard({
   showExtensions = false,
   showDetails = true,
 }: ItemProps) {
-  const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
+  const itemTags = tagMap
+    ? (item.tags.map((id) => tagMap.get(id)).filter(Boolean) as Tag[])
+    : (item.tags.map((id) => tags?.find((t) => t.id === id)).filter(Boolean) as Tag[]);
   return (
     <div className={`card ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail, focused)}>
       <div style={{ position: "relative" }}>
@@ -471,11 +495,13 @@ export function FileCard({
     </div>
   );
 }
+export const FileCard = memo(FileCardComponent, areItemPropsEqual);
 
 /* ============================================================ List row */
-export function FileRow({
+function FileRowComponent({
   item,
   tags,
+  tagMap,
   onStar,
   onMenu,
   onOpen,
@@ -490,7 +516,9 @@ export function FileRow({
   showDetails = true,
 }: ItemProps) {
   const ft = fileTypeFor(item);
-  const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
+  const itemTags = tagMap
+    ? (item.tags.map((id) => tagMap.get(id)).filter(Boolean) as Tag[])
+    : (item.tags.map((id) => tags?.find((t) => t.id === id)).filter(Boolean) as Tag[]);
   return (
     <div className={`row ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail, focused)}>
       <div className="rname">
@@ -575,6 +603,7 @@ export function FileRow({
     </div>
   );
 }
+export const FileRow = memo(FileRowComponent, areItemPropsEqual);
 
 /* ============================================================ Shared bits */
 /** Star + kebab cluster used by the tile/content layouts. */
@@ -622,9 +651,10 @@ function SelectCheck({
 }
 
 /* ============================================================ Tile (horizontal) */
-export function FileTile({
+function FileTileComponent({
   item,
   tags,
+  tagMap,
   onStar,
   onMenu,
   onOpen,
@@ -637,7 +667,9 @@ export function FileTile({
   showDetails = true,
 }: ItemProps) {
   const ft = fileTypeFor(item);
-  const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
+  const itemTags = tagMap
+    ? (item.tags.map((id) => tagMap.get(id)).filter(Boolean) as Tag[])
+    : (item.tags.map((id) => tags?.find((t) => t.id === id)).filter(Boolean) as Tag[]);
   return (
     <div className={`tile ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail, focused)}>
       <div style={{ position: "relative", flex: "none" }}>
@@ -678,11 +710,13 @@ export function FileTile({
     </div>
   );
 }
+export const FileTile = memo(FileTileComponent, areItemPropsEqual);
 
 /* ============================================================ Content (wide row) */
-export function FileContent({
+function FileContentComponent({
   item,
   tags,
+  tagMap,
   onStar,
   onMenu,
   onOpen,
@@ -697,7 +731,9 @@ export function FileContent({
   showDetails = true,
 }: ItemProps) {
   const ft = fileTypeFor(item);
-  const itemTags = item.tags.map((id) => tags.find((t) => t.id === id)).filter(Boolean) as Tag[];
+  const itemTags = tagMap
+    ? (item.tags.map((id) => tagMap.get(id)).filter(Boolean) as Tag[])
+    : (item.tags.map((id) => tags?.find((t) => t.id === id)).filter(Boolean) as Tag[]);
   return (
     <div className={`crow ${selected ? "sel" : ""}`} {...activation(item, onSelect, onOpen, onDetail, focused)}>
       <SelectCheck item={item} selected={selected} onSelectToggle={onSelectToggle} cls="crow-check" />
@@ -753,9 +789,10 @@ export function FileContent({
     </div>
   );
 }
+export const FileContent = memo(FileContentComponent, areItemPropsEqual);
 
 /* ============================================================ List (compact, column-flow) */
-export function FileListItem({
+function FileListItemComponent({
   item,
   onMenu,
   onOpen,
@@ -793,6 +830,7 @@ export function FileListItem({
     </div>
   );
 }
+export const FileListItem = memo(FileListItemComponent, areItemPropsEqual);
 
 /* ============================================================ Dropdown menu */
 export function Menu({

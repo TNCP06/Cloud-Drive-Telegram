@@ -294,7 +294,7 @@ export function PreviewDrawer({
     let idle: ReturnType<typeof setTimeout> | undefined;
     const clearIdle = () => { if (idle) { clearTimeout(idle); idle = undefined; } };
     const onMove = () => {
-      setChromeHidden(false);
+      setChromeHidden((prev) => (prev ? false : prev));
       clearIdle();
       if (document.fullscreenElement) idle = setTimeout(() => setChromeHidden(true), 3000);
     };
@@ -302,7 +302,7 @@ export function PreviewDrawer({
       // Only hide if the mouse actually left the document window on a desktop cursor
       if (!e.relatedTarget && e.clientY <= 0) setChromeHidden(true);
     };
-    const onOver = () => setChromeHidden(false);
+    const onOver = () => setChromeHidden((prev) => (prev ? false : prev));
     const onFsChange = () => {
       clearIdle();
       setChromeHidden(false);
@@ -321,14 +321,12 @@ export function PreviewDrawer({
       }
     };
 
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("pointermove", onMove);
-    document.addEventListener("mouseout", onOut);
-    document.addEventListener("mouseover", onOver);
+    document.addEventListener("pointermove", onMove, { passive: true });
+    document.addEventListener("mouseout", onOut, { passive: true });
+    document.addEventListener("mouseover", onOver, { passive: true });
     document.addEventListener("fullscreenchange", onFsChange);
     return () => {
       clearIdle();
-      document.removeEventListener("mousemove", onMove);
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("mouseout", onOut);
       document.removeEventListener("mouseover", onOver);
@@ -407,27 +405,37 @@ export function PreviewDrawer({
     setGallery(null);
   }, [item.id, item.kind, item.parts]);
 
-  // Pre-load galleries for EVERY multi-part item in the view so the strip can show each photo as a
-  // thumb — even while previewing a non-parts item. Cached + de-duped, so it's a one-off per session.
-  const navIdsKey = (navFiles ?? []).map((f) => f.id).join(",");
+  // Targeted pre-fetch for galleries: only load for current item and immediate neighbors (±1)
+  // to avoid flooding the server and DB with dozens/hundreds of simultaneous server action requests.
   useEffect(() => {
-    const multis = (navFiles ?? []).filter((f) => f.kind === "media" && f.parts > 1);
+    if (!navFiles || navFiles.length === 0) return;
+    const curIdx = navFiles.findIndex((f) => f.id === item.id);
+    if (curIdx < 0) return;
+
+    const neighbors = navFiles
+      .slice(Math.max(0, curIdx - 1), Math.min(navFiles.length, curIdx + 2))
+      .filter((f) => f.kind === "media" && f.parts > 1);
+
     const seed: Record<number, GalleryPart[]> = {};
-    for (const f of multis) {
+    for (const f of neighbors) {
       const c = getCachedGallery(f.id);
       if (c) seed[f.id] = c;
     }
     if (Object.keys(seed).length) setGalMap((m) => ({ ...m, ...seed }));
+
     let alive = true;
-    for (const f of multis) {
+    for (const f of neighbors) {
       if (getCachedGallery(f.id)) continue;
       loadGallery(f.id)
-        .then((g) => { if (alive) setGalMap((m) => ({ ...m, [f.id]: g })); })
+        .then((g) => {
+          if (alive) setGalMap((m) => ({ ...m, [f.id]: g }));
+        })
         .catch(() => {});
     }
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navIdsKey]);
+    return () => {
+      alive = false;
+    };
+  }, [item.id, navFiles]);
 
   // Always ≥1 entry (the item itself when there's no multi-part gallery) so the bottom box's
   // filmstrip stays consistent — and present — even for single/thumbless media.
@@ -496,36 +504,48 @@ export function PreviewDrawer({
     const n = (name && name.trim()) || fallback;
     return bytes > 0 ? `${n} — ${fmtSize(bytes)}` : n;
   };
-  const stripFiles: DriveFile[] = navFiles && navFiles.length > 0 ? navFiles : [item];
-  const stripThumbs = stripFiles.flatMap((f) => {
-    // Prefer the freshly-loaded current gallery, else the pre-loaded map, to expand an album.
-    const parts = f.id === item.id ? gallery ?? galMap[f.id] : galMap[f.id];
-    if (f.parts > 1 && parts && parts.length > 1) {
-      return parts.map((part, i) => ({
-        key: `${f.id}:${i}`,
-        thumb: part.thumb,
-        title: tipFor(part.fileName, f.version ? f.family : f.name, part.size),
-        active: f.id === item.id && i === activeIdx,
-        icon: isPartStreamableVideo(part, f.kind) ? "video" : "image",
-        isVideo: isPartStreamableVideo(part, f.kind),
-        onClick:
-          f.id === item.id
-            ? () => setActiveIdx(i)
-            : () => { pendingPartRef.current = { id: f.id, idx: i }; onJumpToFile?.(f); },
-      }));
-    }
-    return [{
-      key: `${f.id}`,
-      thumb: f.thumb,
-      title: tipFor(f.fileName, f.version ? f.family : f.name, f.size),
-      active: f.id === item.id,
-      icon: fileTypeFor(f).icon,
-      isVideo: fileTypeFor(f).preview === "video",
-      onClick: () => { if (f.id !== item.id) onJumpToFile?.(f); },
-    }];
-  });
+  const stripThumbs = useMemo(() => {
+    const stripFiles: DriveFile[] = navFiles && navFiles.length > 0 ? navFiles : [item];
+    return stripFiles.flatMap((f) => {
+      // Prefer the freshly-loaded current gallery, else the pre-loaded map, to expand an album.
+      const parts = f.id === item.id ? gallery ?? galMap[f.id] : galMap[f.id];
+      if (f.parts > 1 && parts && parts.length > 1) {
+        return parts.map((part, i) => ({
+          key: `${f.id}:${i}`,
+          thumb: part.thumb,
+          title: tipFor(part.fileName, f.version ? f.family : f.name, part.size),
+          active: f.id === item.id && i === activeIdx,
+          icon: isPartStreamableVideo(part, f.kind) ? "video" : "image",
+          isVideo: isPartStreamableVideo(part, f.kind),
+          onClick:
+            f.id === item.id
+              ? () => setActiveIdx(i)
+              : () => { pendingPartRef.current = { id: f.id, idx: i }; onJumpToFile?.(f); },
+        }));
+      }
+      return [{
+        key: `${f.id}`,
+        thumb: f.thumb,
+        title: tipFor(f.fileName, f.version ? f.family : f.name, f.size),
+        active: f.id === item.id,
+        icon: fileTypeFor(f).icon,
+        isVideo: fileTypeFor(f).preview === "video",
+        onClick: () => { if (f.id !== item.id) onJumpToFile?.(f); },
+      }];
+    });
+  }, [navFiles, item, gallery, galMap, activeIdx, onJumpToFile]);
   const activeThumbIndex = Math.max(0, stripThumbs.findIndex((t) => t.active));
   const stripCount = stripThumbs.length;
+
+  // Windowing for filmstrip: if there are many items (> 40), render a window of ±20 around
+  // activeThumbIndex and preserve exact scroll dimension using padLeft & padRight spacers.
+  const STRIP_WINDOW_RADIUS = 20;
+  const isStripWindowed = stripCount > 40;
+  const stripWindowStart = isStripWindowed ? Math.max(0, activeThumbIndex - STRIP_WINDOW_RADIUS) : 0;
+  const stripWindowEnd = isStripWindowed ? Math.min(stripCount, activeThumbIndex + STRIP_WINDOW_RADIUS + 1) : stripCount;
+  const visibleStripThumbs = isStripWindowed ? stripThumbs.slice(stripWindowStart, stripWindowEnd) : stripThumbs;
+  const padLeft = stripWindowStart * 85;
+  const padRight = (stripCount - stripWindowEnd) * 85;
 
   // The bottom bar and pill are absolutely positioned siblings, so CSS cannot derive one sibling's
   // rendered height from the other. Publish both live sizes as CSS variables; this follows scrollbar,
@@ -940,7 +960,8 @@ export function PreviewDrawer({
                   </button>
                 )}
                 <div className="viewer-strip" ref={stripRef}>
-                  {stripThumbs.map((t) => (
+                  {padLeft > 0 && <div style={{ width: padLeft, flex: "none", pointerEvents: "none" }} aria-hidden />}
+                  {visibleStripThumbs.map((t) => (
                     <button
                       key={t.key}
                       ref={t.active ? activeThumbRef : undefined}
@@ -963,6 +984,7 @@ export function PreviewDrawer({
                       )}
                     </button>
                   ))}
+                  {padRight > 0 && <div style={{ width: padRight, flex: "none", pointerEvents: "none" }} aria-hidden />}
                 </div>
                 {stripOverflow && (
                   <button

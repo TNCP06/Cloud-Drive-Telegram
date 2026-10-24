@@ -226,6 +226,11 @@ a:focus-visible,
   height: 100dvh;
   overflow: hidden;
 }
+/* When a preview/player lightbox is active, pause layout and rendering
+   of background file items to free GPU/CPU for video playback and decoding. */
+.app.in-preview .content {
+  content-visibility: hidden;
+}
 
 /* ---- Sidebar ---- */
 .sidebar {
@@ -1263,6 +1268,7 @@ a:focus-visible,
 .viewer-bottom.is-collapsed {
   transform: translateY(100%);
   pointer-events: none;
+  content-visibility: hidden;
 }
 .viewer-strip {
   display: flex; gap: 0; justify-content: safe center; flex-wrap: nowrap;
@@ -1289,6 +1295,8 @@ a:focus-visible,
   position: relative; flex: none; width: 85px; height: 85px; padding: 0; border: 2px solid transparent;
   border-radius: 0; overflow: hidden; cursor: pointer; opacity: .55;
   background: #1a1a1c; transition: opacity .14s ease, border-color .14s ease;
+  content-visibility: auto;
+  contain-intrinsic-size: 85px 85px;
 }
 .viewer-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .viewer-thumb:hover { opacity: .85; }

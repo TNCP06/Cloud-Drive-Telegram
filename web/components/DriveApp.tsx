@@ -162,6 +162,7 @@ export function DriveApp({
   // Optimistic overlays — every downstream read of `files`/`folders` sees these.
   const [files, optimizeFiles] = useOptimistic(baseFiles, fileReducer);
   const [folders, optimizeFolders] = useOptimistic(baseFolders, folderReducer);
+  const tagMap = useMemo(() => new Map<number, Tag>(tags.map((t) => [t.id, t])), [tags]);
   const [view, setView] = useState<View>(initialView);
   const [activeTag, setActiveTag] = useState<number | null>(null);
   const [query, setQuery] = useState("");
@@ -1305,6 +1306,7 @@ export function DriveApp({
             key={item.id}
             item={item}
             tags={tags}
+            tagMap={tagMap}
             onStar={doStar}
             onMenu={onMenuItem}
             onOpen={onOpenItem}
@@ -1320,7 +1322,6 @@ export function DriveApp({
       </div>
     );
   };
-  const foldersGrid = renderFoldersGrid(nonMediaFiles);
 
   const isOverlayOpen =
     previewId != null ||
@@ -1878,6 +1879,7 @@ export function DriveApp({
     const cell = (item: DriveFile) => ({
       item,
       tags,
+      tagMap,
       onStar: doStar,
       onMenu: onMenuItem,
       onOpen: onOpenItem,
@@ -2008,6 +2010,7 @@ export function DriveApp({
     prefs.detailsPane ? "with-details" : "",
     prefs.compact ? "compact" : "",
     prefs.showCheckboxes ? "show-checks" : "",
+    previewItem ? "in-preview" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -2359,7 +2362,7 @@ export function DriveApp({
           ) : groupedCollapsed ? (
             <>
               {/* folders once, above the grouped sections (each section is files only) */}
-              {foldersGrid}
+              {renderFoldersGrid(nonMediaFiles)}
               {groupedCollapsed.map((g) => (
                 <div key={g.label}>
                   <div className="section-h">
