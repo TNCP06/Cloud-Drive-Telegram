@@ -68,11 +68,17 @@ GROQ_STT_MODELS = [m.strip() for m in os.environ.get(
 GROQ_TRANSCRIBE_URL = os.environ.get(
     "GROQ_TRANSCRIBE_URL", "https://api.groq.com/openai/v1/audio/transcriptions")
 
-# Translation failover via a Groq LLM (reuses the free Groq keys). The free Google endpoint
-# (deep-translator) frequently throttles or silently echoes the input under bursts; when Google
-# can't translate a line, we fall back to an instruction-tuned Groq chat model — far more reliable
-# (we control the quota, not Google's per-IP throttle) and cleaner on hard pairs (e.g. Traditional
-# Chinese → id). Set GROQ_TRANSLATE=0 to disable and keep the Google-only behaviour.
+# Multi-tier subtitle translation:
+# Tier 1: Google Gemini Flash LLM (context-aware dialogue translation via Google AI Studio API)
+GEMINI_TRANSLATE = os.environ.get("GEMINI_TRANSLATE", "1") not in ("0", "false", "False", "")
+_raw_gemini_keys = os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_KEYS = [k.strip() for k in _raw_gemini_keys.split(",") if k.strip()]
+_raw_gemini_models = os.environ.get("GEMINI_MODELS", "") or os.environ.get(
+    "GEMINI_MODEL", "gemini-2.5-flash,gemini-2.0-flash,gemini-1.5-flash"
+)
+GEMINI_MODELS = [m.strip().replace("models/", "") for m in _raw_gemini_models.split(",") if m.strip()]
+
+# Tier 2: Groq Chat Completion LLM (reuses the free Groq keys, default model: qwen/qwen3.8-27b)
 GROQ_TRANSLATE = os.environ.get("GROQ_TRANSLATE", "1") not in ("0", "false", "False", "")
 GROQ_TRANSLATE_MODEL = os.environ.get("GROQ_TRANSLATE_MODEL", "qwen/qwen3.8-27b")
 GROQ_CHAT_URL = os.environ.get("GROQ_CHAT_URL", "https://api.groq.com/openai/v1/chat/completions")
@@ -846,11 +852,8 @@ _ISO_TO_LANG_NAME.update({"en": "English", "id": "Indonesian", "zh": "Chinese", 
                           "ko": "Korean", "ms": "Malay"})
 
 
-def _groq_translate_batch(texts: list[str], target: str, source: str | None) -> list[str | None]:
-    """Translate a batch of subtitle lines via a Groq chat model — the reliable failover for when
-    the free Google endpoint throttles/echoes. Returns a same-length list (None where a line still
-    couldn't be translated) so alignment is preserved and validation can drop the gaps. Runs sync
-    (called from `_translate_segments`, itself already off the event loop via asyncio.to_thread)."""
+def _groq_translate_subbatch(texts: list[str], target: str, source: str | None) -> list[str | None]:
+    """Translate a sub-batch (<=25 lines) of subtitle lines via Groq chat model."""
     if not (GROQ_TRANSLATE and GROQ_API_KEYS and texts):
         return [None] * len(texts)
     tgt = _ISO_TO_LANG_NAME.get(target, target)
@@ -860,17 +863,17 @@ def _groq_translate_batch(texts: list[str], target: str, source: str | None) -> 
         f"You are a professional subtitle translator. Translate each input line {src_clause}"
         f"into {tgt}. The input has exactly {len(texts)} lines separated by newlines. Output "
         f"EXACTLY {len(texts)} lines — one translation per input line, in the same order. Output "
-        f"ONLY the translated lines: no numbering, no commentary, no blank lines between them. "
+        f"ONLY the translated lines: no numbering, no commentary, no markdown, no blank lines between them. "
         f"If a line is untranslatable, output its best transliteration rather than dropping it.")
     user = "\n".join(texts)
     max_out_tokens = min(900, max(150, len(texts) * 35))
     for key in _key_order():
         try:
-            with httpx.Client(timeout=120) as c:
+            with httpx.Client(timeout=60) as c:
                 resp = c.post(
                     GROQ_CHAT_URL,
                     headers={"Authorization": f"Bearer {key}"},
-                    json={"model": GROQ_TRANSLATE_MODEL, "temperature": 0,
+                    json={"model": GROQ_TRANSLATE_MODEL, "temperature": 0.1,
                           "max_tokens": max_out_tokens,
                           "messages": [{"role": "system", "content": system},
                                        {"role": "user", "content": user}]},
@@ -885,8 +888,10 @@ def _groq_translate_batch(texts: list[str], target: str, source: str | None) -> 
             lines = content.split("\n")
             while lines and lines[-1].strip() == "":  # trim trailing formatting blanks only
                 lines.pop()
+            if len(lines) == len(texts) + 1 and any(w in lines[0].lower() for w in ("here", "translation", "terjemahan", ":")):
+                lines.pop(0)
             if len(lines) == len(texts):
-                log.info("Groq LLM translated %d lines → %s (Google failover)", len(texts), target)
+                log.info("Groq LLM translated %d lines → %s (%s)", len(texts), target, GROQ_TRANSLATE_MODEL)
                 return [(l.strip() or None) for l in lines]
             log.warning("Groq translate to %s line-count mismatch (%d vs %d) — unusable",
                         target, len(lines), len(texts))
@@ -895,6 +900,126 @@ def _groq_translate_batch(texts: list[str], target: str, source: str | None) -> 
             log.warning("Groq translate to %s failed on key …%s: %s", target, key[-4:], e)
             continue
     return [None] * len(texts)
+
+
+def _groq_translate_batch(texts: list[str], target: str, source: str | None) -> list[str | None]:
+    """Translate lines via Groq, chunking into <=25 lines per call to satisfy the 1000 OTPM ceiling."""
+    if not (GROQ_TRANSLATE and GROQ_API_KEYS and texts):
+        return [None] * len(texts)
+    CHUNK = 25
+    if len(texts) <= CHUNK:
+        return _groq_translate_subbatch(texts, target, source)
+    res: list[str | None] = []
+    for i in range(0, len(texts), CHUNK):
+        chunk = texts[i:i + CHUNK]
+        res.extend(_groq_translate_subbatch(chunk, target, source))
+    return res
+
+
+_gemini_key_index = 0
+
+
+def _gemini_key_order(start: int | None = None) -> list[str]:
+    """Rotate Gemini API keys across calls."""
+    global _gemini_key_index
+    if not GEMINI_API_KEYS:
+        return []
+    if start is None:
+        start = _gemini_key_index
+        _gemini_key_index += 1
+    start %= len(GEMINI_API_KEYS)
+    return GEMINI_API_KEYS[start:] + GEMINI_API_KEYS[:start]
+
+
+def _gemini_translate_subbatch(texts: list[str], target: str, source: str | None) -> list[str | None]:
+    """Translate a sub-batch (<=25 lines) of subtitle lines via Google Gemini Flash API.
+    Returns a same-length list (None where translation failed)."""
+    if not (GEMINI_TRANSLATE and GEMINI_API_KEYS and texts):
+        return [None] * len(texts)
+    tgt = _ISO_TO_LANG_NAME.get(target, target)
+    src = _ISO_TO_LANG_NAME.get(source or "", None)
+    src_clause = f"from {src} " if src else ""
+    system = (
+        f"You are a professional subtitle translator. Translate each input line {src_clause}"
+        f"into {tgt}. The input has exactly {len(texts)} lines separated by newlines. Output "
+        f"EXACTLY {len(texts)} lines — one translation per input line, in the same order. Output "
+        f"ONLY the translated lines: no numbering, no commentary, no markdown, no blank lines between them. "
+        f"If a line is untranslatable, output its best transliteration rather than dropping it."
+    )
+    user = "\n".join(texts)
+    payload = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": [{"parts": [{"text": user}]}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2048},
+    }
+    for key in _gemini_key_order():
+        for model in GEMINI_MODELS:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            try:
+                with httpx.Client(timeout=60) as c:
+                    resp = c.post(
+                        url,
+                        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                        json=payload,
+                    )
+                if resp.status_code == 429:
+                    log.warning("Gemini 429 (rate limit) on key …%s model %s — rotating key", key[-4:], model)
+                    break
+                if resp.status_code == 404:
+                    continue  # model not found / deprecated → try next model
+                if resp.status_code == 400 and "system_instruction" in resp.text:
+                    # Fallback for models without system_instruction support
+                    with httpx.Client(timeout=60) as c:
+                        fallback_payload = {
+                            "contents": [{"parts": [{"text": f"{system}\n\n{user}"}]}],
+                            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2048},
+                        }
+                        resp = c.post(
+                            url,
+                            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                            json=fallback_payload,
+                        )
+                resp.raise_for_status()
+                data = resp.json()
+                candidates = data.get("candidates") or []
+                if not candidates:
+                    continue
+                parts = (candidates[0].get("content") or {}).get("parts") or []
+                if not parts:
+                    continue
+                content = (parts[0].get("text") or "").strip("\n")
+                if content.startswith("```"):
+                    content = re.sub(r"^```[a-zA-Z]*\n?", "", content)
+                    content = re.sub(r"\n?```$", "", content).strip("\n")
+                lines = content.split("\n")
+                while lines and lines[-1].strip() == "":
+                    lines.pop()
+                if len(lines) == len(texts) + 1 and any(w in lines[0].lower() for w in ("here", "translation", "terjemahan", ":")):
+                    lines.pop(0)
+                if len(lines) == len(texts):
+                    log.info("Gemini LLM translated %d lines → %s (%s)", len(texts), target, model)
+                    return [(l.strip() or None) for l in lines]
+                log.warning("Gemini translate to %s line-count mismatch (%d vs %d) — unusable",
+                            target, len(lines), len(texts))
+                return [None] * len(texts)
+            except Exception as e:
+                log.warning("Gemini translate (%s) to %s failed on key …%s: %s", model, target, key[-4:], e)
+                continue
+    return [None] * len(texts)
+
+
+def _gemini_translate_batch(texts: list[str], target: str, source: str | None) -> list[str | None]:
+    """Translate lines via Gemini Flash, chunking into <=25 lines per call for alignment precision."""
+    if not (GEMINI_TRANSLATE and GEMINI_API_KEYS and texts):
+        return [None] * len(texts)
+    CHUNK = 25
+    if len(texts) <= CHUNK:
+        return _gemini_translate_subbatch(texts, target, source)
+    res: list[str | None] = []
+    for i in range(0, len(texts), CHUNK):
+        chunk = texts[i:i + CHUNK]
+        res.extend(_gemini_translate_subbatch(chunk, target, source))
+    return res
 
 
 # Latin-script target languages: a correct translation into these is (near) all Latin letters. A
@@ -943,14 +1068,15 @@ def _make_translator(target: str, source: str | None):
 
 
 def _translate_segments(segments: list[dict], target: str, source: str | None = None) -> list[dict] | None:
-    """Translate segment texts to `target`, keeping timestamps. Runs in a thread (blocking lib).
+    """Translate segment texts to `target`, keeping timestamps. Runs in a thread.
 
-    Returns None when the result isn't a usable translation (library missing, or essentially no
-    segment actually translated). Crucially it NEVER passes the original-language text through as
-    a "translation": a segment that fails to translate is DROPPED, not emitted verbatim — so we
-    can't end up with an EN/ID track that secretly contains the original language. The `source`
-    language is used (not auto-detect) because auto silently no-ops on some content — see
-    `_make_translator`.
+    Multi-tier translation pipeline:
+    Tier 1: Google Gemini Flash LLM (if GEMINI_API_KEYS is configured)
+    Tier 2: Groq Qwen chat model (if GROQ_API_KEYS is configured)
+    Tier 3: Google Translate (deep-translator web scraping fallback)
+
+    Crucially it NEVER passes original-language text through as a translation: any segment that
+    fails to translate or leaks foreign script is DROPPED, so an EN/ID track never contains foreign text.
     """
     if not segments:
         return None
@@ -958,51 +1084,68 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
     try:
         translator = _make_translator(target, source)
     except Exception as e:  # noqa: BLE001
-        log.warning("deep-translator not available (%s) — skipping %s track", e, target)
-        return None
+        log.warning("deep-translator not available (%s) — will rely on LLM translators", e)
+        translator = None
 
     SEP = "\n"
-    CHAR_BUDGET = 3500
+    CHAR_BUDGET = 2500
 
     def _google_batch(texts: list[str]) -> list[str | None]:
         """Translate a batch via Google → same-length list; a failed item is None (never the original)."""
-        if not texts:
-            return []
+        if not texts or not translator:
+            return [None] * len(texts)
         joined = SEP.join(texts)
-        for attempt in range(5):
+        for attempt in range(2):
             try:
                 res = translator.translate(joined)
                 if res:
                     parts = [p.strip() for p in res.split(SEP)]
                     if len(parts) == len(texts):
                         return parts
-                    log.warning("Batch translate to %s size mismatch (expected %d, got %d) - attempt %d/5",
+                    log.warning("Batch translate to %s size mismatch (expected %d, got %d) - attempt %d/2",
                                 target, len(texts), len(parts), attempt + 1)
-                    time.sleep(2)
+                    time.sleep(1)
             except Exception as e:  # noqa: BLE001
-                log.warning("Batch translate to %s failed (%s) - attempt %d/5", target, e, attempt + 1)
-                time.sleep(2)
+                log.warning("Batch translate to %s failed (%s) - attempt %d/2", target, e, attempt + 1)
+                time.sleep(1)
 
-        # Do not hammer Google with slow per-item requests when rate-limited;
-        # immediately return None so the Groq LLM failover handles it in seconds.
-        log.warning("Batch translate to %s throttled on Google — delegating to Groq LLM failover", target)
+        log.warning("Batch translate to %s failed on Google Translate fallback", target)
         return [None] * len(texts)
 
     def translate_batch(texts: list[str]) -> list[str | None]:
-        """Translate a batch → same-length list. Google first; any line Google couldn't translate
-        (None) is retried via the Groq LLM failover so a throttled/echoing Google no longer drops
-        whole tracks. A failed item stays None (never the original text)."""
-        res = _google_batch(texts)
-        # A slot is "missing" if Google failed (None) OR returned a wrong-script echo (e.g. Korean
-        # text in an EN track) — both get re-translated by the reliable Groq LLM.
+        """Multi-tier subtitle translation:
+        Tier 1: Google Gemini Flash LLM
+        Tier 2: Groq Qwen chat model
+        Tier 3: Google Translate (deep-translator fallback)
+        Any slot that still fails stays None (never leaking foreign text).
+        """
+        if not texts:
+            return []
+
+        res: list[str | None] = [None] * len(texts)
+
+        # Tier 1: Gemini Flash LLM
+        if GEMINI_TRANSLATE and GEMINI_API_KEYS:
+            res = _gemini_translate_batch(texts, target, source)
+
+        # Tier 2: Groq Qwen LLM failover
         missing = [i for i, v in enumerate(res)
                    if not v or not str(v).strip() or _bad_target_script(str(v), target)]
-        if missing:
-            filled = _groq_translate_batch([texts[i] for i in missing], target, source)
-            for i, val in zip(missing, filled):
-                # Accept the Groq result only if it's a real, right-script translation; otherwise
-                # drop the slot (None) so a wrong-language caption is never shown.
-                res[i] = val if (val and val.strip() and not _bad_target_script(val, target)) else None
+        if missing and GROQ_TRANSLATE and GROQ_API_KEYS:
+            groq_filled = _groq_translate_batch([texts[i] for i in missing], target, source)
+            for i, val in zip(missing, groq_filled):
+                if val and val.strip() and not _bad_target_script(val, target):
+                    res[i] = val
+
+        # Tier 3: Google Translate web scraping fallback
+        missing = [i for i, v in enumerate(res)
+                   if not v or not str(v).strip() or _bad_target_script(str(v), target)]
+        if missing and translator:
+            google_filled = _google_batch([texts[i] for i in missing])
+            for i, val in zip(missing, google_filled):
+                if val and val.strip() and not _bad_target_script(val, target):
+                    res[i] = val
+
         return res
 
     translated: list[dict] = []
@@ -1028,11 +1171,14 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
     batch: list[dict] = []
     batch_len = 0
     for seg in segments:
-        t = seg["text"]
+        t = (seg.get("text") or "").replace("\r\n", " ").replace("\n", " ").strip()
+        if not t:
+            continue
+        seg_clean = dict(seg, text=t)
         if batch and batch_len + len(t) > CHAR_BUDGET:
             flush(batch)
             batch, batch_len = [], 0
-        batch.append(seg)
+        batch.append(seg_clean)
         batch_len += len(t) + 1
     flush(batch)
 

@@ -115,7 +115,7 @@ goto :feat_done
 call :setflag STREAM_LOCAL_ORIGINAL 1
 call :setflag VIDEO_COMPRESS 1
 call :setflag SUBTITLE_GEN 1
-echo [ok] All optional features on - add CapCut cookies or set GROQ_API_KEYS in bot\.env.
+echo [ok] All optional features on - add CapCut cookies or set GROQ_API_KEYS / GEMINI_API_KEYS in bot\.env.
 goto :feat_done
 
 :feat_pick
@@ -137,7 +137,7 @@ call :setflag VIDEO_COMPRESS 0
 call :ask "  Automatic subtitles (CapCut Web / Groq Whisper STT + translation)? [y/N] "
 if /i not "!ANS!"=="y" goto :feat_nosubs
 call :setflag SUBTITLE_GEN 1
-echo   [!] Add CapCut cookies or set GROQ_API_KEYS in bot\.env, or subtitle generation stays idle.
+echo   [!] Add CapCut cookies or set GROQ_API_KEYS / GEMINI_API_KEYS in bot\.env, or subtitle generation stays idle.
 goto :feat_done
 
 :feat_nosubs
