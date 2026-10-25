@@ -87,10 +87,24 @@ function postChunk(
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     xhr.responseType = "text";
+
+    // Inactivity timeout: if network stalls for > 45s without byte progress, abort so retry/resume kicks in
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const resetTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        try { xhr.abort(); } catch { /* ignore */ }
+        reject(new Error("Upload timed out (no network progress for 45s)."));
+      }, 45000);
+    };
+    resetTimer();
+
     xhr.upload.onprogress = (e) => {
+      resetTimer();
       if (e.lengthComputable) onBytes(e.loaded);
     };
     xhr.onload = () => {
+      if (timer) clearTimeout(timer);
       let parsed: unknown = null;
       let parseErr = false;
       resolve({
@@ -108,16 +122,29 @@ function postChunk(
         },
       });
     };
-    xhr.onerror = () => reject(new Error("network error"));
-    xhr.ontimeout = () => reject(new Error("timeout"));
+    xhr.onerror = () => {
+      if (timer) clearTimeout(timer);
+      reject(new Error("network error"));
+    };
+    xhr.ontimeout = () => {
+      if (timer) clearTimeout(timer);
+      reject(new Error("timeout"));
+    };
     // Bridge the caller's AbortController to xhr.abort() (pause/cancel).
     if (ac.signal.aborted) {
+      if (timer) clearTimeout(timer);
       xhr.abort();
       reject(new Error("aborted"));
       return;
     }
-    ac.signal.addEventListener("abort", () => xhr.abort(), { once: true });
-    xhr.onabort = () => reject(new Error("aborted"));
+    ac.signal.addEventListener("abort", () => {
+      if (timer) clearTimeout(timer);
+      xhr.abort();
+    }, { once: true });
+    xhr.onabort = () => {
+      if (timer) clearTimeout(timer);
+      reject(new Error("aborted"));
+    };
     xhr.send(blob);
   });
 }

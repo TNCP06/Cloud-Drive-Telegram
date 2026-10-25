@@ -12,8 +12,20 @@ import { useUpload, type LocalItem } from "@/components/UploadProvider";
 // app's card/popup surfaces.
 export function FloatingUploadPanel() {
   const pathname = usePathname();
-  const { items, speed, runQueue, pauseRun, cancelRun, removeLocal, clearDone, running, readyCount, uploadingNow } =
-    useUpload();
+  const {
+    items,
+    speed,
+    runQueue,
+    pauseRun,
+    cancelRun,
+    retryItem,
+    retryAllFailed,
+    removeLocal,
+    clearDone,
+    running,
+    readyCount,
+    uploadingNow,
+  } = useUpload();
   const [open, setOpen] = useState(true);
   // Two tabs: "process" (in-flight + queued + failed) and "done" (handed off to Telegram).
   const [tab, setTab] = useState<"process" | "done">("process");
@@ -93,7 +105,7 @@ export function FloatingUploadPanel() {
         <>
           {/* Pause aborts the in-flight chunk (item back to Queued; resume continues from the
               server's offset). Stop ends the whole run; queued items stay listed for removal. */}
-          {(uploadingNow || (!running && readyCount > 0)) && (
+          {(uploadingNow || (!running && readyCount > 0) || errored.length > 0) && (
             <div className="fup-actions">
               {uploadingNow ? (
                 <>
@@ -102,11 +114,15 @@ export function FloatingUploadPanel() {
                     <Icon name="close" size={13} /> Stop
                   </button>
                 </>
-              ) : (
+              ) : readyCount > 0 ? (
                 <button className="btn primary sm" onClick={() => runQueue()}>
                   <Icon name="play" size={13} /> Resume ({readyCount})
                 </button>
-              )}
+              ) : errored.length > 0 ? (
+                <button className="btn primary sm" onClick={retryAllFailed}>
+                  <Icon name="refresh" size={13} /> Retry all failed ({errored.length})
+                </button>
+              ) : null}
             </div>
           )}
           <div className="fup-tabs">
@@ -133,7 +149,7 @@ export function FloatingUploadPanel() {
                 <FloatingRow
                   key={it.id}
                   item={it}
-                  onRetry={() => runQueue()}
+                  onRetry={() => retryItem(it.id)}
                   onRemove={() => removeLocal(it.id)}
                 />
               ))
@@ -159,6 +175,7 @@ function FloatingRow({
   onRetry: () => void;
   onRemove: () => void;
 }) {
+  const [retrying, setRetrying] = useState(false);
   const pct = item.size ? Math.floor((item.sent / item.size) * 100) : 0;
   const label =
     item.stage === "ready"
@@ -168,6 +185,12 @@ function FloatingRow({
       : item.stage === "finalizing" || item.stage === "done"
       ? "Queued → Telegram"
       : "Failed";
+
+  const handleRetry = () => {
+    setRetrying(true);
+    onRetry();
+    setTimeout(() => setRetrying(false), 1500);
+  };
 
   return (
     <div className="fup-row">
@@ -182,18 +205,38 @@ function FloatingRow({
           </div>
         )}
         <div className="fup-row-meta">
-          {item.stage === "uploading"
-            ? `${fmtSize(item.sent)} / ${fmtSize(item.size)}`
-            : `${label} · ${fmtSize(item.size)}`}
+          {item.error ? (
+            <span
+              className={item.stage === "error" ? "fup-err-txt" : "fup-warn-txt"}
+              title={item.error}
+            >
+              {item.error}
+            </span>
+          ) : item.stage === "uploading" ? (
+            `${fmtSize(item.sent)} / ${fmtSize(item.size)}`
+          ) : (
+            `${label} · ${fmtSize(item.size)}`
+          )}
         </div>
       </div>
       {item.stage === "error" && (
-        <button className="fup-row-btn" onClick={onRetry} title="Retry">
-          <Icon name="upload" size={14} />
+        <button
+          className="fup-row-btn"
+          onClick={handleRetry}
+          disabled={retrying}
+          title="Retry upload"
+          aria-label="Retry upload"
+        >
+          {retrying ? <span className="spinner sm" /> : <Icon name="refresh" size={14} />}
         </button>
       )}
       {(item.stage === "error" || item.stage === "done" || item.stage === "ready") && (
-        <button className="fup-row-btn" onClick={onRemove} title={item.stage === "ready" ? "Cancel (remove from queue)" : "Remove"}>
+        <button
+          className="fup-row-btn"
+          onClick={onRemove}
+          title={item.stage === "ready" ? "Cancel (remove from queue)" : "Remove"}
+          aria-label="Remove item"
+        >
           <Icon name="close" size={14} />
         </button>
       )}

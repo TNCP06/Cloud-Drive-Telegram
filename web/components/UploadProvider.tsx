@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
+import { Icon } from "@/lib/icons";
 import type { Kind } from "@/lib/types";
 import { startUpload } from "@/app/actions";
 import {
@@ -85,9 +86,17 @@ interface UploadContextValue {
   // Bulk retry: every locally-failed item back to ready, then run. The server
   // side has its own bulk action (retryAllFailedUploads) for error jobs.
   retryAllFailed: () => void;
+  retryItem: (id: string) => void;
   removeLocal: (id: string) => void;
   updateLocal: (id: string, patch: Partial<LocalItem>) => void;
   clearDone: () => void;
+  notify: (message: string, type?: "info" | "error" | "success") => void;
+}
+
+export interface UploadToast {
+  id: string;
+  type: "info" | "error" | "success";
+  message: string;
 }
 
 const UploadContext = createContext<UploadContextValue | null>(null);
@@ -129,6 +138,16 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
   const [speed, setSpeed] = useState(0);
   const [running, setRunning] = useState(false);
   const [persistFailed, setPersistFailed] = useState(0);
+
+  // Global toast notifications for upload queue events (failures, retry attempts, handoffs)
+  const [toasts, setToasts] = useState<UploadToast[]>([]);
+  const notify = useCallback((message: string, type: "info" | "error" | "success" = "info") => {
+    const id = String(Date.now()) + Math.random().toString(36).slice(2, 6);
+    setToasts((prev) => [...prev.slice(-2), { id, type, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5000);
+  }, []);
 
   const runQueue = useCallback(async () => {
     if (runningRef.current) return;
@@ -181,6 +200,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
             /* ignore */
           }
           updateLocal(next.id, { stage: "done", jobId: res.jobId, handedOff: true, sent: next.size });
+          notify(`"${next.title || next.name}" selesai diunggah ke VPS.`, "success");
           if (res.jobId) {
             try {
               await startUpload(res.jobId);
@@ -192,6 +212,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
         } else {
           updateLocal(next.id, { stage: "error", error: res.error });
           markUploadErrored(next.token, true);
+          notify(`Gagal mengunggah "${next.title || next.name}": ${res.error}`, "error");
         }
       }
     } finally {
@@ -328,8 +349,35 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
         it.stage === "error" ? { ...it, stage: "ready" as const, error: undefined } : it
       )
     );
+    notify(`Mencoba ulang ${failed.length} unggahan yang gagal…`, "info");
+    if (runningRef.current && !itemsRef.current.some((i) => i.stage === "uploading")) {
+      runningRef.current = false;
+    }
     void runQueue();
-  }, [runQueue, setItems]);
+  }, [notify, runQueue, setItems]);
+
+  const retryItem = useCallback(
+    (id: string) => {
+      const it = itemsRef.current.find((i) => i.id === id);
+      if (!it) return;
+      if (!it.file) {
+        notify("File tidak tersedia dalam cache browser — silakan pilih ulang.", "error");
+        return;
+      }
+      void markUploadErrored(it.token, false);
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === id ? { ...item, stage: "ready" as const, error: undefined } : item
+        )
+      );
+      notify(`Mencoba mengunggah ulang "${it.title || it.name}"…`, "info");
+      if (runningRef.current && !itemsRef.current.some((i) => i.stage === "uploading")) {
+        runningRef.current = false;
+      }
+      void runQueue();
+    },
+    [notify, runQueue, setItems]
+  );
 
   const removeLocal = useCallback(
     (id: string) => {
@@ -383,13 +431,38 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
     pauseRun,
     cancelRun,
     retryAllFailed,
+    retryItem,
     removeLocal,
     updateLocal: persistMeta,
     clearDone,
+    notify,
   }), [items, speed, running, readyCount, uploadingNow, activeCount, persistFailed,
-       addFiles, runQueue, pauseRun, cancelRun, retryAllFailed, removeLocal, persistMeta, clearDone]);
+       addFiles, runQueue, pauseRun, cancelRun, retryAllFailed, retryItem, removeLocal, persistMeta, clearDone, notify]);
 
-  return <UploadContext.Provider value={value}>{children}</UploadContext.Provider>;
+  return (
+    <UploadContext.Provider value={value}>
+      {children}
+      {toasts.length > 0 && (
+        <div className="pill-stack" style={{ zIndex: 360 }}>
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className={"saving-pill" + (t.type === "error" ? " err" : "")}
+              role="alert"
+              onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+              style={{ cursor: "pointer" }}
+            >
+              <Icon
+                name={t.type === "error" ? "warn" : t.type === "success" ? "check" : "refresh"}
+                size={14}
+              />
+              <span>{t.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </UploadContext.Provider>
+  );
 }
 
 export function useUpload(): UploadContextValue {

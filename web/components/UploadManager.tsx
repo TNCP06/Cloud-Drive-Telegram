@@ -69,8 +69,10 @@ export function UploadManager({
     runQueue,
     pauseRun,
     cancelRun,
+    retryItem,
     removeLocal,
     updateLocal,
+    notify,
   } = useUpload();
 
   const addFiles = (files: File[], folder: boolean) =>
@@ -316,7 +318,7 @@ export function UploadManager({
                   tags={allTags}
                   speed={speed}
                   onEdit={(patch) => updateLocal(it.id, patch)}
-                  onStart={() => runQueue()}
+                  onStart={() => (it.stage === "error" ? retryItem(it.id) : runQueue())}
                   onRemove={() => removeLocal(it.id)}
                 />
               ))}
@@ -327,7 +329,17 @@ export function UploadManager({
                   tags={allTags}
                   onCancel={() => startTransition(() => cancelUpload(j.id))}
                   onStart={() => startTransition(() => startUpload(j.id))}
-                  onRetry={() => startTransition(() => retryUpload(j.id))}
+                  onRetry={() =>
+                    startTransition(async () => {
+                      try {
+                        await retryUpload(j.id);
+                        notify(`Meminta coba ulang untuk "${j.title || j.sourcePath}"…`, "info");
+                        router.refresh();
+                      } catch (e) {
+                        notify(e instanceof Error ? e.message : "Gagal mencoba ulang server job.", "error");
+                      }
+                    })
+                  }
                   onSaveMeta={(title, tags) =>
                     startTransition(async () => {
                       await updateUploadJob(j.id, { title, tags });
@@ -377,6 +389,7 @@ function LocalRow({
   onStart: () => void;
   onRemove: () => void;
 }) {
+  const [retrying, setRetrying] = useState(false);
   const pct = item.size ? Math.floor((item.sent / item.size) * 100) : 0;
   const badge =
     item.stage === "ready" ? "Ready"
@@ -386,11 +399,21 @@ function LocalRow({
   const badgeClass =
     item.stage === "error" ? "st-error" : item.stage === "ready" ? "st-queued" : "st-running";
 
+  const handleStartOrRetry = () => {
+    if (item.stage === "error") {
+      setRetrying(true);
+      onStart();
+      setTimeout(() => setRetrying(false), 1500);
+    } else {
+      onStart();
+    }
+  };
+
   return (
     <div className="up-job">
       <div className={"up-badge " + badgeClass}>{badge}</div>
       <div className="up-job-main">
-        {item.stage === "ready" ? (
+        {item.stage === "ready" && item.sent === 0 && !item.error ? (
           <div className="up-edit">
             <input
               className="input"
@@ -425,14 +448,37 @@ function LocalRow({
             <div className="up-job-time">{fmtSize(item.sent)} / {fmtSize(item.size)}{speed > 0 ? ` · ${fmtSize(speed)}/s` : ""}</div>
           </>
         )}
-        {item.stage === "ready" && (
+        {item.stage === "ready" && item.sent === 0 && !item.error && (
           <div style={{ display: "flex", gap: 6 }}>
             <button className="btn primary sm" onClick={onStart}>Start</button>
             <button className="btn subtle sm" onClick={onRemove}>Remove</button>
           </div>
         )}
+        {item.stage === "ready" && (item.sent > 0 || !!item.error) && (
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span className="spinner sm" />
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>Resuming…</span>
+          </div>
+        )}
         {item.stage === "error" && (
-          <button className="btn primary sm" onClick={onStart}>Retry</button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              className="btn primary sm"
+              onClick={handleStartOrRetry}
+              disabled={retrying}
+            >
+              {retrying ? (
+                <>
+                  <span className="spinner sm" /> Retrying…
+                </>
+              ) : (
+                <>
+                  <Icon name="refresh" size={13} /> Retry
+                </>
+              )}
+            </button>
+            <button className="btn subtle sm" onClick={onRemove}>Remove</button>
+          </div>
         )}
         {(item.stage === "finalizing" || item.stage === "done") && <span className="spinner sm" />}
       </div>
@@ -456,8 +502,15 @@ function JobRow({
   onSaveMeta: (title: string, tags: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [eTitle, setETitle] = useState(job.title);
   const [eTags, setETags] = useState(job.tags || "");
+
+  const handleRetry = () => {
+    setRetrying(true);
+    onRetry();
+    setTimeout(() => setRetrying(false), 2000);
+  };
 
   return (
     <div className="up-job">
@@ -511,7 +564,21 @@ function JobRow({
             <button className="btn subtle sm" onClick={onCancel}>Cancel</button>
           )}
           {job.status === "error" && (
-            <button className="btn primary sm" onClick={onRetry}>Retry</button>
+            <button
+              className="btn primary sm"
+              onClick={handleRetry}
+              disabled={retrying}
+            >
+              {retrying ? (
+                <>
+                  <span className="spinner sm" /> Retrying…
+                </>
+              ) : (
+                <>
+                  <Icon name="refresh" size={13} /> Retry
+                </>
+              )}
+            </button>
           )}
         </div>
       )}

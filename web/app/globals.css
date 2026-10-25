@@ -1612,11 +1612,14 @@ a:focus-visible,
 .fup-row-bar { height: 4px; border-radius: 99px; background: var(--line); overflow: hidden; margin: 5px 0 3px; }
 .fup-row-bar > span { display: block; height: 100%; background: var(--accent); transition: width .15s linear; }
 .fup-row-meta { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.fup-err-txt { color: #B23A2E; font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fup-warn-txt { color: var(--gold); font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fup-row-btn {
   flex: none; width: 26px; height: 26px; display: grid; place-items: center;
   background: none; border: 0; border-radius: 7px; color: var(--muted); cursor: pointer;
 }
 .fup-row-btn:hover { background: var(--card); color: var(--ink); }
+.fup-row-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .fup-clear {
   display: inline-flex; align-items: center; gap: 6px; align-self: center;
   margin: 4px auto 2px; padding: 6px 12px; border-radius: 99px; cursor: pointer;
