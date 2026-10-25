@@ -627,10 +627,9 @@ async def resolve_file_id_via_forwarding(channel_msg_id: int, part_id: int) -> s
 # ---------------------------------------------------------------------------
 # Helpers — Telegram download
 # ---------------------------------------------------------------------------
-async def _get_tg_message(channel_msg_id: int):
-
+async def _get_tg_message(channel_msg_id: int, force_refresh: bool = False):
     """Get a Telegram message, using the in-memory cache."""
-    if channel_msg_id in _msg_cache:
+    if not force_refresh and channel_msg_id in _msg_cache:
         msg = _msg_cache.pop(channel_msg_id)
         _msg_cache[channel_msg_id] = msg
         return msg
@@ -791,13 +790,26 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                                 raise asyncio.CancelledError()
                             await asyncio.sleep(1)
                     except Exception as e:
-                        log.error("Telegram download error on bypass chunk %d: %s", chunk_index, e)
+                        is_fileref = (
+                            isinstance(e, (telethon.errors.FileReferenceExpiredError, telethon.errors.FilerefUpgradeNeededError))
+                            or "file reference has expired" in str(e).lower()
+                            or "fileref" in str(e).lower()
+                        )
+                        if is_fileref:
+                            log.warning("Telegram file reference expired on bypass chunk %d (msg %d). Refreshing message...", chunk_index, channel_msg_id)
+                            try:
+                                msg = await _get_tg_message(channel_msg_id, force_refresh=True)
+                            except Exception as ref_err:  # noqa: BLE001
+                                log.error("Failed to refresh message %d: %s", channel_msg_id, ref_err)
+                        else:
+                            log.error("Telegram download error on bypass chunk %d: %s", chunk_index, e)
                         if attempt == 4:
                             raise
-                        for _ in range(2):
+                        sleep_dur = 0.1 if is_fileref else 1.0
+                        for _ in range(int(sleep_dur * 10)):
                             if request and await request.is_disconnected():
                                 raise asyncio.CancelledError()
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(0.1)
                 raise RuntimeError(f"Failed to stream chunk {chunk_index} after 5 attempts")
 
             # Evict cache if needed
@@ -887,13 +899,26 @@ async def _ensure_chunk_stream(part_id: int, channel_msg_id: int, chunk_index: i
                         await asyncio.sleep(1)
                 except Exception as e:
                     file_mode = "ab"
-                    log.error("Telegram download error on chunk %d: %s", chunk_index, e)
+                    is_fileref = (
+                        isinstance(e, (telethon.errors.FileReferenceExpiredError, telethon.errors.FilerefUpgradeNeededError))
+                        or "file reference has expired" in str(e).lower()
+                        or "fileref" in str(e).lower()
+                    )
+                    if is_fileref:
+                        log.warning("Telegram file reference expired on chunk %d (msg %d). Refreshing message...", chunk_index, channel_msg_id)
+                        try:
+                            msg = await _get_tg_message(channel_msg_id, force_refresh=True)
+                        except Exception as ref_err:  # noqa: BLE001
+                            log.error("Failed to refresh message %d: %s", channel_msg_id, ref_err)
+                    else:
+                        log.error("Telegram download error on chunk %d: %s", chunk_index, e)
                     if attempt == 4:
                         raise
-                    for _ in range(2):
+                    sleep_dur = 0.1 if is_fileref else 1.0
+                    for _ in range(int(sleep_dur * 10)):
                         if request and await request.is_disconnected():
                             raise asyncio.CancelledError()
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(0.1)
             raise RuntimeError(f"Failed to download chunk {chunk_index} after 5 attempts")
     finally:
         if request is not None:
