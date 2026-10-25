@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/lib/icons";
 import { SHORTCUTS, withShortcut } from "@/lib/shortcuts";
 
@@ -14,17 +14,19 @@ export function ThemeToggle() {
     setDark(document.documentElement.dataset.theme === "dark");
   }, []);
 
-  const toggle = () => {
-    const next = !dark;
-    setDark(next);
-    const t = next ? "dark" : "light";
-    document.documentElement.dataset.theme = t;
-    try {
-      localStorage.setItem("tcd_theme", t);
-    } catch {
-      /* ignore storage failures (private mode) */
-    }
-  };
+  const toggle = useCallback(() => {
+    setDark((prev) => {
+      const next = !prev;
+      const t = next ? "dark" : "light";
+      document.documentElement.dataset.theme = t;
+      try {
+        localStorage.setItem("tcd_theme", t);
+      } catch {
+        /* ignore storage failures (private mode) */
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -37,7 +39,7 @@ export function ThemeToggle() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dark]);
+  }, [toggle]);
 
   return (
     <button

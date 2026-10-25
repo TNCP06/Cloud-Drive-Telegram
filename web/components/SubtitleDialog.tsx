@@ -58,7 +58,6 @@ export function SubtitleDialog({
   const dialogRef = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<TabMode>("tracks");
   const [tracks, setTracks] = useState<SubtitleTrack[]>([]);
-  const [langs, setLangs] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
@@ -94,7 +93,6 @@ export function SubtitleDialog({
         const rawTracks: SubtitleTrack[] = Array.isArray(data?.tracks)
           ? data.tracks
           : available.map((l) => ({ lang: l }));
-        setLangs(available);
         setTracks(rawTracks);
 
         if (available.length > 0) {
@@ -123,6 +121,58 @@ export function SubtitleDialog({
       alive = false;
     };
   }, []);
+
+  const startGenPolling = useCallback(() => {
+    if (genPollRef.current) clearInterval(genPollRef.current);
+    genPollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/subtitles/${partId}/generate`);
+        const s: JobStatus = await r.json();
+        setGenJob(s);
+        if (s.status !== "running") {
+          if (genPollRef.current) {
+            clearInterval(genPollRef.current);
+            genPollRef.current = null;
+          }
+          if (s.status === "done") {
+            setMsg({ text: s.message || "Subtitles generated successfully!" });
+            loadTracks();
+            onAdded();
+          } else if (s.status === "error") {
+            setMsg({ text: s.message || "Subtitle generation failed.", error: true });
+          }
+        }
+      } catch {
+        // keep polling
+      }
+    }, 2500);
+  }, [loadTracks, onAdded, partId]);
+
+  const startExtractPolling = useCallback(() => {
+    if (extractPollRef.current) clearInterval(extractPollRef.current);
+    extractPollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/subtitles/${partId}/extract`);
+        const s: JobStatus = await r.json();
+        setExtract(s);
+        if (s.status !== "running") {
+          if (extractPollRef.current) {
+            clearInterval(extractPollRef.current);
+            extractPollRef.current = null;
+          }
+          if (s.status === "done") {
+            setMsg({ text: s.message || "Embedded subtitles extracted!" });
+            loadTracks();
+            onAdded();
+          } else if (s.status === "error") {
+            setMsg({ text: s.message || "Extraction failed.", error: true });
+          }
+        }
+      } catch {
+        // keep polling
+      }
+    }, 3000);
+  }, [loadTracks, onAdded, partId]);
 
   // Poll active jobs on mount
   useEffect(() => {
@@ -154,7 +204,7 @@ export function SubtitleDialog({
       if (genPollRef.current) clearInterval(genPollRef.current);
       if (extractPollRef.current) clearInterval(extractPollRef.current);
     };
-  }, [partId]);
+  }, [partId, startExtractPolling, startGenPolling]);
 
   // Keyboard navigation & Dialog Tab Trap (Invariant 11)
   useEffect(() => {
@@ -196,32 +246,6 @@ export function SubtitleDialog({
   }, [onClose]);
 
   // --- AI Generation Handlers ---
-  const startGenPolling = () => {
-    if (genPollRef.current) clearInterval(genPollRef.current);
-    genPollRef.current = setInterval(async () => {
-      try {
-        const r = await fetch(`/api/subtitles/${partId}/generate`);
-        const s: JobStatus = await r.json();
-        setGenJob(s);
-        if (s.status !== "running") {
-          if (genPollRef.current) {
-            clearInterval(genPollRef.current);
-            genPollRef.current = null;
-          }
-          if (s.status === "done") {
-            setMsg({ text: s.message || "Subtitles generated successfully!" });
-            loadTracks();
-            onAdded();
-          } else if (s.status === "error") {
-            setMsg({ text: s.message || "Subtitle generation failed.", error: true });
-          }
-        }
-      } catch {
-        // keep polling
-      }
-    }, 2500);
-  };
-
   const triggerGenerate = async () => {
     setBusy(true);
     setMsg(null);
@@ -358,32 +382,6 @@ export function SubtitleDialog({
     } finally {
       setBusy(false);
     }
-  };
-
-  const startExtractPolling = () => {
-    if (extractPollRef.current) clearInterval(extractPollRef.current);
-    extractPollRef.current = setInterval(async () => {
-      try {
-        const r = await fetch(`/api/subtitles/${partId}/extract`);
-        const s: JobStatus = await r.json();
-        setExtract(s);
-        if (s.status !== "running") {
-          if (extractPollRef.current) {
-            clearInterval(extractPollRef.current);
-            extractPollRef.current = null;
-          }
-          if (s.status === "done") {
-            setMsg({ text: s.message || "Embedded subtitles extracted!" });
-            loadTracks();
-            onAdded();
-          } else if (s.status === "error") {
-            setMsg({ text: s.message || "Extraction failed.", error: true });
-          }
-        }
-      } catch {
-        // keep polling
-      }
-    }, 3000);
   };
 
   const startExtract = async () => {

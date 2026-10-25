@@ -18,7 +18,7 @@ self.addEventListener('activate', (event) => {
       await self.clients.claim();
       try {
         indexedDB.deleteDatabase('video-cache-db');
-      } catch (_) {}
+      } catch {}
       // claim() makes this no-fetch-handler SW the controller, so video requests
       // already go straight to the network; unregister removes it entirely on the
       // next navigation.

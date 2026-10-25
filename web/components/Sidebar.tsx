@@ -300,8 +300,9 @@ function StorageDetail({
 
   // Restore focus to trigger button upon close
   useEffect(() => {
+    const triggerEl = triggerRef?.current;
     return () => {
-      triggerRef?.current?.focus({ preventScroll: true });
+      triggerEl?.focus({ preventScroll: true });
     };
   }, [triggerRef]);
 

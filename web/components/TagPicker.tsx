@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { Icon } from "@/lib/icons";
 import { TAG_COLORS, tagColorKey } from "@/lib/kinds";
 import type { Tag } from "@/lib/types";
@@ -34,6 +34,7 @@ export function TagPicker({
   suggestions: Tag[];
   placeholder?: string;
 }) {
+  const listboxId = useId();
   const selected = useMemo(() => parseNames(value), [value]);
   const [draft, setDraft] = useState("");
   const [open, setOpen] = useState(false);
@@ -158,10 +159,12 @@ export function TagPicker({
         ))}
         <input
           ref={inputRef}
+          role="combobox"
           value={draft}
           placeholder={selected.length ? "" : placeholder}
           aria-autocomplete="list"
           aria-expanded={open}
+          aria-controls={open ? listboxId : undefined}
           onChange={(e) => {
             setDraft(e.target.value);
             setHighlightIdx(-1);
@@ -178,7 +181,7 @@ export function TagPicker({
       </div>
 
       {open && totalCount > 0 && (
-        <div ref={menuRef} className="tagpick-menu scroll" role="listbox" tabIndex={-1}>
+        <div ref={menuRef} id={listboxId} className="tagpick-menu scroll" role="listbox" tabIndex={-1}>
           {matches.map((t, idx) => (
             <button
               type="button"

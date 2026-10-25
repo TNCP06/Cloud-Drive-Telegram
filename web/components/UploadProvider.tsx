@@ -220,7 +220,7 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
       setRunning(false);
       setSpeed(0);
     }
-  }, [router, updateLocal]);
+  }, [notify, router, updateLocal]);
 
   // Rehydrate the queue from IndexedDB on first mount and auto-resume any uploads
   // that were in flight (this is what makes a refresh non-destructive).
