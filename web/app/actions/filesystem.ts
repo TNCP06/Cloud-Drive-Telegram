@@ -18,8 +18,16 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
+// Prevent @vercel/nft from statically evaluating os.homedir() at build time
+// which triggers globbing of the entire user directory on Windows during standalone builds.
+function getHomeDir(): string {
+  const dynamicOs = os as unknown as Record<string, () => string>;
+  const prop = "homedir";
+  return dynamicOs[prop]();
+}
+
 async function buildShortcuts(): Promise<FsShortcut[]> {
-  const home = os.homedir();
+  const home = getHomeDir();
   const cands: FsShortcut[] = [
     { label: "Home", path: home },
     { label: "Desktop", path: path.join(home, "Desktop") },
@@ -46,7 +54,7 @@ const SKIP = new Set(["$RECYCLE.BIN", "System Volume Information", "$WinREAgent"
 
 export async function listDir(dirPath?: string): Promise<FsListing> {
   const shortcuts = await buildShortcuts();
-  let cwd = dirPath && dirPath.trim() ? dirPath.trim() : os.homedir();
+  let cwd = dirPath && dirPath.trim() ? dirPath.trim() : getHomeDir();
   cwd = path.resolve(cwd);
 
   let entries: FsEntry[] = [];

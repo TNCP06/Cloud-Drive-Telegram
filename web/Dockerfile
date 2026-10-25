@@ -1,10 +1,10 @@
 # Web (Next.js 15) — multi-stage build, standalone runtime.
-FROM node:20-slim AS deps
+FROM node:22-slim AS deps
 WORKDIR /app
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 
-FROM node:20-slim AS build
+FROM node:22-slim AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY web/ ./
@@ -18,7 +18,7 @@ ENV NEXT_PUBLIC_BOT_USERNAME=$NEXT_PUBLIC_BOT_USERNAME \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:20-slim AS run
+FROM node:22-slim AS run
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \

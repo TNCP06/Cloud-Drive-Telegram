@@ -32,11 +32,11 @@ if errorlevel 1 (
 )
 where node >nul 2>&1
 if errorlevel 1 (
-  echo [X] Node.js not found. Install Node 18+ from https://nodejs.org and re-run.
+  echo [X] Node.js not found. Install Node 22+ from https://nodejs.org and re-run.
   pause & exit /b 1
 )
 for /f "tokens=1" %%v in ('node --version') do set "NODE_VERSION=%%v"
-echo [ok] Node.js !NODE_VERSION! found. Node 20 LTS is recommended.
+echo [ok] Node.js !NODE_VERSION! found. Node 22 LTS is recommended.
 where npm >nul 2>&1
 if errorlevel 1 (
   echo [X] npm not found (comes with Node.js). Re-install Node and re-run.
