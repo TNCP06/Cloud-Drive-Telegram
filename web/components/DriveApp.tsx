@@ -949,9 +949,11 @@ export function DriveApp({
   // Group archives and media by family:
   // - archives: representative = version with the most recent upload (date_added).
   // - media: representative = variant with the highest quality/resolution (quality desc).
-  //   Guards applied to media:
-  //     (1) Duplicate resolution guard: no two files with the same quality.
-  //     (2) Size hierarchy guard: lower resolution cannot be significantly larger (>1.25x) than higher resolution.
+  //   Guards & isolation applied to media:
+  //     (1) Corrupt/stub guard: files < 64KB are isolated as standalone cards.
+  //     (2) Duplicate resolution guard: best variant kept in group, duplicates isolated.
+  //     (3) Size hierarchy guard: longest valid chain (lower.size <= higher.size * 1.25) collapsed together,
+  //         while broken/inconsistent variants are cleanly isolated without breaking the healthy group.
   type Collapsed = { list: DriveFile[]; counts: Map<string, number> };
   const collapseVersions = useCallback(
     (list: DriveFile[]): Collapsed => {
@@ -995,44 +997,110 @@ export function DriveApp({
           continue;
         }
 
-        // Guard 1: Duplicate resolution check
-        const seenQualities = new Set<number>();
-        let hasDuplicateQuality = false;
-        for (const f of filesInGroup) {
-          if (f.quality == null || seenQualities.has(f.quality)) {
-            hasDuplicateQuality = true;
-            break;
-          }
-          seenQualities.add(f.quality);
-        }
+        const MIN_VIDEO_BYTES = 64 * 1024; // 64 KB stub/corrupt threshold
 
-        // Guard 2: Size hierarchy sanity check
         const sortedByQ = [...filesInGroup].sort(
-          (a, b) => (b.quality ?? 0) - (a.quality ?? 0) || b.size - a.size
+          (a, b) => (b.quality ?? 0) - (a.quality ?? 0) || b.size - a.size || b.added - a.added
         );
-        let sizeInverted = false;
-        for (let i = 0; i < sortedByQ.length - 1; i++) {
-          const higher = sortedByQ[i];
-          const lower = sortedByQ[i + 1];
-          // If lower quality is >25% larger than higher quality, likely different video
-          if (lower.size > higher.size * 1.25) {
-            sizeInverted = true;
-            break;
+
+        // Separate obvious corrupt/stub files (< 64KB) from viable candidates
+        const corruptOutliers: DriveFile[] = [];
+        const validSizeCandidates: DriveFile[] = [];
+        for (const f of sortedByQ) {
+          if (f.size < MIN_VIDEO_BYTES) {
+            corruptOutliers.push(f);
+          } else {
+            validSizeCandidates.push(f);
           }
         }
 
-        // If either guard fails, abort collapsing: display each file individually
-        if (hasDuplicateQuality || sizeInverted) {
+        // Deduplicate qualities: keep the largest/newest for each quality level
+        const qualityMap = new Map<number, DriveFile>();
+        const duplicateOutliers: DriveFile[] = [];
+        for (const f of validSizeCandidates) {
+          if (f.quality == null) {
+            duplicateOutliers.push(f);
+            continue;
+          }
+          if (!qualityMap.has(f.quality)) {
+            qualityMap.set(f.quality, f);
+          } else {
+            duplicateOutliers.push(f);
+          }
+        }
+
+        const uniqueCandidates = Array.from(qualityMap.values());
+        const n = uniqueCandidates.length;
+
+        // Longest Valid Chain (size hierarchy check: lower.size <= higher.size * 1.25)
+        let validChain: DriveFile[] = [];
+        const hierarchyOutliers: DriveFile[] = [];
+
+        if (n >= 2) {
+          const dp: { len: number; totalSize: number; prev: number }[] = [];
+          for (let i = 0; i < n; i++) {
+            dp[i] = { len: 1, totalSize: uniqueCandidates[i].size, prev: -1 };
+            for (let j = 0; j < i; j++) {
+              const higher = uniqueCandidates[j];
+              const lower = uniqueCandidates[i];
+              if (lower.size <= higher.size * 1.25) {
+                const newLen = dp[j].len + 1;
+                const newSize = dp[j].totalSize + lower.size;
+                if (newLen > dp[i].len || (newLen === dp[i].len && newSize > dp[i].totalSize)) {
+                  dp[i] = { len: newLen, totalSize: newSize, prev: j };
+                }
+              }
+            }
+          }
+
+          let bestIdx = 0;
+          for (let i = 1; i < n; i++) {
+            if (
+              dp[i].len > dp[bestIdx].len ||
+              (dp[i].len === dp[bestIdx].len && dp[i].totalSize > dp[bestIdx].totalSize)
+            ) {
+              bestIdx = i;
+            }
+          }
+
+          if (dp[bestIdx].len >= 2) {
+            const chainIndices: number[] = [];
+            let curr = bestIdx;
+            while (curr !== -1) {
+              chainIndices.push(curr);
+              curr = dp[curr].prev;
+            }
+            chainIndices.reverse();
+            const chainSet = new Set(chainIndices);
+            validChain = chainIndices.map((idx) => uniqueCandidates[idx]);
+            for (let i = 0; i < n; i++) {
+              if (!chainSet.has(i)) {
+                hierarchyOutliers.push(uniqueCandidates[i]);
+              }
+            }
+          }
+        }
+
+        // If at least 2 variants form a valid cohesive group, collapse them and isolate outliers
+        if (validChain.length >= 2) {
+          counts.set(fKey, validChain.length);
+          const rep = { ...validChain[0], variants: validChain };
+          out.push(rep);
+
+          const allOutliers = [...corruptOutliers, ...duplicateOutliers, ...hierarchyOutliers];
+          for (const outlier of allOutliers) {
+            out.push({
+              ...outlier,
+              familyKey: `${outlier.familyKey}#isolated-${outlier.id}`,
+              variants: undefined,
+            });
+          }
+        } else {
+          // No valid multi-quality group can be formed: display all files individually
           for (const f of filesInGroup) {
             out.push(f);
           }
-          continue;
         }
-
-        // All guards passed: collapse into representative (highest quality)
-        counts.set(fKey, filesInGroup.length);
-        const rep = { ...sortedByQ[0], variants: sortedByQ };
-        out.push(rep);
       }
 
       out.sort((a, b) => SORTS[sort].fn(a, b, sortOrder));
