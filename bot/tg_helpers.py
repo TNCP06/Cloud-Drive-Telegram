@@ -110,10 +110,15 @@ def get_file_id(message) -> str | None:
     return None
 
 
-META_LABEL_RE = re.compile(
-    r"^(?:原创|原創|类型|類型|编号|編號|标签|標籤|解压密码|解压码|密码|提取码|频道|群组|作者|出处|来源|资源|格式|大小|时长|分辨率|更多|关注|备用|防走丢|商务|合作|source|author|channel|password|pass|code|size|type|id)\s*[:：]",
+TITLE_LABEL_RE = re.compile(
+    r"^(?:片名|影片|名称|名稱|标题|標題|剧名|劇名|视频|視頻|电影|電影|title|name)\s*[:：]\s*",
     re.IGNORECASE,
 )
+META_LABEL_RE = re.compile(
+    r"^(?:原创|原創|类型|類型|类别|類別|分类|分類|编号|編號|番号|标签|標籤|平台|演员|演員|主演|女优|女優|模特|角色|解压密码|解压码|密码|提取码|频道|群组|作者|出处|来源|资源|格式|大小|时长|分辨率|清晰度|画质|畫質|地区|地區|语言|語言|发行|發行|制作|製作|日期|更多|关注|备用|防走丢|商务|合作|source|author|channel|password|pass|code|size|type|id|actor|actress|platform|category)\s*[:：]",
+    re.IGNORECASE,
+)
+EMPTY_LABEL_RE = re.compile(r"^[\w\s-]{1,25}\s*[:：]\s*$")
 PROMO_LINE_RE = re.compile(
     r"(?:点击(?:加入|下载|关注|查看|获取)|更多(?:精彩|资源)|商务合作|防走丢|永久(?:地址|域名|回家)|官方(?:频道|群组|发布页)|交流群|发布频道)",
     re.IGNORECASE,
@@ -146,8 +151,9 @@ def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
             raw_tags.append(t)
     tags: list[str] = list(dict.fromkeys(raw_tags))
 
-    # 2. Extract title: scan lines from top to bottom
-    title = None
+    # 2. Extract title: scan lines for explicit title or first solid line
+    explicit_title = None
+    first_solid_title = None
     meta_fallback = None
     for line in text.splitlines():
         # Remove URLs and telegram username handles
@@ -174,15 +180,29 @@ def extract_caption_meta(caption: str | None) -> tuple[str | None, list[str]]:
         if PROMO_LINE_RE.search(cleaned):
             continue
 
+        # Skip empty label stubs whose content was stripped (e.g. "平台：", "类别：", "Tags:")
+        if EMPTY_LABEL_RE.match(cleaned):
+            continue
+
+        # Check for explicit title prefix (e.g. "片名：", "Title: ")
+        m_title = TITLE_LABEL_RE.match(cleaned)
+        if m_title:
+            val = cleaned[m_title.end():].strip(" -|/")
+            if val and re.search(r"[^\W_]", val):
+                explicit_title = val[:120].strip(" -|/")
+                break
+
         # Check if it is a metadata label line (e.g. 原创：... or 类型：...)
         if META_LABEL_RE.search(cleaned):
             if not meta_fallback:
                 meta_fallback = cleaned[:120].strip(" -|/")
             continue
 
-        # Found a solid meaningful line
-        title = cleaned[:120].strip(" -|/")
-        break
+        # Candidate solid line (first meaningful non-metadata line)
+        if not first_solid_title:
+            first_solid_title = cleaned[:120].strip(" -|/")
+
+    title = explicit_title or first_solid_title
 
     # If no descriptive title found, try metadata line fallback if available
     if not title and meta_fallback:

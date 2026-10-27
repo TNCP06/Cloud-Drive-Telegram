@@ -221,6 +221,23 @@ def test_derive_title_tags():
     assert t == "真实影片名称2026"
     assert g == "hd"
 
+    # Structured caption with empty label stubs (tags stripped) and explicit title line (片名)
+    structured_sample = (
+        "平台：#糖心 #糖心vlog\n"
+        "类别：#调教 #巨乳 #深喉 #骑乘 #反差\n"
+        "片名：绝色人妻偷情记 化身小母狗饥渴索精 打桩不停\n"
+        "演员：#美奈\n"
+        "时长：27:55"
+    )
+    t, g = tg_import._derive_title_tags(structured_sample, None, None)
+    assert t == "绝色人妻偷情记 化身小母狗饥渴索精 打桩不停"
+    assert g == "糖心, 糖心vlog, 调教, 巨乳, 深喉, 骑乘, 反差, 美奈"
+
+    # Explicit english Title: label
+    t, g = tg_import._derive_title_tags("Title: Secret Mission 2026 #action", None, None)
+    assert t == "Secret Mission 2026"
+    assert g == "action"
+
     # No caption at all → empty defaults (caller falls back to filename/date)
     t, g = tg_import._derive_title_tags("", None, None)
     assert t == "" and g == ""
