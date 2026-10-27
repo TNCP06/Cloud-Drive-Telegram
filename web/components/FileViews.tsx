@@ -464,8 +464,10 @@ function FileCardComponent({
         />
       )}
 
-      <div className="fname" title={item.name}>
-        {displayName(item, showExtensions)}
+      <div className="card-fname-wrap">
+        <div className="fname" title={item.name}>
+          {displayName(item, showExtensions)}
+        </div>
       </div>
       {showDetails && (
         <div className="meta">

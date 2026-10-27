@@ -2079,6 +2079,7 @@ export function DriveApp({
     prefs.compact ? "compact" : "",
     prefs.showCheckboxes ? "show-checks" : "",
     previewItem ? "in-preview" : "",
+    prefs.wrapNames === false ? "nowrap-names" : "wrap-names",
   ]
     .filter(Boolean)
     .join(" ");

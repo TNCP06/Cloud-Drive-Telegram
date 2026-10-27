@@ -498,7 +498,28 @@ a:focus-visible,
   position: relative; overflow: hidden;
 }
 .card .thumb .ftype { width: 40px; height: 40px; }
-.card .fname { font-size: 13.5px; font-weight: 500; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.card-fname-wrap { position: relative; min-height: 2.7em; }
+.card .fname {
+  font-size: 13.5px; font-weight: 500; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis; word-break: break-word; overflow-wrap: anywhere;
+  transition: color .12s;
+}
+.card:hover .card-fname-wrap .fname,
+.card:focus-visible .card-fname-wrap .fname {
+  position: absolute; top: -2px; left: -4px; right: -4px; z-index: 25;
+  -webkit-line-clamp: 6; background: var(--card);
+  padding: 2px 4px 4px 4px; border-radius: var(--r-sm);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+  border: 1px solid var(--line-2);
+}
+.app.nowrap-names .card-fname-wrap { min-height: auto; }
+.app.nowrap-names .card .fname { display: block; white-space: nowrap; }
+.app.nowrap-names .card:hover .card-fname-wrap .fname,
+.app.nowrap-names .card:focus-visible .card-fname-wrap .fname {
+  position: static; -webkit-line-clamp: unset; background: none; padding: 0;
+  border-radius: 0; box-shadow: none; border: none;
+}
 .card .meta { font-size: 11.5px; color: var(--faint); margin-top: 4px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .card .tagline { display: flex; gap: 5px; margin-top: 9px; flex-wrap: nowrap; overflow: hidden; }
 .card .tagline > * { flex-shrink: 0; }
@@ -543,7 +564,23 @@ a:focus-visible,
   transition: border-radius .14s, box-shadow .14s, background .14s;
 }
 .card.folder .folder-info { min-width: 0; flex: 1; }
-.card.folder .folder-info .fname { margin: 0; }
+.card.folder .folder-info .fname {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.app.nowrap-names .card.folder .folder-info .fname {
+  display: block;
+  white-space: nowrap;
+}
 .card.folder .folder-info .meta { margin-top: 2px; }
 .card.folder .folder-kebab {
   flex: none; width: 27px; height: 27px; border-radius: 7px;
@@ -580,7 +617,7 @@ a:focus-visible,
    =========================================================================== */
 .list { display: flex; flex-direction: column; }
 .list-head {
-  display: grid; grid-template-columns: 1fr 150px 120px 110px 40px;
+  display: grid; grid-template-columns: minmax(280px, 1.8fr) 140px 110px 100px 36px;
   gap: 14px; padding: 0 14px 10px; align-items: center;
   font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); font-weight: 600;
   border-bottom: 1px solid var(--line);
@@ -588,7 +625,7 @@ a:focus-visible,
 .list-head button { border: 0; background: none; cursor: pointer; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; display: inline-flex; align-items: center; gap: 5px; }
 .list-head button:hover { color: var(--ink); }
 .row {
-  display: grid; grid-template-columns: 1fr 150px 120px 110px 40px;
+  display: grid; grid-template-columns: minmax(280px, 1.8fr) 140px 110px 100px 36px;
   gap: 14px; padding: 0 14px; align-items: center;
   height: var(--row-h); border-bottom: 1px solid var(--line);
   cursor: pointer; position: relative;
@@ -2194,6 +2231,11 @@ body:has(.viewer) .fup { display: none; }
   width: 100%;
 }
 
+.grid[data-layout="xl"] .card:not(.folder) .card-fname-wrap {
+  min-height: 0;
+  position: static;
+}
+
 .grid[data-layout="xl"] .card:not(.folder) .fname {
   position: absolute;
   bottom: 0;
@@ -2211,11 +2253,21 @@ body:has(.viewer) .fup { display: none; }
   opacity: 0;
   transform: translateY(4px);
   transition: opacity 0.2s ease, transform 0.2s ease;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .grid[data-layout="xl"] .card:not(.folder):hover .fname {
   opacity: 1;
   transform: translateY(0);
+  border: none;
+  box-shadow: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.45) 60%, transparent 100%);
 }
 
 .grid[data-layout="xl"] .card:not(.folder) .meta,
@@ -2288,7 +2340,22 @@ body:has(.viewer) .fup { display: none; }
   display: grid; place-items: center; position: relative; overflow: hidden;
 }
 .tile-info { min-width: 0; flex: 1; }
-.tile-info .fname { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-info .fname {
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.app.nowrap-names .tile-info .fname {
+  display: block;
+  white-space: nowrap;
+}
 .tile-info .meta { font-size: 11.5px; color: var(--faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile-info .tags { display: flex; gap: 5px; margin-top: 6px; overflow: hidden; }
 .tile-info .tags > * { flex: none; }
@@ -2320,7 +2387,22 @@ body:has(.viewer) .fup { display: none; }
 }
 .crow-ico { width: 100%; height: 100%; display: grid; place-items: center; }
 .crow-main { flex: 1; min-width: 0; }
-.crow-main .fname { font-size: 14.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crow-main .fname {
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.app.nowrap-names .crow-main .fname {
+  display: block;
+  white-space: nowrap;
+}
 .crow-main .meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
 .crow-main .tags { display: flex; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
 .crow-check {
@@ -2334,7 +2416,7 @@ body:has(.viewer) .fup { display: none; }
 .crow-check.on { color: var(--accent); }
 
 /* ---- List layout: compact, column-flowing names (Windows "List") ---- */
-.list-flow { columns: 220px; column-gap: 20px; }
+.list-flow { columns: 320px; column-gap: 20px; }
 .litem {
   display: flex; align-items: center; gap: 9px; position: relative;
   padding: 5px 8px; border-radius: var(--r-sm); cursor: pointer;
@@ -2372,6 +2454,7 @@ body:has(.viewer) .fup { display: none; }
 .app.compact { --row-h: 34px; }
 .app.compact .grid { gap: 8px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
 .app.compact .card { padding: 8px; }
+.app.compact .card-fname-wrap { min-height: 2.5em; }
 /* Compact trades some thumb height for density, so it keeps a wider ratio than the 4/3 default. */
 .app.compact .card .thumb { aspect-ratio: 16 / 10; margin-bottom: 6px; }
 .app.compact .card .title { font-size: 13px; line-height: 1.25; }

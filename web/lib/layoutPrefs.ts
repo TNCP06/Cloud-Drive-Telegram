@@ -32,6 +32,8 @@ export interface LayoutPrefs {
   showCheckboxes: boolean;
   /** Append the file extension to the displayed (title-based) name. */
   showExtensions: boolean;
+  /** Wrap file and folder names across multiple lines in grid/tiles (like Windows Explorer). */
+  wrapNames: boolean;
   /** Show per-card detail items (size/date/tags). Off = name only. */
   showDetailItems: boolean;
   /** Show the persistent right-hand details pane. */
@@ -58,6 +60,7 @@ export const DEFAULT_PREFS: LayoutPrefs = {
   compact: false,
   showCheckboxes: false,
   showExtensions: false,
+  wrapNames: true,
   showDetailItems: true,
   detailsPane: false,
   sort: "modified",
@@ -93,6 +96,7 @@ export function loadPrefs(): LayoutPrefs {
       folderGroups: parsed.folderGroups || {},
     };
     if (!VALID_LAYOUTS.includes(merged.layout)) merged.layout = DEFAULT_PREFS.layout;
+    if (typeof merged.wrapNames !== "boolean") merged.wrapNames = DEFAULT_PREFS.wrapNames;
     if (!VALID_GROUPS.includes(merged.groupBy)) merged.groupBy = DEFAULT_PREFS.groupBy;
     if (!VALID_SORTS.includes(merged.sort)) merged.sort = DEFAULT_PREFS.sort;
     if (merged.sortOrder !== "asc" && merged.sortOrder !== "desc") merged.sortOrder = DEFAULT_PREFS.sortOrder;

@@ -95,6 +95,12 @@ export function ViewMenu({
           onClick={() => onChange({ showExtensions: !prefs.showExtensions })}
         />
         <MenuItem
+          icon="wrapText"
+          label="Wrap file names"
+          check={prefs.wrapNames !== false}
+          onClick={() => onChange({ wrapNames: prefs.wrapNames === false })}
+        />
+        <MenuItem
           icon="all"
           label="Group versions"
           check={prefs.groupVersions}
