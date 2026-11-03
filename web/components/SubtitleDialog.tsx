@@ -181,9 +181,16 @@ export function SubtitleDialog({
       .then((r) => r.json())
       .then((data: JobStatus) => {
         if (!alive) return;
+        setGenJob(data);
         if (data.status === "running") {
-          setGenJob(data);
           startGenPolling();
+          setTab((prev) => (prev === "tracks" ? "ai" : prev));
+        } else if (data.status === "done" && data.message) {
+          if (!data.langs || data.langs.length === 0) {
+            setMsg({ text: data.message, error: false });
+          }
+        } else if (data.status === "error" && data.message) {
+          setMsg({ text: data.message, error: true });
         }
       })
       .catch(() => {});
@@ -192,8 +199,8 @@ export function SubtitleDialog({
       .then((r) => r.json())
       .then((data: JobStatus) => {
         if (!alive) return;
+        setExtract(data);
         if (data.status === "running") {
-          setExtract(data);
           startExtractPolling();
         }
       })
@@ -435,8 +442,20 @@ export function SubtitleDialog({
             onClick={() => setTab("ai")}
             type="button"
           >
-            <Icon name="refresh" size={14} />
+            {isGenerating ? <span className="spinner sm" /> : <Icon name="refresh" size={14} />}
             AI Generator
+            {isGenerating && (
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: "var(--accent)",
+                  display: "inline-block",
+                  marginLeft: 3,
+                }}
+              />
+            )}
           </button>
           <button
             className={`sub-tab ${tab === "sync" ? "on" : ""}`}
@@ -451,8 +470,20 @@ export function SubtitleDialog({
             onClick={() => setTab("add")}
             type="button"
           >
-            <Icon name="plus" size={14} />
+            {isExtracting ? <span className="spinner sm" /> : <Icon name="plus" size={14} />}
             Add / Import
+            {isExtracting && (
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: "var(--accent)",
+                  display: "inline-block",
+                  marginLeft: 3,
+                }}
+              />
+            )}
           </button>
         </div>
 
@@ -488,6 +519,29 @@ export function SubtitleDialog({
           {/* TAB 1: TRACKS */}
           {tab === "tracks" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {isGenerating && (
+                <div
+                  style={{
+                    padding: "9px 12px",
+                    background: "var(--card-2)",
+                    borderRadius: "var(--r-sm)",
+                    border: "1px solid var(--line)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    fontSize: 12.5,
+                    color: "var(--ink)",
+                  }}
+                >
+                  <span className="spinner sm" />
+                  <span style={{ flex: 1 }}>
+                    <strong>AI Generator active:</strong> {genJob?.message || "Transcribing audio in background…"}
+                  </span>
+                  <button className="btn sm ghost" onClick={() => setTab("ai")} type="button">
+                    View
+                  </button>
+                </div>
+              )}
               {loading ? (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 20, justifyContent: "center", color: "var(--muted)" }}>
                   <span className="spinner sm" />
@@ -599,14 +653,35 @@ export function SubtitleDialog({
                   </span>
                 </div>
 
-                {isGenerating && (
+                {isGenerating ? (
                   <div style={{ padding: "10px 12px", background: "var(--card-2)", borderRadius: "var(--r-sm)", border: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 10 }}>
                     <span className="spinner sm" />
                     <div style={{ fontSize: 13, color: "var(--ink)" }}>
                       <strong>Processing:</strong> {genJob?.message || "Running AI transcription…"}
                     </div>
                   </div>
-                )}
+                ) : genJob && genJob.status !== "idle" && genJob.message ? (
+                  <div
+                    style={{
+                      padding: "9px 12px",
+                      background: genJob.status === "error"
+                        ? "color-mix(in oklab, #B23A2E 10%, var(--card))"
+                        : "var(--card-2)",
+                      borderRadius: "var(--r-sm)",
+                      border: `1px solid ${genJob.status === "error" ? "color-mix(in oklab, #B23A2E 25%, var(--line))" : "var(--line)"}`,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 12.5,
+                      color: "var(--ink)",
+                    }}
+                  >
+                    <Icon name={genJob.status === "error" ? "warn" : "check"} size={14} />
+                    <span style={{ flex: 1 }}>
+                      <strong>Last Status:</strong> {genJob.message}
+                    </span>
+                  </div>
+                ) : null}
 
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", paddingTop: 4 }}>
                   <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--muted)", cursor: "pointer" }}>
