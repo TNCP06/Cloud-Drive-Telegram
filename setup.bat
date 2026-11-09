@@ -57,7 +57,6 @@ echo --^> Installing Python dependencies...
 python -m pip install --upgrade pip >nul
 python -m pip install -r bot\requirements.txt
 if errorlevel 1 ( echo [X] pip install failed. & pause & exit /b 1 )
-python -m playwright install chromium
 echo [ok] Python dependencies installed.
 
 REM --- 2. Env files ---------------------------------------------------------
@@ -96,8 +95,23 @@ echo Optional on top: full-copy streaming ^(seek previews + transcoding^) and su
 REM Questions are asked through the :ask subroutine and chained with goto - a
 REM "set /p" nested inside a parenthesised block loses piped/redirected input.
 if not defined MODE (
-  call :ask "Install the MVP only, or pick optional features one by one? [mvp/pick] (default mvp): "
-  if /i "!ANS!"=="p" ( set "MODE=pick" ) else ( set "MODE=mvp" )
+  echo.
+  echo [TIP] Recommendation: Option 1 (MVP)
+  echo   - Core stack (upload, index, download, instant streaming) is rock-solid and stable.
+  echo   - Optional features (ffmpeg transcoding, full video caching, AI subtitles)
+  echo     are experimental, resource-heavy, and require extra API keys / cookies.
+  echo.
+  echo   [1] MVP (Recommended) - Core features only, lightweight and stable
+  echo   [2] Pick features     - Choose optional features one by one
+  echo.
+  call :ask "Select setup mode [1/2] (default 1): "
+  if "!ANS!"=="2" (
+    set "MODE=pick"
+  ) else if /i "!ANS!"=="p" (
+    set "MODE=pick"
+  ) else (
+    set "MODE=mvp"
+  )
 )
 if "!MODE!"=="mvp"  goto :feat_mvp
 if "!MODE!"=="full" goto :feat_full
@@ -115,10 +129,14 @@ goto :feat_done
 call :setflag STREAM_LOCAL_ORIGINAL 1
 call :setflag VIDEO_COMPRESS 1
 call :setflag SUBTITLE_GEN 1
+echo --^> Installing Playwright Chromium browser for subtitles...
+python -m playwright install chromium
 echo [ok] All optional features on - add CapCut cookies or set GROQ_API_KEYS / GEMINI_API_KEYS in bot\.env.
 goto :feat_done
 
 :feat_pick
+echo.
+echo Answering optional features: type 'y' for Yes, 'n' for No, or press Enter for default [N].
 echo.
 echo   Streaming works either way: by default only the chunks you actually watch are
 echo   proxied and cached. A full local copy is what seek previews/transcoding need.
@@ -137,6 +155,8 @@ call :setflag VIDEO_COMPRESS 0
 call :ask "  Automatic subtitles (CapCut Web / Groq Whisper STT + translation)? [y/N] "
 if /i not "!ANS!"=="y" goto :feat_nosubs
 call :setflag SUBTITLE_GEN 1
+echo --^> Installing Playwright Chromium browser for subtitles...
+python -m playwright install chromium
 echo   [!] Add CapCut cookies or set GROQ_API_KEYS / GEMINI_API_KEYS in bot\.env, or subtitle generation stays idle.
 goto :feat_done
 

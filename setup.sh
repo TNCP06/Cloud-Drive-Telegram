@@ -130,12 +130,24 @@ echo
 if [ -z "$MODE" ] && [ -t 0 ]; then
   # An install that already has optional features on defaults to "pick", so a re-run
   # can't silently switch them off.
-  scope_default="mvp"
+  scope_default="1"
   if [ -n "${COMPOSE_PROFILES:-}" ] || [ "${STREAM_LOCAL_ORIGINAL:-0}" = "1" ] || [ "${SUBTITLE_GEN:-0}" = "1" ]; then
-    scope_default="pick"
+    scope_default="2"
   fi
-  read -r -p "Install the MVP only, or pick optional features one by one? [mvp/pick] (default $scope_default): " scope
-  case "${scope:-$scope_default}" in [Pp]*) MODE="" ;; *) MODE="mvp" ;; esac
+  warn "Recommendation: Option 1 (MVP - core only)."
+  echo "  • MVP: upload, indexing, instant streaming, dashboard, and downloads."
+  echo "    Rock-solid, lightweight, and prevents VPS disk/CPU exhaustion."
+  echo "  • Optional: full caching, ffmpeg transcoding, AI subtitles, and OpenList."
+  echo "    Experimental background services that consume heavy CPU/RAM/disk."
+  echo
+  echo "  [1] MVP (Recommended) - Core features only, lightweight and stable"
+  echo "  [2] Pick features     - Choose optional features one by one"
+  echo
+  read -r -p "Select setup mode [1/2] (default $scope_default): " scope
+  case "${scope:-$scope_default}" in
+    2|[Pp]*) MODE="" ;;
+    *)       MODE="mvp" ;;
+  esac
 fi
 if [ "$MODE" = "mvp" ]; then
   say "MVP only — skipping the optional features."
@@ -144,7 +156,7 @@ if [ "$MODE" = "mvp" ]; then
     warn "(they keep running until you 'docker compose down' them)."
   fi
 else
-  echo "Answer each one (defaults = your current .env, so pressing Enter changes nothing):"
+  echo "Answer each feature with 'y' or 'n' (defaults = your current .env, press Enter to keep):"
 fi
 
 # 1. Cloud-drive remote download (openlist container + rclone remotes).
