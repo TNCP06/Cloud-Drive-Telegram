@@ -65,7 +65,8 @@ Keep these handy for the next step. (The schema is applied automatically on firs
 On a **fresh Linux VPS** (Amazon Linux, Ubuntu, Debian…):
 
 ```bash
-git clone <your-repo-url> cloud-drive && cd cloud-drive
+git clone https://github.com/TNCP06/Cloud-Drive-Telegram.git
+cd Cloud-Drive-Telegram
 bash setup.sh
 ```
 
@@ -85,8 +86,8 @@ When it finishes, open `http://<server-ip>:3000`. Re-run `bash setup.sh` any tim
 ### Option B — Windows laptop: one script
 
 ```bat
-git clone <your-repo-url> cloud-drive
-cd cloud-drive
+git clone https://github.com/TNCP06/Cloud-Drive-Telegram.git
+cd Cloud-Drive-Telegram
 setup.bat
 ```
 

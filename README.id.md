@@ -31,15 +31,16 @@ Semua komponen berkoordinasi melalui tabel job dan event PostgreSQL.
 Di VPS Linux baru:
 
 ```bash
-git clone <your-repo-url> cloud-drive && cd cloud-drive
+git clone https://github.com/TNCP06/Cloud-Drive-Telegram.git
+cd Cloud-Drive-Telegram
 bash setup.sh
 ```
 
 Di Windows:
 
 ```bat
-git clone <your-repo-url> cloud-drive
-cd cloud-drive
+git clone https://github.com/TNCP06/Cloud-Drive-Telegram.git
+cd Cloud-Drive-Telegram
 setup.bat
 ```
 
