@@ -159,7 +159,7 @@ MESSAGE_CACHE_MAX = max(128, int(os.environ.get("STREAM_MESSAGE_CACHE_MAX", "204
 # Disk-free floor: evict cache to keep at least this much free on the (shared) volume, so streaming
 # yields disk to a concurrent download and to other projects on the same VPS — a good-neighbor
 # invariant independent of the cache's own size cap. Only TCD's own cache is ever evicted.
-CACHE_FREE_FLOOR_BYTES = int(os.environ.get("CACHE_FREE_FLOOR_GB", "3")) * 1073741824
+CACHE_FREE_FLOOR_BYTES = int(os.environ.get("CACHE_FREE_FLOOR_GB", "1")) * 1073741824
 PREFETCH_BUFFER = int(os.environ.get("PREFETCH_BUFFER_MB", "30")) * 1048576
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE_MB", "15")) * 1048576
 PREFETCH_TIMEOUT = int(os.environ.get("PREFETCH_TIMEOUT_S", "90"))
@@ -418,9 +418,12 @@ def _evict_local_api_cache_if_needed(needed_bytes: int) -> None:
              total_size / 1048576, needed_bytes / 1048576)
 
     files.sort(key=lambda x: x[0])
+    active_paths = {str(p) for p in _local_file_paths.values() if p}
     for _mtime, size, file_path in files:
         if room():
             break
+        if str(file_path) in active_paths:
+            continue
         log.info("Evicting local Bot API cached file: %s (%.1f MB)", file_path.name, size / 1048576)
         try:
             file_path.unlink()
@@ -1217,9 +1220,14 @@ async def _backfill_one(part: dict) -> None:
         return
 
     try:
-        # The video is already here for the STT pass — take its cover frame off the same
-        # download instead of making the poster backfill fetch it a second time.
+        # The video is already here for the STT pass — take its cover frame and seek-preview
+        # off the same download instead of making future passes fetch it again.
         await _ensure_poster(part_id, path)
+        if not has_preview(part_id):
+            try:
+                await generate_seek_preview(part_id, path)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Backfill: seek preview generation failed for part %d: %s", part_id, e)
         await run_subtitle_job(db, part_id, path)
         # The worker writes the `.done` marker only when a part is finalised (complete,
         # no-speech, no-audio, or budget-exhausted). If it's still absent the part either

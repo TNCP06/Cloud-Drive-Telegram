@@ -33,7 +33,7 @@ VIDEO_TRANSCODE_THREADS = int(os.environ.get("VIDEO_TRANSCODE_THREADS", "0"))
 COMPRESSED_MAX_BYTES = int(os.environ.get("COMPRESSED_MAX_SIZE_GB", "0")) * 1073741824
 # Free-disk floor shared with the streamer cache (same env knob): a transcode's output can approach
 # the source size, so refuse to start one that would push the shared 30 GB disk under the floor.
-FREE_FLOOR_BYTES = int(os.environ.get("CACHE_FREE_FLOOR_GB", "3")) * 1073741824
+FREE_FLOOR_BYTES = int(os.environ.get("CACHE_FREE_FLOOR_GB", "1")) * 1073741824
 
 # Background transcode bookkeeping
 _transcoding: set[int] = set()

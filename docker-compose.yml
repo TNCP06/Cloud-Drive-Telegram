@@ -121,6 +121,7 @@ services:
       CACHE_DIR: /cache
       CACHE_MAX_SIZE_GB: "6"             # LRU-evict the transient video cache. Kept well below the
                                          # 25 GB disk (OS+images already use ~13 GB) so it can't fill it.
+      CACHE_FREE_FLOOR_GB: ${CACHE_FREE_FLOOR_GB:-1} # Keep at least 1 GB free on disk before evicting
       PREFETCH_BUFFER_MB: "16"           # YouTube-style: buffer 16 MB ahead
       CHUNK_SIZE_MB: "1"                 # 1 MB per chunk (responsive seeking)
       INITIAL_CHUNKS: "4"               # fast start: download first 4 MB
@@ -145,6 +146,7 @@ services:
       # --- background subtitle generation (CapCut Web / Groq Whisper STT + translation) ---
       SUBTITLE_GEN: ${SUBTITLE_GEN:-1}  # set 0 in .env to disable subtitle generation (MVP setup does)
       SUBTITLES_DIR: /subtitles         # PERSISTENT — generated VTT tracks live here
+      ENABLE_WHISPER_FULL_STT: ${ENABLE_WHISPER_FULL_STT:-1} # 1 = fallback to Whisper STT when CapCut fails
       CAPCUT_PRIMARY: ${CAPCUT_PRIMARY:-1}  # 1 = try CapCut first, fallback to Whisper; 0 = Whisper first
       CAPCUT_COOKIE_FILE: ${CAPCUT_COOKIE_FILE:-}
       CAPCUT_LANG: ${CAPCUT_LANG:-Indonesian}

@@ -112,7 +112,11 @@ def normalize_cookies(cookie_input: str | list | dict) -> list[dict]:
 
         if "expirationDate" in c and c["expirationDate"]:
             try:
-                cookie["expires"] = int(c["expirationDate"])
+                exp = int(c["expirationDate"])
+                # Only set expires if timestamp is in the future; past timestamps cause Chromium
+                # to purge the cookie immediately upon browser launch.
+                if exp > time.time():
+                    cookie["expires"] = exp
             except (ValueError, TypeError):
                 pass
         norm.append(cookie)
@@ -201,10 +205,34 @@ def _dismiss_popups(page) -> None:
         page.keyboard.press("Escape")
     except Exception:
         pass
+
+    # Direct Playwright clicks for onboarding and guide modals
+    for sel in [
+        'button:has-text("Skip")',
+        'button:has-text("Next")',
+        'button:has-text("Got it")',
+        'button:has-text("Close")',
+        '[aria-label*="close" i]',
+        '[class*="tour-close"]',
+        '[class*="guide-close"]',
+    ]:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0 and loc.is_visible(timeout=200):
+                loc.click(timeout=500)
+        except Exception:
+            pass
+
     try:
         page.evaluate("""() => {
-            // Click close / skip buttons
-            document.querySelectorAll('[class*="close" i], [aria-label*="close" i], button:has-text("Skip")').forEach(el => {
+            // Click native close / skip / next buttons safely
+            document.querySelectorAll('button, [role="button"]').forEach(el => {
+                const txt = (el.textContent || '').trim().toLowerCase();
+                if (['skip', 'next', 'got it', 'close'].includes(txt)) {
+                    try { el.click(); } catch(e) {}
+                }
+            });
+            document.querySelectorAll('[class*="close" i], [aria-label*="close" i]').forEach(el => {
                 try { el.click(); } catch(e) {}
             });
             // Remove lingering modal/guide/tooltip/mask/dialog elements

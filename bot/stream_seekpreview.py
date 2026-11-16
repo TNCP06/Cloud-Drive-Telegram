@@ -64,13 +64,29 @@ def vtt_path(part_id: int) -> Path:
     return _part_dir(part_id) / "preview.vtt"
 
 
-def is_done(part_id: int) -> bool:
-    return (_part_dir(part_id) / ".done").exists()
+def is_skipped(part_id: int) -> bool:
+    """Return True if this part was permanently skipped (e.g. video < 2s)."""
+    return (_part_dir(part_id) / ".skip").exists()
 
 
 def has_preview(part_id: int) -> bool:
     """Return True if a completed seek-preview exists for this part."""
-    return is_done(part_id) and vtt_path(part_id).exists() and sprite_path(part_id).exists()
+    return vtt_path(part_id).exists() and sprite_path(part_id).exists()
+
+
+def is_done(part_id: int) -> bool:
+    """Return True if preview was generated or part was explicitly skipped.
+
+    Orphaned .done markers without sprite.jpg and preview.vtt are invalid and
+    cleaned up automatically.
+    """
+    if has_preview(part_id) or is_skipped(part_id):
+        return True
+    done_marker = _part_dir(part_id) / ".done"
+    if done_marker.exists():
+        # Legacy or aborted run left an empty .done marker without output files — drop it
+        done_marker.unlink(missing_ok=True)
+    return False
 
 
 async def _probe_duration(src_path: str) -> float | None:
@@ -141,13 +157,16 @@ async def generate_seek_preview(part_id: int, src_path: str) -> bool:
             return True
 
         duration = await _probe_duration(src_path)
-        if duration is None or duration < 2:
-            log.info("Seek preview skipped for part %d — too short or unreadable (%.1fs)",
-                     part_id, duration or 0)
-            # Mark as done so we don't retry
+        if duration is None:
+            log.warning("Seek preview failed for part %d — could not probe duration of %s",
+                        part_id, src_path)
+            return False
+
+        if duration < 2:
+            log.info("Seek preview skipped for part %d — too short (%.1fs)", part_id, duration)
             d = _part_dir(part_id)
             d.mkdir(parents=True, exist_ok=True)
-            (d / ".done").touch()
+            (d / ".skip").touch()
             return False
 
         # Calculate interval: spread SPRITE_MAX_FRAMES evenly across the duration,

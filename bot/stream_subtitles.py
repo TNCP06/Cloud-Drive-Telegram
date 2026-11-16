@@ -56,9 +56,8 @@ SUBTITLE_GEN = os.environ.get("SUBTITLE_GEN", "1") not in ("0", "false", "False"
 SUBTITLES_DIR = Path(os.environ.get("SUBTITLES_DIR", "/subtitles"))
 
 # Full Whisper chunk transcription fallback (split audio into 10-min chunks and transcribe all).
-# Disabled by default (0) when CapCut is primary, to prevent poor-quality Whisper hallucinations.
-# Whisper is strictly restricted to short 15s language ID probe samples unless explicitly enabled.
-ENABLE_WHISPER_FULL_STT = os.environ.get("ENABLE_WHISPER_FULL_STT", "0") in ("1", "true", "True")
+# Enabled by default (1) as resilient failover when CapCut fails or returns no segments.
+ENABLE_WHISPER_FULL_STT = os.environ.get("ENABLE_WHISPER_FULL_STT", "1") not in ("0", "false", "False", "")
 
 # Comma-separated Groq API keys — rotated on rate-limit (429) for free-tier failover.
 GROQ_API_KEYS = [k.strip() for k in os.environ.get("GROQ_API_KEYS", "").split(",") if k.strip()]
@@ -1652,11 +1651,15 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
                         log.warning("Subtitle: CapCut default failed for part %d: %s", part_id, ex)
 
             if not segments:
-                if ENABLE_WHISPER_FULL_STT:
+                if ENABLE_WHISPER_FULL_STT and stt_available():
                     log.info("Subtitle: falling back to Whisper full transcription for part %d", part_id)
                     segments, source_lang, missing, total = await _transcribe_audio(part_id, src_path)
+                elif detected_iso:
+                    log.warning("Subtitle: CapCut produced no segments but spoken language was detected (%s) for part %d — deferring without marking no-speech",
+                                detected_iso, part_id)
+                    return
                 else:
-                    log.info("Subtitle: CapCut produced no segments and full Whisper STT is disabled — marking no-speech for part %d", part_id)
+                    log.info("Subtitle: CapCut produced no segments and no spoken language was detected for part %d — marking no-speech", part_id)
                     _done_marker(part_id).write_text("no-speech")
                     _cleanup_chunk_state(part_id)
                     return
