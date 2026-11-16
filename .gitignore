@@ -10,6 +10,8 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+docker-compose.override.yml
+docker-compose.override.yaml
 
 # ---------------------------------------------------------------------------
 # SECRETS & ENV
