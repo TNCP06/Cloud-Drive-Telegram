@@ -2397,6 +2397,7 @@ body:has(.viewer) .fup { display: none; }
   display: flex; align-items: center; gap: 9px; position: relative;
   padding: 5px 8px; border-radius: var(--r-sm); cursor: pointer;
   break-inside: avoid;
+  content-visibility: auto; contain-intrinsic-size: auto 32px;
 }
 .litem:hover { background: var(--card); }
 .litem.sel { background: var(--accent-soft); }

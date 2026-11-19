@@ -190,12 +190,15 @@ async def generate_seek_preview(part_id: int, src_path: str) -> bool:
             fps_val = 1 / interval
             cmd = [
                 "ffmpeg", "-y",
+                "-threads", "1",
                 "-i", src_path,
                 "-vf", f"fps={fps_val:.6f},scale={THUMB_W}:{THUMB_H}:force_original_aspect_ratio=decrease,pad={THUMB_W}:{THUMB_H}:(ow-iw)/2:(oh-ih)/2,tile={SPRITE_COLS}x{actual_rows}",
                 "-frames:v", "1",
                 "-q:v", "6",  # JPEG quality (2=best, 31=worst) — 6 is a good size/quality tradeoff
                 str(tmp_sprite),
             ]
+            if shutil.which("nice"):
+                cmd = ["nice", "-n", "19", *cmd]
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,

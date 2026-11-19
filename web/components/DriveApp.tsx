@@ -165,7 +165,25 @@ export function DriveApp({
   const tagMap = useMemo(() => new Map<number, Tag>(tags.map((t) => [t.id, t])), [tags]);
   const [view, setView] = useState<View>(initialView);
   const [activeTag, setActiveTag] = useState<number | null>(null);
+  const [searchInputValue, setSearchInputValue] = useState("");
   const [query, setQuery] = useState("");
+
+  // Debounce search query to keep typing at 60 FPS and avoid heavy O(N) re-sort/re-group on every keystroke
+  useEffect(() => {
+    if (!searchInputValue) {
+      setQuery("");
+      return;
+    }
+    const timer = setTimeout(() => {
+      setQuery(searchInputValue);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchInputValue]);
+
+  const resetSearch = useCallback(() => {
+    setSearchInputValue("");
+    setQuery("");
+  }, []);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [sortMenu, setSortMenu] = useState<HTMLElement | null>(null);
@@ -908,7 +926,7 @@ export function DriveApp({
   const go = (v: string) => {
     setView(v as View);
     setActiveTag(null);
-    setQuery("");
+    resetSearch();
     setNavOpen(false);
     setCurrentFolderId(null);
     setFolderHistory([]);
@@ -917,7 +935,7 @@ export function DriveApp({
   const goTag = (id: number) => {
     setView("tag");
     setActiveTag(id);
-    setQuery("");
+    resetSearch();
     setNavOpen(false);
     setCurrentFolderId(null);
     setFolderHistory([]);
@@ -936,7 +954,10 @@ export function DriveApp({
             : tags.find((x) => x.id === activeTag)?.name || "Tags";
 
   // "N versions" click → show all versions in the family (via search) and disable grouping.
-  const pickFamily = (family: string) => setQuery(family);
+  const pickFamily = (family: string) => {
+    setSearchInputValue(family);
+    setQuery(family);
+  };
   const openPreview = (item: DriveFile, pushHistory = true) => {
     setPreviewId(item.id);
     if (pushHistory && typeof window !== "undefined") {
@@ -1268,7 +1289,7 @@ export function DriveApp({
     }
   };
   const jumpToFolder = (folderId: number | null) => {
-    setQuery("");
+    resetSearch();
     setView("all");
     goToFolder(folderId);
   };
@@ -1460,8 +1481,8 @@ export function DriveApp({
 
     // Escape -> reset search query, close mobile search, or clear selection
     if (!typing && !overlayOpen && e.key === "Escape") {
-      if (query || mobileSearchOpen) {
-        setQuery("");
+      if (searchInputValue || query || mobileSearchOpen) {
+        resetSearch();
         setMobileSearchOpen(false);
         searchRef.current?.blur();
       } else if (selected.length > 0) {
@@ -2216,20 +2237,20 @@ export function DriveApp({
             )}
           </div>
 
-          <div className={"search" + (mobileSearchOpen || query ? " mob-open" : "")}>
+          <div className={"search" + (mobileSearchOpen || searchInputValue || query ? " mob-open" : "")}>
             <Icon name="search" size={17} className="ico" />
             <input
               ref={searchRef}
-              value={query}
+              value={searchInputValue}
               placeholder="Search files…"
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => setSearchInputValue(e.target.value)}
               onFocus={() => setMobileSearchOpen(true)}
             />
-            {query ? (
+            {searchInputValue || query ? (
               <span
                 style={{ cursor: "pointer", color: "var(--faint)", display: "grid" }}
                 onClick={() => {
-                  setQuery("");
+                  resetSearch();
                   searchRef.current?.focus();
                 }}
                 title={withShortcut("Clear query", SHORTCUTS.escape)}
@@ -2245,8 +2266,8 @@ export function DriveApp({
             <button
               className="iconbtn ghost show-mob-only"
               onClick={() => {
-                if (mobileSearchOpen || query) {
-                  setQuery("");
+                if (mobileSearchOpen || searchInputValue || query) {
+                  resetSearch();
                   setMobileSearchOpen(false);
                   searchRef.current?.blur();
                 } else {
@@ -2254,10 +2275,10 @@ export function DriveApp({
                   setTimeout(() => searchRef.current?.focus(), 50);
                 }
               }}
-              title={mobileSearchOpen || query ? withShortcut("Close search", SHORTCUTS.escape) : withShortcut("Search files", SHORTCUTS.search)}
-              aria-label={mobileSearchOpen || query ? "Close search" : "Search files"}
+              title={mobileSearchOpen || searchInputValue || query ? withShortcut("Close search", SHORTCUTS.escape) : withShortcut("Search files", SHORTCUTS.search)}
+              aria-label={mobileSearchOpen || searchInputValue || query ? "Close search" : "Search files"}
             >
-              <Icon name={mobileSearchOpen || query ? "close" : "search"} size={18} />
+              <Icon name={mobileSearchOpen || searchInputValue || query ? "close" : "search"} size={18} />
             </button>
 
             <button

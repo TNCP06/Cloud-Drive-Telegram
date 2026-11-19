@@ -26,8 +26,8 @@ type Options = {
  *     sources, and the bare browser `EventSource` does neither.
  *   - On a stream error it takes over reconnection with capped exponential backoff instead of the
  *     browser's tight built-in retry (which hammers a dead/flaky link), resetting on a clean open.
- *   - Reconnects and does an immediate catch-up `router.refresh()` on focus / regained visibility /
- *     coming back online, covering anything missed while the stream was down.
+ *   - Reconnects and does an immediate catch-up `router.refresh()` only when the tab was away for
+ *     an extended period (>60s), avoiding heavy 1 MB RSC downloads on transient window alt-tabs.
  */
 export function useLiveRefresh(
   eventName: string,
@@ -44,6 +44,7 @@ export function useLiveRefresh(
     let retry: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     let stopped = false;
+    let disconnectedAt = 0;
 
     const isVisible = () => document.visibilityState === "visible";
     const allowed = () => canRefreshRef.current?.() ?? true;
@@ -60,6 +61,7 @@ export function useLiveRefresh(
       if (es) {
         es.close();
         es = null;
+        disconnectedAt = Date.now();
       }
       if (retry) {
         clearTimeout(retry);
@@ -86,6 +88,7 @@ export function useLiveRefresh(
         if (es) {
           es.close();
           es = null;
+          disconnectedAt = Date.now();
         }
         if (stopped || retry) return;
         const delay = Math.min(30000, 1000 * 2 ** attempt) + Math.random() * 1000;
@@ -99,7 +102,12 @@ export function useLiveRefresh(
 
     const onVisibility = () => {
       if (isVisible()) {
-        if (allowed()) router.refresh(); // catch up on anything missed while away/disconnected
+        // Only trigger catch-up router.refresh() if disconnected for more than 60s.
+        // Brief tab switches (<60s) reconnect cleanly without re-requesting the 1 MB RSC payload.
+        if (allowed() && disconnectedAt > 0 && Date.now() - disconnectedAt > 60000) {
+          router.refresh();
+        }
+        disconnectedAt = 0;
         attempt = 0;
         connect();
       } else {
@@ -113,7 +121,6 @@ export function useLiveRefresh(
 
     connect();
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", onVisibility);
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", closeStream);
 
@@ -122,7 +129,6 @@ export function useLiveRefresh(
       closeStream();
       if (debounce) clearTimeout(debounce);
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("focus", onVisibility);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", closeStream);
     };

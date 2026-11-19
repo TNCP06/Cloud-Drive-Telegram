@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { db } from "./db";
 import { sha256Hex } from "./auth";
 
-async function canReadSpace(isPrivate: number): Promise<boolean> {
+export async function canReadSpace(isPrivate: number): Promise<boolean> {
   if (isPrivate !== 1) return true;
   const pin = process.env.PIN;
   if (!pin) return false;

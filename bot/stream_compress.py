@@ -26,9 +26,9 @@ VIDEO_CRF = os.environ.get("VIDEO_CRF", "23")              # 18=near-lossless â€
 VIDEO_PRESET = os.environ.get("VIDEO_PRESET", "veryfast")
 VIDEO_MIN_COMPRESS_BYTES = int(os.environ.get("VIDEO_MIN_COMPRESS_MB", "20")) * 1048576
 VIDEO_TRANSCODE_CONCURRENCY = int(os.environ.get("VIDEO_TRANSCODE_CONCURRENCY", "1"))
-# Cap x264 worker threads (0 = ffmpeg auto = all cores). Set to 1â€“2 to guarantee a free core
-# for streaming/STT on a small box. We also `nice` the process so it always yields to them.
-VIDEO_TRANSCODE_THREADS = int(os.environ.get("VIDEO_TRANSCODE_THREADS", "0"))
+# Cap x264 worker threads (default 1 to guarantee a free core for live streaming on a 2-core VPS).
+# We also `nice` the process so it always yields CPU to live stream requests.
+VIDEO_TRANSCODE_THREADS = int(os.environ.get("VIDEO_TRANSCODE_THREADS", "1"))
 # 0 = keep compressed copies forever (persistent). >0 = LRU-cap the compressed dir.
 COMPRESSED_MAX_BYTES = int(os.environ.get("COMPRESSED_MAX_SIZE_GB", "0")) * 1073741824
 # Free-disk floor shared with the streamer cache (same env knob): a transcode's output can approach
