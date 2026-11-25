@@ -33,7 +33,7 @@ export async function GET(
   try {
     const headers: Record<string, string> = { Connection: "close" };
     if (process.env.STREAMER_SECRET) headers["X-Streamer-Secret"] = process.env.STREAMER_SECRET;
-    const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}`, { headers });
+    const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}`, { headers, cache: "no-store" });
     if (!resp.ok) return NextResponse.json({ langs: [], done: false });
     const data = await resp.json();
     return NextResponse.json({

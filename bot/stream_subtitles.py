@@ -82,6 +82,12 @@ GROQ_TRANSLATE = os.environ.get("GROQ_TRANSLATE", "1") not in ("0", "false", "Fa
 GROQ_TRANSLATE_MODEL = os.environ.get("GROQ_TRANSLATE_MODEL", "qwen/qwen3.8-27b")
 GROQ_CHAT_URL = os.environ.get("GROQ_CHAT_URL", "https://api.groq.com/openai/v1/chat/completions")
 
+# Tier 2.5: Cloudflare Workers AI LLM translation failover (reuses CLOUDFLARE_ACCOUNT_ID/TOKEN)
+CLOUDFLARE_TRANSLATE = os.environ.get("CLOUDFLARE_TRANSLATE", "1") not in ("0", "false", "False", "")
+CLOUDFLARE_TRANSLATE_MODEL = os.environ.get(
+    "CLOUDFLARE_TRANSLATE_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+).strip()
+
 # Optional SERVER-SIDE STT FAILOVER via Cloudflare Workers AI Whisper — used ONLY when every Groq
 # key/model attempt fails (e.g. a Groq outage). Dormant unless both vars are set, so leaving them
 # empty keeps the Groq-only behaviour. Free tier: 10k Neurons/day (plenty for a failover).
@@ -102,8 +108,12 @@ GLADIA_POLL_INTERVAL_S = float(os.environ.get("GLADIA_POLL_INTERVAL_S", "4"))
 GLADIA_MAX_WAIT_S = float(os.environ.get("GLADIA_MAX_WAIT_S", "600"))
 
 
-def _cloudflare_stt_enabled() -> bool:
+def _cloudflare_ai_enabled() -> bool:
     return bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN)
+
+
+def _cloudflare_stt_enabled() -> bool:
+    return _cloudflare_ai_enabled()
 
 
 def _gladia_stt_enabled() -> bool:
@@ -837,24 +847,24 @@ async def _transcribe_audio(part_id: int, src_path: str) -> tuple[list[dict], st
 
 
 # ---------------------------------------------------------------------------
-# Translation (deep-translator → Google free endpoint, with a Groq-LLM failover), timestamps preserved
+# Translation (Gemini Flash -> Groq LLM -> Cloudflare AI -> Google GTX POST), timestamps preserved
 # ---------------------------------------------------------------------------
-# Map our ISO source codes to the ones deep-translator's GoogleTranslator expects. It has no bare
-# "zh" — Chinese must be zh-CN/zh-TW. Anything not listed is passed through unchanged.
+# Map our ISO source/target codes to the ones Google Translate expects.
 _TRANSLATOR_SRC = {"zh": "zh-CN"}
+_TRANSLATOR_TGT = {"zh": "zh-CN"}
+# Minimum fraction of source cues that must succeed for a translation track to count as valid.
+_MIN_TRANSLATE_RATIO = 0.75
 
 
-# ISO code → English language name, for prompting the Groq LLM translator (inverse of the STT map,
-# plus the codes deep-translator/Whisper hand us that aren't keyed there).
+# ISO code → English language name, for prompting LLM translators (inverse of the STT map,
+# plus the codes Whisper/routes hand us that aren't keyed there).
 _ISO_TO_LANG_NAME = {v: k.capitalize() for k, v in _LANG_NAME_TO_ISO.items()}
 _ISO_TO_LANG_NAME.update({"en": "English", "id": "Indonesian", "zh": "Chinese", "ja": "Japanese",
                           "ko": "Korean", "ms": "Malay"})
 
 
-def _groq_translate_subbatch(texts: list[str], target: str, source: str | None) -> list[str | None]:
-    """Translate a sub-batch (<=25 lines) of subtitle lines via Groq chat model."""
-    if not (GROQ_TRANSLATE and GROQ_API_KEYS and texts):
-        return [None] * len(texts)
+def _build_translate_prompt(texts: list[str], target: str, source: str | None) -> tuple[str, str]:
+    """Build (system_prompt, user_prompt) enforcing strict 1:1 line count."""
     tgt = _ISO_TO_LANG_NAME.get(target, target)
     src = _ISO_TO_LANG_NAME.get(source or "", None)
     src_clause = f"from {src} " if src else ""
@@ -863,56 +873,118 @@ def _groq_translate_subbatch(texts: list[str], target: str, source: str | None) 
         f"into {tgt}. The input has exactly {len(texts)} lines separated by newlines. Output "
         f"EXACTLY {len(texts)} lines — one translation per input line, in the same order. Output "
         f"ONLY the translated lines: no numbering, no commentary, no markdown, no blank lines between them. "
-        f"If a line is untranslatable, output its best transliteration rather than dropping it.")
-    user = "\n".join(texts)
+        f"If a line is untranslatable, output its best transliteration rather than dropping it."
+    )
+    return system, "\n".join(texts)
+
+
+def _parse_llm_lines(content: str, expected: int, provider: str, target: str) -> list[str | None] | None:
+    """Parse newline-delimited LLM output. Returns None when line count mismatches so caller can bisect/failover."""
+    text = (content or "").strip("\n")
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text).strip("\n")
+    lines = text.split("\n")
+    while lines and lines[-1].strip() == "":
+        lines.pop()
+    if len(lines) == expected + 1 and any(w in lines[0].lower() for w in ("here", "translation", "terjemahan", ":")):
+        lines.pop(0)
+    if len(lines) == expected:
+        return [(l.strip() or None) for l in lines]
+    log.warning("%s translate to %s line-count mismatch (%d vs %d) — unusable",
+                provider, target, len(lines), expected)
+    return None
+
+
+def _parse_reset_delay(headers: httpx.Headers) -> float:
+    """Parse HTTP Retry-After or Groq x-ratelimit-reset-tokens into bounded wait seconds."""
+    raw = (headers.get("retry-after") or headers.get("x-ratelimit-reset-tokens") or "").strip().lower()
+    if not raw:
+        return 6.0
+    try:
+        if raw.endswith("ms"):
+            secs = float(raw[:-2]) / 1000.0
+        elif "m" in raw:
+            mins, _, rest = raw.partition("m")
+            rest_s = float(rest.rstrip("s") or 0)
+            secs = float(mins) * 60.0 + rest_s
+        else:
+            secs = float(raw.rstrip("s"))
+        return max(1.0, min(secs, 15.0))
+    except ValueError:
+        return 6.0
+
+
+def _chunked_translate(texts: list[str], subbatch_fn, chunk_size: int = 25) -> list[str | None]:
+    """Run `subbatch_fn` in chunks, bisecting once on mismatch/failure down to 8 lines before returning gaps."""
+    if not texts:
+        return []
+
+    def run_slice(slice_texts: list[str]) -> list[str | None]:
+        out = subbatch_fn(slice_texts)
+        if out is not None:
+            return out
+        if len(slice_texts) > 8:
+            mid = len(slice_texts) // 2
+            return run_slice(slice_texts[:mid]) + run_slice(slice_texts[mid:])
+        return [None] * len(slice_texts)
+
+    res: list[str | None] = []
+    for i in range(0, len(texts), chunk_size):
+        res.extend(run_slice(texts[i:i + chunk_size]))
+    return res
+
+
+def _groq_translate_subbatch(texts: list[str], target: str, source: str | None) -> list[str | None] | None:
+    """Translate a sub-batch (<=25 lines) via Groq chat model, waiting on 429 rate limits."""
+    if not (GROQ_TRANSLATE and GROQ_API_KEYS and texts):
+        return [None] * len(texts)
+    import time
+    system, user = _build_translate_prompt(texts, target, source)
     max_out_tokens = min(900, max(150, len(texts) * 35))
-    for key in _key_order():
-        try:
-            with httpx.Client(timeout=60) as c:
-                resp = c.post(
-                    GROQ_CHAT_URL,
-                    headers={"Authorization": f"Bearer {key}"},
-                    json={"model": GROQ_TRANSLATE_MODEL, "temperature": 0.1,
-                          "max_tokens": max_out_tokens,
-                          "messages": [{"role": "system", "content": system},
-                                       {"role": "user", "content": user}]},
+    for round_idx in range(3):
+        rate_waits: list[float] = []
+        for key in _key_order():
+            try:
+                with httpx.Client(timeout=60) as c:
+                    resp = c.post(
+                        GROQ_CHAT_URL,
+                        headers={"Authorization": f"Bearer {key}"},
+                        json={"model": GROQ_TRANSLATE_MODEL, "temperature": 0.1,
+                              "max_tokens": max_out_tokens,
+                              "messages": [{"role": "system", "content": system},
+                                           {"role": "user", "content": user}]},
+                    )
+                if resp.status_code == 429:
+                    rate_waits.append(_parse_reset_delay(resp.headers))
+                    continue  # rate-limited on this key → try the next
+                resp.raise_for_status()
+                parsed = _parse_llm_lines(
+                    resp.json()["choices"][0]["message"]["content"] or "",
+                    len(texts), "Groq", target,
                 )
-            if resp.status_code == 429:
-                continue  # rate-limited on this key → try the next
-            resp.raise_for_status()
-            content = (resp.json()["choices"][0]["message"]["content"] or "").strip("\n")
-            if content.startswith("```"):
-                content = re.sub(r"^```[a-zA-Z]*\n?", "", content)
-                content = re.sub(r"\n?```$", "", content).strip("\n")
-            lines = content.split("\n")
-            while lines and lines[-1].strip() == "":  # trim trailing formatting blanks only
-                lines.pop()
-            if len(lines) == len(texts) + 1 and any(w in lines[0].lower() for w in ("here", "translation", "terjemahan", ":")):
-                lines.pop(0)
-            if len(lines) == len(texts):
-                log.info("Groq LLM translated %d lines → %s (%s)", len(texts), target, GROQ_TRANSLATE_MODEL)
-                return [(l.strip() or None) for l in lines]
-            log.warning("Groq translate to %s line-count mismatch (%d vs %d) — unusable",
-                        target, len(lines), len(texts))
-            return [None] * len(texts)
-        except Exception as e:  # noqa: BLE001
-            log.warning("Groq translate to %s failed on key …%s: %s", target, key[-4:], e)
-            continue
+                if parsed is not None:
+                    log.info("Groq LLM translated %d lines → %s (%s)", len(texts), target, GROQ_TRANSLATE_MODEL)
+                return parsed
+            except Exception as e:  # noqa: BLE001
+                log.warning("Groq translate to %s failed on key …%s: %s", target, key[-4:], e)
+                continue
+        if not rate_waits or round_idx >= 2:
+            if rate_waits:
+                log.warning("Groq translate to %s exhausted 429 retries across %d keys", target, len(GROQ_API_KEYS))
+            break
+        wait_s = min(rate_waits) + 0.5
+        log.warning("Groq translate to %s rate-limited on all keys (attempt %d/2) — sleeping %.1fs",
+                    target, round_idx + 1, wait_s)
+        time.sleep(wait_s)
     return [None] * len(texts)
 
 
 def _groq_translate_batch(texts: list[str], target: str, source: str | None) -> list[str | None]:
-    """Translate lines via Groq, chunking into <=25 lines per call to satisfy the 1000 OTPM ceiling."""
+    """Translate lines via Groq, chunking into <=25 lines per call with 429 backoff and bisection."""
     if not (GROQ_TRANSLATE and GROQ_API_KEYS and texts):
         return [None] * len(texts)
-    CHUNK = 25
-    if len(texts) <= CHUNK:
-        return _groq_translate_subbatch(texts, target, source)
-    res: list[str | None] = []
-    for i in range(0, len(texts), CHUNK):
-        chunk = texts[i:i + CHUNK]
-        res.extend(_groq_translate_subbatch(chunk, target, source))
-    return res
+    return _chunked_translate(texts, lambda c: _groq_translate_subbatch(c, target, source), chunk_size=25)
 
 
 _gemini_key_index = 0
@@ -930,22 +1002,11 @@ def _gemini_key_order(start: int | None = None) -> list[str]:
     return GEMINI_API_KEYS[start:] + GEMINI_API_KEYS[:start]
 
 
-def _gemini_translate_subbatch(texts: list[str], target: str, source: str | None) -> list[str | None]:
-    """Translate a sub-batch (<=25 lines) of subtitle lines via Google Gemini Flash API.
-    Returns a same-length list (None where translation failed)."""
+def _gemini_translate_subbatch(texts: list[str], target: str, source: str | None) -> list[str | None] | None:
+    """Translate a sub-batch (<=25 lines) via Google Gemini Flash API."""
     if not (GEMINI_TRANSLATE and GEMINI_API_KEYS and texts):
         return [None] * len(texts)
-    tgt = _ISO_TO_LANG_NAME.get(target, target)
-    src = _ISO_TO_LANG_NAME.get(source or "", None)
-    src_clause = f"from {src} " if src else ""
-    system = (
-        f"You are a professional subtitle translator. Translate each input line {src_clause}"
-        f"into {tgt}. The input has exactly {len(texts)} lines separated by newlines. Output "
-        f"EXACTLY {len(texts)} lines — one translation per input line, in the same order. Output "
-        f"ONLY the translated lines: no numbering, no commentary, no markdown, no blank lines between them. "
-        f"If a line is untranslatable, output its best transliteration rather than dropping it."
-    )
-    user = "\n".join(texts)
+    system, user = _build_translate_prompt(texts, target, source)
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"parts": [{"text": user}]}],
@@ -967,7 +1028,6 @@ def _gemini_translate_subbatch(texts: list[str], target: str, source: str | None
                 if resp.status_code == 404:
                     continue  # model not found / deprecated → try next model
                 if resp.status_code == 400 and "system_instruction" in resp.text:
-                    # Fallback for models without system_instruction support
                     with httpx.Client(timeout=60) as c:
                         fallback_payload = {
                             "contents": [{"parts": [{"text": f"{system}\n\n{user}"}]}],
@@ -986,21 +1046,10 @@ def _gemini_translate_subbatch(texts: list[str], target: str, source: str | None
                 parts = (candidates[0].get("content") or {}).get("parts") or []
                 if not parts:
                     continue
-                content = (parts[0].get("text") or "").strip("\n")
-                if content.startswith("```"):
-                    content = re.sub(r"^```[a-zA-Z]*\n?", "", content)
-                    content = re.sub(r"\n?```$", "", content).strip("\n")
-                lines = content.split("\n")
-                while lines and lines[-1].strip() == "":
-                    lines.pop()
-                if len(lines) == len(texts) + 1 and any(w in lines[0].lower() for w in ("here", "translation", "terjemahan", ":")):
-                    lines.pop(0)
-                if len(lines) == len(texts):
+                parsed = _parse_llm_lines(parts[0].get("text") or "", len(texts), "Gemini", target)
+                if parsed is not None:
                     log.info("Gemini LLM translated %d lines → %s (%s)", len(texts), target, model)
-                    return [(l.strip() or None) for l in lines]
-                log.warning("Gemini translate to %s line-count mismatch (%d vs %d) — unusable",
-                            target, len(lines), len(texts))
-                return [None] * len(texts)
+                return parsed
             except Exception as e:
                 log.warning("Gemini translate (%s) to %s failed on key …%s: %s", model, target, key[-4:], e)
                 continue
@@ -1008,23 +1057,55 @@ def _gemini_translate_subbatch(texts: list[str], target: str, source: str | None
 
 
 def _gemini_translate_batch(texts: list[str], target: str, source: str | None) -> list[str | None]:
-    """Translate lines via Gemini Flash, chunking into <=25 lines per call for alignment precision."""
+    """Translate lines via Gemini Flash, chunking into <=25 lines per call."""
     if not (GEMINI_TRANSLATE and GEMINI_API_KEYS and texts):
         return [None] * len(texts)
-    CHUNK = 25
-    if len(texts) <= CHUNK:
-        return _gemini_translate_subbatch(texts, target, source)
-    res: list[str | None] = []
-    for i in range(0, len(texts), CHUNK):
-        chunk = texts[i:i + CHUNK]
-        res.extend(_gemini_translate_subbatch(chunk, target, source))
-    return res
+    return _chunked_translate(texts, lambda c: _gemini_translate_subbatch(c, target, source), chunk_size=25)
+
+
+def _cf_translate_subbatch(texts: list[str], target: str, source: str | None) -> list[str | None] | None:
+    """Translate a sub-batch (<=25 lines) via Cloudflare Workers AI LLM failover."""
+    if not (CLOUDFLARE_TRANSLATE and _cloudflare_ai_enabled() and texts):
+        return [None] * len(texts)
+    system, user = _build_translate_prompt(texts, target, source)
+    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_TRANSLATE_MODEL}"
+    try:
+        with httpx.Client(timeout=45) as c:
+            resp = c.post(
+                url,
+                headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"},
+                json={"messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                      "max_tokens": 1200, "temperature": 0.1},
+            )
+        if resp.status_code == 429:
+            log.warning("Cloudflare AI translate 429 (quota/rate limit) for %s", target)
+            return [None] * len(texts)
+        resp.raise_for_status()
+        payload = resp.json()
+        if not payload.get("success", True):
+            log.warning("Cloudflare AI translate error for %s: %s", target, payload.get("errors"))
+            return [None] * len(texts)
+        raw = ((payload.get("result") or {}).get("response") or "")
+        parsed = _parse_llm_lines(raw, len(texts), "Cloudflare AI", target)
+        if parsed is not None:
+            log.info("Cloudflare AI translated %d lines → %s (%s)", len(texts), target, CLOUDFLARE_TRANSLATE_MODEL)
+        return parsed
+    except Exception as e:  # noqa: BLE001
+        log.warning("Cloudflare AI translate to %s failed: %s", target, e)
+        return [None] * len(texts)
+
+
+def _cf_translate_batch(texts: list[str], target: str, source: str | None) -> list[str | None]:
+    """Translate lines via Cloudflare Workers AI in <=25-line chunks."""
+    if not (CLOUDFLARE_TRANSLATE and _cloudflare_ai_enabled() and texts):
+        return [None] * len(texts)
+    return _chunked_translate(texts, lambda c: _cf_translate_subbatch(c, target, source), chunk_size=25)
 
 
 # Latin-script target languages: a correct translation into these is (near) all Latin letters. A
 # line that comes back dominated by another script (Hangul, CJK, Thai, Arabic, Cyrillic, …) is the
 # translator echoing the source or drifting into a random language — the "subtitles in a random
-# language" symptom. We route such lines to the Groq failover and, if still wrong, drop them.
+# language" symptom. We route such lines to the failover chain and, if still wrong, drop them.
 _LATIN_TARGETS = {"en", "id", "ms", "es", "fr", "de", "pt", "it", "nl", "tr", "tl", "vi", "pl", "ro"}
 
 
@@ -1050,97 +1131,108 @@ def _bad_target_script(text: str, target: str) -> bool:
     return non_latin / len(letters) > 0.30
 
 
-def _make_translator(target: str, source: str | None):
-    """Build a GoogleTranslator using the KNOWN source language when we have it. Auto-detect is a
-    trap here: Google silently echoes the input (no translation) for some content — e.g.
-    Traditional Chinese → English — so a wrong/auto source quietly drops the whole track. We pass
-    the real source (mapped to a valid code) and only fall back to auto if that code is rejected.
-    """
-    from deep_translator import GoogleTranslator
-    if source and source not in ("xx", "orig", "auto"):
-        code = _TRANSLATOR_SRC.get(source, source)
+def _google_gtx_chunk(texts: list[str], target: str, source: str | None) -> list[str | None]:
+    """Translate <=25 lines via Google's POST gtx endpoint, bisecting on newline mismatches."""
+    import time
+    if not texts:
+        return []
+    sl = _TRANSLATOR_SRC.get(source or "", source) if source and source not in ("xx", "orig", "auto") else "auto"
+    tl = _TRANSLATOR_TGT.get(target, target)
+    joined = "\n".join(texts)
+    for attempt in range(2):
         try:
-            return GoogleTranslator(source=code, target=target)
-        except Exception:  # noqa: BLE001 — unsupported code → fall back to auto-detect
-            pass
-    return GoogleTranslator(source="auto", target=target)
+            with httpx.Client(timeout=20) as c:
+                resp = c.post(
+                    "https://translate.googleapis.com/translate_a/single",
+                    params={"client": "gtx", "sl": sl, "tl": tl, "dt": "t"},
+                    data={"q": joined},
+                )
+            if resp.status_code == 429:
+                log.warning("Google GTX translate to %s rate-limited (429) - attempt %d/2", target, attempt + 1)
+                time.sleep(1.5)
+                continue
+            resp.raise_for_status()
+            body = resp.json()
+            out = "".join(p[0] for p in (body[0] or []) if p and p[0])
+            parts = [p.strip() for p in out.split("\n") if p.strip()]
+            if len(parts) == len(texts):
+                time.sleep(0.15)
+                return [p or None for p in parts]
+            if len(texts) == 1:
+                merged = " ".join(parts).strip()
+                time.sleep(0.15)
+                return [merged or None]
+            break
+        except Exception as e:  # noqa: BLE001
+            log.warning("Google GTX translate to %s failed (%s) - attempt %d/2", target, e, attempt + 1)
+            time.sleep(1.0)
+    if len(texts) > 1:
+        mid = len(texts) // 2
+        return _google_gtx_chunk(texts[:mid], target, source) + _google_gtx_chunk(texts[mid:], target, source)
+    return [None] * len(texts)
+
+
+def _google_gtx_batch(texts: list[str], target: str, source: str | None) -> list[str | None]:
+    """Translate lines via Google GTX POST in <=25-line chunks."""
+    if not texts:
+        return []
+    res: list[str | None] = []
+    for i in range(0, len(texts), 25):
+        res.extend(_google_gtx_chunk(texts[i:i + 25], target, source))
+    return res
 
 
 def _translate_segments(segments: list[dict], target: str, source: str | None = None) -> list[dict] | None:
     """Translate segment texts to `target`, keeping timestamps. Runs in a thread.
 
     Multi-tier translation pipeline:
-    Tier 1: Google Gemini Flash LLM (if GEMINI_API_KEYS is configured)
-    Tier 2: Groq Qwen chat model (if GROQ_API_KEYS is configured)
-    Tier 3: Google Translate (deep-translator web scraping fallback)
+    Tier 1:   Google Gemini Flash LLM (if GEMINI_API_KEYS is configured)
+    Tier 2:   Groq LLM with 429 reset-backoff (if GROQ_API_KEYS is configured)
+    Tier 2.5: Cloudflare Workers AI LLM (if CLOUDFLARE_ACCOUNT_ID/TOKEN are configured)
+    Tier 3:   Google Translate POST gtx fallback
 
-    Crucially it NEVER passes original-language text through as a translation: any segment that
-    fails to translate or leaks foreign script is DROPPED, so an EN/ID track never contains foreign text.
+    Crucially it NEVER passes original-language text through as a translation and rejects
+    severely truncated results (<75% of source cues) so broken partial tracks are never saved.
     """
     if not segments:
         return None
-    import time
-    try:
-        translator = _make_translator(target, source)
-    except Exception as e:  # noqa: BLE001
-        log.warning("deep-translator not available (%s) — will rely on LLM translators", e)
-        translator = None
 
-    SEP = "\n"
     CHAR_BUDGET = 2500
 
-    def _google_batch(texts: list[str]) -> list[str | None]:
-        """Translate a batch via Google → same-length list; a failed item is None (never the original)."""
-        if not texts or not translator:
-            return [None] * len(texts)
-        joined = SEP.join(texts)
-        for attempt in range(2):
-            try:
-                res = translator.translate(joined)
-                if res:
-                    parts = [p.strip() for p in res.split(SEP)]
-                    if len(parts) == len(texts):
-                        return parts
-                    log.warning("Batch translate to %s size mismatch (expected %d, got %d) - attempt %d/2",
-                                target, len(texts), len(parts), attempt + 1)
-                    time.sleep(1)
-            except Exception as e:  # noqa: BLE001
-                log.warning("Batch translate to %s failed (%s) - attempt %d/2", target, e, attempt + 1)
-                time.sleep(1)
-
-        log.warning("Batch translate to %s failed on Google Translate fallback", target)
-        return [None] * len(texts)
-
     def translate_batch(texts: list[str]) -> list[str | None]:
-        """Multi-tier subtitle translation:
-        Tier 1: Google Gemini Flash LLM
-        Tier 2: Groq Qwen chat model
-        Tier 3: Google Translate (deep-translator fallback)
-        Any slot that still fails stays None (never leaking foreign text).
-        """
         if not texts:
             return []
 
         res: list[str | None] = [None] * len(texts)
 
+        def missing_indices() -> list[int]:
+            return [i for i, v in enumerate(res)
+                    if not v or not str(v).strip() or _bad_target_script(str(v), target)]
+
         # Tier 1: Gemini Flash LLM
         if GEMINI_TRANSLATE and GEMINI_API_KEYS:
             res = _gemini_translate_batch(texts, target, source)
 
-        # Tier 2: Groq Qwen LLM failover
-        missing = [i for i, v in enumerate(res)
-                   if not v or not str(v).strip() or _bad_target_script(str(v), target)]
+        # Tier 2: Groq LLM failover (with 429 backoff + bisection)
+        missing = missing_indices()
         if missing and GROQ_TRANSLATE and GROQ_API_KEYS:
             groq_filled = _groq_translate_batch([texts[i] for i in missing], target, source)
             for i, val in zip(missing, groq_filled):
                 if val and val.strip() and not _bad_target_script(val, target):
                     res[i] = val
 
-        # Tier 3: Google Translate web scraping fallback
-        missing = [i for i, v in enumerate(res)
-                   if not v or not str(v).strip() or _bad_target_script(str(v), target)]
-        if missing and translator:
-            google_filled = _google_batch([texts[i] for i in missing])
+        # Tier 2.5: Cloudflare Workers AI LLM failover
+        missing = missing_indices()
+        if missing and CLOUDFLARE_TRANSLATE and _cloudflare_ai_enabled():
+            cf_filled = _cf_translate_batch([texts[i] for i in missing], target, source)
+            for i, val in zip(missing, cf_filled):
+                if val and val.strip() and not _bad_target_script(val, target):
+                    res[i] = val
+
+        # Tier 3: Google Translate POST gtx fallback
+        missing = missing_indices()
+        if missing:
+            google_filled = _google_gtx_batch([texts[i] for i in missing], target, source)
             for i, val in zip(missing, google_filled):
                 if val and val.strip() and not _bad_target_script(val, target):
                     res[i] = val
@@ -1148,6 +1240,7 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
         return res
 
     translated: list[dict] = []
+    total_in = 0
     ok = 0          # segments that produced a real translation
     unchanged = 0   # of those, how many came back identical to the source text
 
@@ -1158,8 +1251,6 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
         for b, nt in zip(group, translate_batch([g["text"] for g in group])):
             if not nt or not nt.strip():
                 continue  # drop a failed segment — do NOT emit original-language text
-            # Drop any segment that came back in the wrong script (source/other language leaking
-            # through into a Latin-script target — Korean, Chinese, Thai, Cyrillic, …).
             if _bad_target_script(nt, target):
                 continue
             ok += 1
@@ -1173,6 +1264,7 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
         t = (seg.get("text") or "").replace("\r\n", " ").replace("\n", " ").strip()
         if not t:
             continue
+        total_in += 1
         seg_clean = dict(seg, text=t)
         if batch and batch_len + len(t) > CHAR_BUDGET:
             flush(batch)
@@ -1183,6 +1275,10 @@ def _translate_segments(segments: list[dict], target: str, source: str | None = 
 
     if ok == 0:
         return None  # nothing translated → caller leaves the track absent
+
+    if total_in >= 5 and ok < max(1, int(total_in * _MIN_TRANSLATE_RATIO)):
+        log.warning("Translate to %s too incomplete (%d/%d cues) — treating as failed", target, ok, total_in)
+        return None
 
     leaks = sum(1 for b in translated if _bad_target_script(b["text"], target))
     if ok > 1 and (unchanged >= ok or leaks > ok * 0.1):
@@ -1340,10 +1436,10 @@ async def _record_subtitle(db, part_id: int, lang: str, channel_msg_id: int | No
 # Bump when the repair LOGIC changes so every part is re-examined once under the new rules. v2
 # re-translates every target from the known source (v1 used Google auto-detect, which silently
 # echoed some content — e.g. Traditional Chinese — leaving target tracks partly untranslated). v3
-# adds Groq-LLM failover + target-script validation: any en/id segment that came back in the wrong
-# script (Korean/CJK/Thai/… leaking through) is re-translated by Groq or dropped, fixing the
-# "subtitles in a random language" tracks across the whole drive — download-free, from disk.
-_TL_REPAIR_VERSION = "3"
+# adds Groq-LLM failover + target-script validation. v4 adds Groq 429 rate-limit wait/retry,
+# Cloudflare AI + Google POST gtx failover, cue-completeness verification (re-repairing truncated
+# tracks without overwriting healthier ones), Telegram re-backup, and en-source target handling.
+_TL_REPAIR_VERSION = "4"
 
 
 def _tl_repair_marker(part_id: int) -> Path:
@@ -1382,6 +1478,33 @@ def _expected_targets(src_lang: str) -> list[str]:
     return [t for t in SUBTITLE_TARGET_LANGS if t != src_lang]
 
 
+def _is_target_complete(
+    src_count: int,
+    tpath: Path,
+    orig_text: str | None = None,
+    check_script_target: str | None = None,
+) -> bool:
+    """True when `tpath` exists, differs from source, meets minimum cue ratio, and passes script check."""
+    if not tpath.exists():
+        return False
+    if orig_text is not None and src_count > 2:
+        try:
+            if tpath.read_text(encoding="utf-8", errors="replace") == orig_text:
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+    segs = _parse_vtt(tpath)
+    if not segs:
+        return False
+    if src_count >= 5 and len(segs) < max(1, int(src_count * _MIN_TRANSLATE_RATIO)):
+        return False
+    if check_script_target and len(segs) > 1:
+        leaks = sum(1 for s in segs if _bad_target_script(s["text"], check_script_target))
+        if leaks > len(segs) * 0.1:
+            return False
+    return True
+
+
 def _part_ids_with_vtt() -> list[int]:
     if not SUBTITLES_DIR.exists():
         return []
@@ -1399,8 +1522,8 @@ async def _repair_one_translation(db, part_id: int) -> None:
         _write_tl_marker(part_id, "noop")
         return
 
-    # Under a NEW repair version, re-translate every target once (overwriting a track that an
-    # older version mistranslated/echoed); within the same version we only fill genuine gaps.
+    # Under a NEW repair version, examine every target once for completeness/script quality;
+    # within the same version, retry only missing or incomplete targets.
     st = _tl_repair_state(part_id)
     old_version = st[0] if st else None
     attempts = st[1] if (st and isinstance(st[1], int)) else 0
@@ -1412,15 +1535,17 @@ async def _repair_one_translation(db, part_id: int) -> None:
     src_lang = _load_chunks_cache(part_id).get("lang", "xx")
     if src_lang in ("xx", ""):
         non_target = [l for l in sorted(langs) if l not in SUBTITLE_TARGET_LANGS and l != "orig"]
-        src_lang = non_target[0] if non_target else ("orig" if "orig" in langs else "xx")
+        if non_target:
+            src_lang = non_target[0]
+        elif "orig" in langs:
+            src_lang = "orig"
 
     orig_file: Path | None = None
     hidden = False  # original text leaked into the target files (symptom b, no real orig track)
     if src_lang not in ("xx", "") and subtitle_path(part_id, src_lang).exists():
         orig_file = subtitle_path(part_id, src_lang)
     else:
-        # No standalone original track. If two+ target tracks are byte-identical they actually
-        # hold the original-language text → recover from one of them.
+        # Check legacy case where two+ target tracks are byte-identical (original text leaked into both).
         present = [t for t in SUBTITLE_TARGET_LANGS if subtitle_path(part_id, t).exists()]
         if len(present) >= 2:
             contents = {subtitle_path(part_id, t).read_text(encoding="utf-8") for t in present}
@@ -1428,9 +1553,15 @@ async def _repair_one_translation(db, part_id: int) -> None:
                 orig_file, hidden = subtitle_path(part_id, present[0]), True
                 if src_lang in ("xx", ""):
                     src_lang = "orig"
+        # Otherwise if only target-language tracks exist (e.g. an English video with only `en.vtt`),
+        # treat the fullest track as the source so missing target languages (e.g. `id`) get translated.
+        if orig_file is None and langs:
+            best_lang = max(sorted(langs), key=lambda l: len(_parse_vtt(subtitle_path(part_id, l))))
+            src_lang = best_lang
+            orig_file = subtitle_path(part_id, best_lang)
 
     if orig_file is None:
-        _write_tl_marker(part_id, "noop")  # looks genuinely fine
+        _write_tl_marker(part_id, "noop")
         return
 
     segments = _parse_vtt(orig_file)
@@ -1440,35 +1571,47 @@ async def _repair_one_translation(db, part_id: int) -> None:
 
     # If the original was hiding inside the target files, write the real original track now.
     if hidden and src_lang not in ("xx", ""):
-        subtitle_path(part_id, src_lang).write_text(_build_vtt(segments), encoding="utf-8")
-        await _record_subtitle(db, part_id, src_lang)
+        orig_out = subtitle_path(part_id, src_lang)
+        orig_out.write_text(_build_vtt(segments), encoding="utf-8")
+        orig_msg_id = await backup_subtitle_to_telegram(part_id, src_lang, orig_out)
+        await _record_subtitle(db, part_id, src_lang, orig_msg_id)
 
     orig_text = orig_file.read_text(encoding="utf-8")
     repaired: list[str] = []
     for target in _expected_targets(src_lang):
         tpath = subtitle_path(part_id, target)
-        # On a version bump (`force`) re-translate every target — an older version may have
-        # written a track that's partly the original language. Otherwise only fill genuine gaps:
-        # a missing track, or one whose content is still the original text (symptom b).
-        if not force and not hidden and tpath.exists() and tpath.read_text(encoding="utf-8") != orig_text:
-            continue  # already a genuine, different translation — leave it
-        translated = await _translate_track(segments, target, src_lang)  # known source + retries
+        if not hidden and _is_target_complete(
+            len(segments), tpath, orig_text=orig_text,
+            check_script_target=(target if force else None),
+        ):
+            continue  # already complete and valid — preserve without wasting quota
+        existing_segs = _parse_vtt(tpath) if tpath.exists() else []
+        existing_bad = (
+            hidden
+            or (len(segments) > 2 and tpath.exists() and tpath.read_text(encoding="utf-8", errors="replace") == orig_text)
+            or (len(existing_segs) > 1 and sum(1 for s in existing_segs if _bad_target_script(s["text"], target)) > len(existing_segs) * 0.1)
+        )
+        translated = await _translate_track(segments, target, src_lang)
         if translated:
+            # Never overwrite a healthy partial track with an even smaller cue count.
+            if existing_segs and not existing_bad and len(translated) <= len(existing_segs):
+                log.info("Translation repair: keeping existing %s for part %d (%d >= %d cues)",
+                         target, part_id, len(existing_segs), len(translated))
+                continue
             tpath.write_text(_build_vtt(translated), encoding="utf-8")
-            await _record_subtitle(db, part_id, target)
+            t_msg_id = await backup_subtitle_to_telegram(part_id, target, tpath)
+            await _record_subtitle(db, part_id, target, t_msg_id)
             repaired.append(target)
 
     if repaired:
         log.info("Translation repair: part %d re-translated %s from %s (on-disk, no download)",
                  part_id, ", ".join(repaired), src_lang)
 
-    # Finalise based on COMPLETENESS, not just "attempted": if a target is still missing (e.g. a
-    # persistent Google throttle), bump the attempt count so a later pass retries it — until the
-    # budget runs out — instead of marking it done and dropping the language forever.
-    missing = [t for t in _expected_targets(src_lang) if not subtitle_path(part_id, t).exists()]
+    missing = [
+        t for t in _expected_targets(src_lang)
+        if not _is_target_complete(len(segments), subtitle_path(part_id, t), orig_text=orig_text)
+    ]
     if not missing or attempts + 1 >= SUBTITLE_TL_REPAIR_MAX:
-        # A part with an original track but no done/partial marker and no chunk cache came from a
-        # fully-transcribed run that only failed at translation → it's complete now, finalise it.
         if (not _done_marker(part_id).exists() and not _partial_marker(part_id).exists()
                 and not _chunks_cache_path(part_id).exists()):
             _done_marker(part_id).write_text("ok", encoding="utf-8")
@@ -1478,7 +1621,7 @@ async def _repair_one_translation(db, part_id: int) -> None:
                         part_id, ", ".join(missing), attempts + 1)
     else:
         _write_tl_marker(part_id, attempts + 1)
-        log.info("Translation repair: part %d still missing %s — will retry next pass (attempt %d/%d)",
+        log.info("Translation repair: part %d still missing/incomplete %s — will retry next pass (attempt %d/%d)",
                  part_id, ", ".join(missing), attempts + 1, SUBTITLE_TL_REPAIR_MAX)
 
 
@@ -1711,6 +1854,10 @@ async def _subtitle_worker(db, part_id: int, src_path: str, fallback_path: str |
                 # Every chunk transcribed → finished. Drop the repair scaffolding.
                 _done_marker(part_id).write_text("ok")
                 _cleanup_chunk_state(part_id)
+                orig_txt = orig_p.read_text(encoding="utf-8", errors="replace")
+                if all(_is_target_complete(len(segments), subtitle_path(part_id, t), orig_text=orig_txt)
+                       for t in _expected_targets(orig_lang)):
+                    _write_tl_marker(part_id, "ok")
                 log.info("Subtitle: part %d complete (%s)", part_id, ", ".join(available_langs(part_id)))
             else:
                 # Some chunks still missing: the part now has PARTIAL subtitles. Keep the

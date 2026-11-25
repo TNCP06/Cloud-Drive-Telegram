@@ -1561,9 +1561,15 @@ async def list_subtitles(part_id: int):
     except Exception:
         backed = {}
     for l in langs:
+        cues = 0
+        try:
+            cues = subtitle_path(part_id, l).read_text(encoding="utf-8", errors="replace").count("-->")
+        except Exception:
+            pass
         tracks.append({
             "lang": l,
             "backed_up": backed.get(l, False),
+            "cues": cues,
         })
     return {
         "part_id": part_id,
@@ -1629,8 +1635,8 @@ async def translate_subtitle_track(part_id: int, source: str = "orig", target: s
 
     vtt_text = _build_vtt(translated)
     await save_subtitle_track(db, part_id, target, vtt_text)
-    log.info("On-demand subtitle translated: part %d %s -> %s", part_id, source, target)
-    return {"ok": True, "part_id": part_id, "lang": target}
+    log.info("On-demand subtitle translated: part %d %s -> %s (%d cues)", part_id, source, target, len(translated))
+    return {"ok": True, "part_id": part_id, "lang": target, "cues": len(translated)}
 
 
 @app.post("/subtitles/{part_id}/offset")
@@ -1732,7 +1738,7 @@ async def get_subtitle(part_id: int, lang: str):
     return Response(
         p.read_text(encoding="utf-8"),
         media_type="text/vtt",
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={"Cache-Control": "no-cache, must-revalidate"},
     )
 
 

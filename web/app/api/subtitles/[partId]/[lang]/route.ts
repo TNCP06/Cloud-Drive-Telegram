@@ -36,7 +36,7 @@ export async function GET(
   try {
     const headers: Record<string, string> = { Connection: "close" };
     if (process.env.STREAMER_SECRET) headers["X-Streamer-Secret"] = process.env.STREAMER_SECRET;
-    const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}/${lang}`, { headers });
+    const resp = await fetch(`${STREAMER_URL}/subtitles/${partId}/${lang}`, { headers, cache: "no-store" });
     if (!resp.ok) {
       return new Response("Not found", { status: resp.status });
     }
@@ -45,7 +45,7 @@ export async function GET(
       status: 200,
       headers: {
         "Content-Type": "text/vtt; charset=utf-8",
-        "Cache-Control": "private, max-age=3600",
+        "Cache-Control": "private, no-store, must-revalidate",
       },
     });
   } catch {

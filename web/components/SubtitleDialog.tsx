@@ -43,7 +43,7 @@ function guessLang(name: string): string | null {
 const SUB_ACCEPT = ".srt,.vtt,.ass,.ssa,.sub";
 
 type TabMode = "tracks" | "ai" | "sync" | "add";
-type SubtitleTrack = { lang: string; backed_up?: boolean };
+type SubtitleTrack = { lang: string; backed_up?: boolean; cues?: number };
 type JobStatus = { status: string; message?: string; langs?: string[] };
 
 export function SubtitleDialog({
@@ -97,7 +97,10 @@ export function SubtitleDialog({
 
         if (available.length > 0) {
           if (!available.includes(syncLang)) setSyncLang(available[0]);
-          if (!available.includes(tlSource)) setTlSource(available[0]);
+          if (!available.includes(tlSource)) {
+            const best = [...rawTracks].sort((a, b) => (b.cues ?? 0) - (a.cues ?? 0))[0]?.lang ?? available[0];
+            setTlSource(best);
+          }
         }
       }
     } catch {
@@ -288,7 +291,8 @@ export function SubtitleDialog({
       );
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data?.error ?? "Translation failed.");
-      setMsg({ text: `Translated successfully to ${langLabel(tlTarget)} (${tlTarget})!` });
+      const cueInfo = typeof data?.cues === "number" ? ` (${data.cues} cues)` : "";
+      setMsg({ text: `Translated successfully to ${langLabel(tlTarget)} (${tlTarget})${cueInfo}!` });
       await loadTracks();
       onAdded();
     } catch (err) {
@@ -583,6 +587,9 @@ export function SubtitleDialog({
                           {langLabel(t.lang)}
                         </span>
                         <span className="sub-badge">{t.lang}</span>
+                        {typeof t.cues === "number" ? (
+                          <span className="sub-badge">{t.cues} cues</span>
+                        ) : null}
                         {t.backed_up ? (
                           <span className="sub-badge cloud" title="Backed up permanently in Telegram storage channel">
                             <Icon name="cloud" size={12} />

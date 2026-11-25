@@ -807,6 +807,7 @@ export function PreviewDrawer({
                   poster={activePart!.thumb || undefined}
                   partId={activePart!.partId}
                   qualities={qualityOptions}
+                  subVersion={subsBump}
                   onToggleFullscreen={toggleFullscreen}
                 />
               ) : isDocStage ? (

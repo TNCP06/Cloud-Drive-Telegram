@@ -427,12 +427,14 @@ export function VideoPlayer({
   poster,
   partId,
   qualities,
+  subVersion = 0,
   onToggleFullscreen,
 }: {
   src: string;
   poster?: string;
   partId?: number;
   qualities?: VideoQualityOption[];
+  subVersion?: number;
   onToggleFullscreen?: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -515,7 +517,7 @@ export function VideoPlayer({
           track.kind = "captions";
           track.label = langLabel(lang);
           track.srclang = lang;
-          track.src = `${subBase}/${lang}`;
+          track.src = subVersion ? `${subBase}/${lang}?v=${subVersion}` : `${subBase}/${lang}`;
           vid.appendChild(track);
           captionLangs.push(lang);
           added = true;
@@ -825,7 +827,7 @@ export function VideoPlayer({
         player?.destroy();
       } catch {}
     };
-  }, [src, partId]);
+  }, [src, partId, subVersion]);
 
   const handleClick = (e: React.MouseEvent) => {
     // The player sits inside .viewer-stage (whose click closes the viewer); stop
